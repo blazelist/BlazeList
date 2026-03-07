@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-03-07
+
+### Added
+
+- App icons (favicon, Apple touch icon, 192px and 512px PWA icons) derived
+  from the new BlazeList logo
+- PWA manifest now includes icon entries for installable app support
+
 ## [1.1.0] - 2026-03-07
 
 ### Added

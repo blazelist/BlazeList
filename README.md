@@ -1,7 +1,15 @@
 <div align="center">
 
+<img src="assets/bl-icon.png" width="120">
+
 # BlazeList
 **Blazingly fast sorted list of Markdown cards. 🔥**
+
+[![blazelist-server](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fblazelist%2FBlazeList%2Fmain%2Fserver%2FCargo.toml&query=package.version&prefix=v&label=blazelist-server)](https://github.com/blazelist/BlazeList/tree/main/server)
+[![blazelist-protocol](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fblazelist%2FBlazeList%2Fmain%2Fprotocol%2FCargo.toml&query=package.version&prefix=v&label=blazelist-protocol)](https://github.com/blazelist/BlazeList/tree/main/protocol)
+[![blazelist-client-lib](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fblazelist%2FBlazeList%2Fmain%2Fclients%2Flib%2FCargo.toml&query=package.version&prefix=v&label=blazelist-client-lib)](https://github.com/blazelist/BlazeList/tree/main/clients/lib)
+[![blazelist-wasm](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fblazelist%2FBlazeList%2Fmain%2Fclients%2Fwasm%2FCargo.toml&query=package.version&prefix=v&label=blazelist-wasm)](https://github.com/blazelist/BlazeList/tree/main/clients/wasm)
+[![blazelist-dev-seeder](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fblazelist%2FBlazeList%2Fmain%2Fclients%2Fdev-seeder%2FCargo.toml&query=package.version&prefix=v&label=blazelist-dev-seeder)](https://github.com/blazelist/BlazeList/tree/main/clients/dev-seeder)
 
 A TODO list of sorts—one list to rule them all: centered around a mono-list called the Blaze List.
 
