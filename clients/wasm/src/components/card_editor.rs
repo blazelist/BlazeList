@@ -90,7 +90,8 @@ pub fn CardEditor(
                         selected_due,
                     )
                 } else {
-                    let cards = state.cards.get_untracked();
+                    let mut cards = state.cards.get_untracked();
+                    blazelist_client_lib::filter::sort_by_priority(&mut cards);
                     let insert_pos = match position {
                         SavePosition::Top => InsertPosition::Top,
                         SavePosition::Bottom => InsertPosition::Bottom,

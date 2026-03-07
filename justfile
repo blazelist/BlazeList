@@ -38,6 +38,12 @@ offset := "0"
 # Override to expose on all interfaces: just bind=0.0.0.0 dev
 bind := "127.0.0.1"
 
+# Whether to clean the database before starting. Override: just clean_db=false dev
+clean_db := "true"
+
+# Whether to seed the database after starting. Override: just seed=false dev
+seed := "true"
+
 # ==============================
 # Composite workflows
 # ==============================
@@ -47,9 +53,11 @@ dev-build:
     cargo build -p blazelist-server
     trunk build --config {{WASM_DIR}}/Trunk.toml
 
-# Clean DB, start server, seed data, and serve WASM client (Ctrl+C to stop)
-# Usage: just dev                — full (server + WASM)
-#        just offset=1 dev       — second dev environment
+# Start server, seed data, and serve WASM client (Ctrl+C to stop)
+# Usage: just dev                       — full (server + WASM)
+#        just offset=1 dev              — second dev environment
+#        just clean_db=false dev        — keep existing database
+#        just seed=false dev            — skip seeding
 dev:
     #!/usr/bin/env bash
     QUIC_PORT=$(({{QUIC_PORT_BASE}} + {{offset}}))
@@ -57,7 +65,9 @@ dev:
     HTTP_PORT=$(({{HTTP_PORT_BASE}} + {{offset}}))
     TRUNK_PORT=$(({{TRUNK_PORT_BASE}} + {{offset}}))
 
-    just clean
+    if [ "{{clean_db}}" = "true" ]; then
+        just clean
+    fi
 
     echo "Starting BlazeList server (offset={{offset}})..."
     cargo run -p blazelist-server -- \
@@ -70,65 +80,15 @@ dev:
     # Ensure server is stopped on exit (Ctrl+C or error).
     trap "kill $SERVER_PID 2>/dev/null; wait $SERVER_PID 2>/dev/null" EXIT
 
-    # Wait for the server to be ready (up to 30 seconds).
-    # QUIC uses UDP, so check with ss -ulnp.
-    for i in $(seq 1 300); do
-        if ss -ulnp 2>/dev/null | grep -q ":$QUIC_PORT "; then
-            break
-        fi
-        sleep 0.1
-    done
+    just _wait-for-server "$QUIC_PORT"
 
-    echo "Running dev seeder..."
-    just offset={{offset}} seed
+    if [ "{{seed}}" = "true" ]; then
+        echo "Running dev seeder..."
+        just offset={{offset}} seed
+    fi
 
     echo ""
     echo "Dev environment ready (offset={{offset}})."
-    echo "  QUIC:          {{bind}}:$QUIC_PORT"
-    echo "  WebTransport:  {{bind}}:$WT_PORT"
-    echo "  HTTP cert:     {{bind}}:$HTTP_PORT"
-    echo "  Trunk:         http://{{bind}}:$TRUNK_PORT"
-    trunk serve --config {{WASM_DIR}}/Trunk.toml --port "$TRUNK_PORT" --address "{{bind}}" &
-    TRUNK_PID=$!
-
-    trap "kill $TRUNK_PID 2>/dev/null; kill $SERVER_PID 2>/dev/null; wait $TRUNK_PID 2>/dev/null; wait $SERVER_PID 2>/dev/null" EXIT
-
-    echo "Open http://{{bind}}:$TRUNK_PORT in your browser."
-    echo "Press Ctrl+C to stop."
-    wait $SERVER_PID
-
-# Clean DB, start server, and serve WASM client without seeding data (Ctrl+C to stop)
-# Usage: just dev-noseed            — empty database
-#        just offset=1 dev-noseed   — second dev environment
-dev-noseed:
-    #!/usr/bin/env bash
-    QUIC_PORT=$(({{QUIC_PORT_BASE}} + {{offset}}))
-    WT_PORT=$(({{WT_PORT_BASE}} + {{offset}}))
-    HTTP_PORT=$(({{HTTP_PORT_BASE}} + {{offset}}))
-    TRUNK_PORT=$(({{TRUNK_PORT_BASE}} + {{offset}}))
-
-    just clean
-
-    echo "Starting BlazeList server (offset={{offset}})..."
-    cargo run -p blazelist-server -- \
-        --quic-port "$QUIC_PORT" \
-        --wt-port "$WT_PORT" \
-        --http-port "$HTTP_PORT" \
-        --bind "{{bind}}" &
-    SERVER_PID=$!
-
-    trap "kill $SERVER_PID 2>/dev/null; wait $SERVER_PID 2>/dev/null" EXIT
-
-    # Wait for the server to be ready (up to 30 seconds).
-    for i in $(seq 1 300); do
-        if ss -ulnp 2>/dev/null | grep -q ":$QUIC_PORT "; then
-            break
-        fi
-        sleep 0.1
-    done
-
-    echo ""
-    echo "Dev environment ready (offset={{offset}}), no seed data."
     echo "  QUIC:          {{bind}}:$QUIC_PORT"
     echo "  WebTransport:  {{bind}}:$WT_PORT"
     echo "  HTTP cert:     {{bind}}:$HTTP_PORT"
@@ -151,7 +111,9 @@ dev-lan:
     HTTP_PORT=$(({{HTTP_PORT_BASE}} + {{offset}}))
     HTTPS_PORT=$(({{TRUNK_PORT_BASE}} + {{offset}}))
 
-    just clean
+    if [ "{{clean_db}}" = "true" ]; then
+        just clean
+    fi
 
     echo "Building WASM client..."
     trunk build --config {{WASM_DIR}}/Trunk.toml
@@ -168,16 +130,12 @@ dev-lan:
 
     trap "kill $SERVER_PID 2>/dev/null; wait $SERVER_PID 2>/dev/null" EXIT
 
-    # Wait for the server to be ready (up to 30 seconds).
-    for i in $(seq 1 300); do
-        if ss -ulnp 2>/dev/null | grep -q ":$QUIC_PORT "; then
-            break
-        fi
-        sleep 0.1
-    done
+    just _wait-for-server "$QUIC_PORT"
 
-    echo "Running dev seeder..."
-    just offset={{offset}} seed
+    if [ "{{seed}}" = "true" ]; then
+        echo "Running dev seeder..."
+        just offset={{offset}} seed
+    fi
 
     echo ""
     echo "LAN dev environment ready (offset={{offset}})."
@@ -237,6 +195,16 @@ wasm-serve:
 # Run clippy on the WASM client
 wasm-clippy:
     cargo clippy -p blazelist-wasm --target {{WASM_TARGET}}
+
+# Wait for the server to be ready (up to 30 seconds). QUIC uses UDP, so check with ss.
+_wait-for-server port:
+    #!/usr/bin/env bash
+    for i in $(seq 1 300); do
+        if ss -ulnp 2>/dev/null | grep -q ":{{port}} "; then
+            break
+        fi
+        sleep 0.1
+    done
 
 # Remove database files
 clean:

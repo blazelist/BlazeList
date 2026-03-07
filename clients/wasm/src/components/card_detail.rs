@@ -330,17 +330,13 @@ pub fn CardDetail() -> impl IntoView {
             let back_only_count = back_ids.iter().filter(|id| !forward_set.contains(id)).count();
             let mutual_count = forward_ids.iter().filter(|id| back_set.contains(id)).count();
 
-            let all_cards = state.cards.get();
-            let max_priority = all_cards.iter().map(|c| c.priority()).max();
-            let min_priority = all_cards.iter().map(|c| c.priority()).min();
-            let is_at_top = max_priority == Some(priority_raw);
-            let is_at_bottom = min_priority == Some(priority_raw);
-
             let reorder_disabled = !state.sort_order.get().is_default()
                 || !state.search_query.get().is_empty();
 
             let filtered = state.filtered_cards().get();
             let filtered_pos = filtered.iter().position(|c| c.id() == card_id);
+            let is_at_top = filtered_pos == Some(0);
+            let is_at_bottom = filtered_pos == Some(filtered.len().saturating_sub(1));
             let in_filtered = filtered_pos.is_some() && !reorder_disabled;
             let current_position = filtered_pos.map(|i| i + 1).unwrap_or(0);
             let total_cards = filtered.len();
@@ -444,60 +440,56 @@ pub fn CardDetail() -> impl IntoView {
                 confirm_delete.set(false);
             };
 
+            let filtered_cards_memo = state.filtered_cards();
+
             let on_move_top = move |_| {
                 let current = state.cards.get_untracked().into_iter().find(|c| c.id() == card_id);
                 if let Some(current) = current {
-                    let mut sorted: Vec<_> = state.cards.get_untracked();
-                    sorted.sort_by(|a, b| b.priority().cmp(&a.priority()));
-                    let placement = move_card(&sorted, card_id, InsertPosition::Top);
-                    apply_move_placement(placement, &current, &sorted, state, pending_versions, pending_card_id, timeout_handle);
+                    let filtered = filtered_cards_memo.get_untracked();
+                    let placement = move_card(&filtered, card_id, InsertPosition::Top);
+                    apply_move_placement(placement, &current, &filtered, state, pending_versions, pending_card_id, timeout_handle);
                 }
             };
 
             let on_move_up = move |_| {
                 let current = state.cards.get_untracked().into_iter().find(|c| c.id() == card_id);
                 if let Some(current) = current {
-                    let mut sorted: Vec<_> = state.cards.get_untracked();
-                    sorted.sort_by(|a, b| b.priority().cmp(&a.priority()));
-                    let idx = match sorted.iter().position(|c| c.id() == card_id) {
+                    let filtered = filtered_cards_memo.get_untracked();
+                    let idx = match filtered.iter().position(|c| c.id() == card_id) {
                         Some(i) => i,
                         None => return,
                     };
                     if idx == 0 { return; }
                     // After removing the card, position idx-1 in the reduced list
-                    let placement = move_card(&sorted, card_id, InsertPosition::At(idx - 1));
-                    apply_move_placement(placement, &current, &sorted, state, pending_versions, pending_card_id, timeout_handle);
+                    let placement = move_card(&filtered, card_id, InsertPosition::At(idx - 1));
+                    apply_move_placement(placement, &current, &filtered, state, pending_versions, pending_card_id, timeout_handle);
                 }
             };
 
             let on_move_down = move |_| {
                 let current = state.cards.get_untracked().into_iter().find(|c| c.id() == card_id);
                 if let Some(current) = current {
-                    let mut sorted: Vec<_> = state.cards.get_untracked();
-                    sorted.sort_by(|a, b| b.priority().cmp(&a.priority()));
-                    let idx = match sorted.iter().position(|c| c.id() == card_id) {
+                    let filtered = filtered_cards_memo.get_untracked();
+                    let idx = match filtered.iter().position(|c| c.id() == card_id) {
                         Some(i) => i,
                         None => return,
                     };
-                    if idx >= sorted.len() - 1 { return; }
+                    if idx >= filtered.len() - 1 { return; }
                     // After removing the card, the card at idx+1 shifts to idx,
                     // so we target idx+1 in the reduced list.
-                    let placement = move_card(&sorted, card_id, InsertPosition::At(idx + 1));
-                    apply_move_placement(placement, &current, &sorted, state, pending_versions, pending_card_id, timeout_handle);
+                    let placement = move_card(&filtered, card_id, InsertPosition::At(idx + 1));
+                    apply_move_placement(placement, &current, &filtered, state, pending_versions, pending_card_id, timeout_handle);
                 }
             };
 
             let on_move_bottom = move |_| {
                 let current = state.cards.get_untracked().into_iter().find(|c| c.id() == card_id);
                 if let Some(current) = current {
-                    let mut sorted: Vec<_> = state.cards.get_untracked();
-                    sorted.sort_by(|a, b| b.priority().cmp(&a.priority()));
-                    let placement = move_card(&sorted, card_id, InsertPosition::Bottom);
-                    apply_move_placement(placement, &current, &sorted, state, pending_versions, pending_card_id, timeout_handle);
+                    let filtered = filtered_cards_memo.get_untracked();
+                    let placement = move_card(&filtered, card_id, InsertPosition::Bottom);
+                    apply_move_placement(placement, &current, &filtered, state, pending_versions, pending_card_id, timeout_handle);
                 }
             };
-
-            let filtered_cards_memo = state.filtered_cards();
             let on_move_to = move |_| {
                 let input_val = move_to_input.get_untracked();
                 let filtered = filtered_cards_memo.get_untracked();

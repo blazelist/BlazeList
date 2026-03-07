@@ -1,3 +1,4 @@
+use crate::app::request_reconnect;
 use crate::state::store::{AppState, ConnectionStatus, format_relative_time, get_client};
 use crate::state::sync::incremental_sync;
 use leptos::prelude::*;
@@ -20,7 +21,12 @@ pub fn SyncIndicator() -> impl IntoView {
         ConnectionStatus::Disconnected => "status-disconnected",
     };
 
-    let can_sync = move || matches!(state.connection_status.get(), ConnectionStatus::Connected);
+    let is_clickable = move || {
+        matches!(
+            state.connection_status.get(),
+            ConnectionStatus::Connected | ConnectionStatus::Disconnected
+        )
+    };
 
     let sync_time_text = move || {
         // Read tick to re-evaluate periodically
@@ -28,36 +34,45 @@ pub fn SyncIndicator() -> impl IntoView {
         state.last_synced.get().map(|ts| format_relative_time(&ts))
     };
 
-    let on_sync_click = move |_| {
-        if !can_sync() {
-            return;
+    let on_click = move |_| match state.connection_status.get() {
+        ConnectionStatus::Connected => {
+            let Some(client) = get_client() else { return };
+            leptos::task::spawn_local(async move {
+                if let Err(e) = incremental_sync(&client, &state).await {
+                    log::error!("Manual sync failed: {e}");
+                }
+            });
         }
-        let Some(client) = get_client() else { return };
-        leptos::task::spawn_local(async move {
-            if let Err(e) = incremental_sync(&client, &state).await {
-                log::error!("Manual sync failed: {e}");
-            }
-        });
+        ConnectionStatus::Disconnected => {
+            request_reconnect();
+        }
+        _ => {}
     };
 
     let indicator_class = move || {
-        if can_sync() {
+        if is_clickable() {
             "sync-indicator sync-clickable"
         } else {
             "sync-indicator"
         }
     };
 
+    let title_text = move || match state.connection_status.get() {
+        ConnectionStatus::Connected => "Click to sync",
+        ConnectionStatus::Disconnected => "Click to reconnect",
+        _ => "",
+    };
+
     view! {
-        <div class=indicator_class on:click=on_sync_click
-            title=move || if can_sync() { "Click to sync" } else { "" }
+        <div class=indicator_class on:click=on_click
+            title=title_text
         >
             <span class=status_class>{status_text}</span>
             {move || sync_time_text().map(|t| view! {
                 <span class="sync-sep">{"\u{00b7}"}</span>
                 <span class="sync-time">{t}</span>
             })}
-            {move || can_sync().then(|| view! {
+            {move || matches!(state.connection_status.get(), ConnectionStatus::Connected).then(|| view! {
                 <span class="sync-btn" title="Sync now">{"\u{21bb}"}</span>
             })}
         </div>

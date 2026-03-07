@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-03-07
+
+### Added
+
+- Automatic reconnection with exponential backoff (1 s → 30 s) when the
+  server connection is lost; backoff resets on successful reconnection
+- Browser `visibilitychange` and `online` event listeners that interrupt
+  the backoff sleep and reconnect immediately when the user returns
+- Click-to-reconnect on the sync indicator when disconnected
+
+### Fixed
+
+- "Add to top" placed card partway down the list instead of at the top
+  (cards were unsorted before computing priority placement)
+- Card move operations (top / up / down / bottom) used the unfiltered
+  card list, causing incorrect positioning when filters were active
+
+### Changed
+
+- Increased button and input touch targets on small viewports for
+  easier tapping on mobile devices
+
 ## [1.0.0] - 2026-03-07
 
 ### Added

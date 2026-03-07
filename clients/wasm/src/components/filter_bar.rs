@@ -1,4 +1,6 @@
-use crate::state::store::{AppState, DueDateFilter, SortOrder, TagFilterMode, sync_query_params, tag_chip_style};
+use crate::state::store::{
+    AppState, DueDateFilter, SortOrder, TagFilterMode, sync_query_params, tag_chip_style,
+};
 use blazelist_protocol::CardFilter;
 use leptos::prelude::*;
 

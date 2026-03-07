@@ -2243,8 +2243,8 @@ a:hover {
     }
 
     .sidebar-toggle-btn {
-        font-size: 1rem;
-        padding: 0.3rem 0.5rem;
+        font-size: 1.1rem;
+        padding: 0.45rem 0.6rem;
     }
 
     .app-title {
@@ -2271,8 +2271,8 @@ a:hover {
     }
 
     .filter-btn {
-        padding: 0.45rem 0.7rem;
-        font-size: 0.8rem;
+        padding: 0.5rem 0.8rem;
+        font-size: 0.85rem;
     }
 
     .blaze-filter,
@@ -2291,8 +2291,8 @@ a:hover {
     }
 
     .sort-select {
-        font-size: 0.8rem;
-        padding: 0.4rem 1.5rem 0.4rem 0.5rem;
+        font-size: 0.85rem;
+        padding: 0.5rem 1.5rem 0.5rem 0.6rem;
         flex: 1;
     }
 
@@ -2301,24 +2301,24 @@ a:hover {
     }
 
     .search-input {
-        font-size: 0.85rem;
-        padding: 0.45rem 0.6rem;
+        font-size: 0.9rem;
+        padding: 0.55rem 0.7rem;
     }
 
     .btn-clear-x {
-        width: 1.6rem;
-        height: 1.6rem;
-        font-size: 0.78rem;
+        width: 1.8rem;
+        height: 1.8rem;
+        font-size: 0.82rem;
     }
 
     .mode-btn {
-        padding: 0.3rem 0.5rem;
-        font-size: 0.7rem;
+        padding: 0.4rem 0.6rem;
+        font-size: 0.76rem;
     }
 
     .tag-chip {
-        padding: 0.22rem 0.5rem;
-        font-size: 0.76rem;
+        padding: 0.3rem 0.55rem;
+        font-size: 0.8rem;
     }
 
     .chip-remove {
@@ -2327,8 +2327,8 @@ a:hover {
 
     /* Card list: larger touch targets and readable text */
     .btn-new-card {
-        font-size: 0.85rem;
-        padding: 0.5rem 0.75rem;
+        font-size: 0.9rem;
+        padding: 0.6rem 0.85rem;
         margin: 0 0.75rem 0.75rem;
     }
 
@@ -2370,8 +2370,8 @@ a:hover {
     }
 
     .detail-close {
-        font-size: 0.95rem;
-        padding: 0.25rem 0.4rem;
+        font-size: 1rem;
+        padding: 0.4rem 0.55rem;
     }
 
     .card-detail .card-content {
@@ -2384,8 +2384,8 @@ a:hover {
     .btn-delete,
     .btn-move,
     .btn-go {
-        padding: 0.4rem 0.75rem;
-        font-size: 0.82rem;
+        padding: 0.5rem 0.85rem;
+        font-size: 0.88rem;
     }
 
     .move-to-input {
@@ -2431,8 +2431,8 @@ a:hover {
 
     .btn-save,
     .btn-cancel {
-        padding: 0.45rem 1rem;
-        font-size: 0.88rem;
+        padding: 0.55rem 1.1rem;
+        font-size: 0.92rem;
     }
 
     .editor-tag-chip {
@@ -2441,13 +2441,13 @@ a:hover {
 
     /* Due date controls: bigger touch targets */
     .due-date-quick-btn {
-        padding: 0.3rem 0.55rem;
-        font-size: 0.76rem;
+        padding: 0.4rem 0.65rem;
+        font-size: 0.82rem;
     }
 
     .due-date-clear-btn {
-        padding: 0.25rem 0.45rem;
-        font-size: 0.7rem;
+        padding: 0.35rem 0.55rem;
+        font-size: 0.76rem;
     }
 
     .due-date-current {
@@ -2460,13 +2460,34 @@ a:hover {
 
     /* Confirm delete: larger for safe tapping */
     .confirm-text {
-        font-size: 0.82rem;
+        font-size: 0.85rem;
     }
 
     .btn-confirm-yes,
     .btn-confirm-no {
-        padding: 0.3rem 0.6rem;
-        font-size: 0.78rem;
+        padding: 0.4rem 0.7rem;
+        font-size: 0.82rem;
+    }
+
+    /* Dropdown buttons & items: bigger touch targets */
+    .btn-save-dropdown {
+        padding: 0.5rem 0.55rem;
+        font-size: 0.7rem;
+    }
+
+    .save-dropdown-item {
+        padding: 0.5rem 0.85rem;
+        font-size: 0.82rem;
+    }
+
+    .due-date-dropdown-toggle {
+        padding: 0.35rem 0.45rem;
+        font-size: 0.6rem;
+    }
+
+    .due-date-dropdown-menu .save-dropdown-item {
+        padding: 0.5rem 0.85rem;
+        font-size: 0.82rem;
     }
 
     /* Version/sequence history */
@@ -2501,13 +2522,13 @@ a:hover {
     }
 
     .tag-input input {
-        font-size: 0.82rem;
-        padding: 0.4rem 0.5rem;
+        font-size: 0.88rem;
+        padding: 0.5rem 0.6rem;
     }
 
     .tag-input button {
-        font-size: 0.82rem;
-        padding: 0.4rem 0.6rem;
+        font-size: 0.88rem;
+        padding: 0.5rem 0.7rem;
     }
 
     /* Tag detail */

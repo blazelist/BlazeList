@@ -58,40 +58,35 @@ pub async fn incremental_sync(client: &Client, state: &AppState) -> Result<(), S
     Ok(())
 }
 
-/// Start a subscription for real-time notifications.
-/// Spawns a local task that reads notifications and triggers incremental sync.
-pub fn start_subscription(client: Rc<Client>, state: AppState) {
-    leptos::task::spawn_local(async move {
-        let mut handle = match client.subscribe().await {
-            Ok(h) => h,
-            Err(e) => {
-                log::error!("Failed to subscribe: {e}");
-                return;
-            }
-        };
+/// Run the subscription loop, reading notifications until the stream breaks.
+///
+/// Returns `Ok` only if the stream closes cleanly (unlikely in practice),
+/// or `Err` when the connection is lost. The caller is responsible for
+/// reconnection.
+pub async fn run_subscription(client: Rc<Client>, state: &AppState) -> Result<(), String> {
+    let mut handle = client
+        .subscribe()
+        .await
+        .map_err(|e| format!("Failed to subscribe: {e}"))?;
 
-        loop {
-            match handle.next_notification().await {
-                Ok(server_root) => {
-                    // Check if we're already up to date
-                    let local_root = state.root.get_untracked();
-                    if let Some(local) = local_root {
-                        if local.hash == server_root.hash && local.sequence == server_root.sequence
-                        {
-                            continue;
-                        }
-                    }
-                    // Trigger incremental sync
-                    if let Err(e) = incremental_sync(&client, &state).await {
-                        log::error!("Incremental sync failed: {e}");
+    loop {
+        match handle.next_notification().await {
+            Ok(server_root) => {
+                // Check if we're already up to date
+                let local_root = state.root.get_untracked();
+                if let Some(local) = local_root {
+                    if local.hash == server_root.hash && local.sequence == server_root.sequence {
+                        continue;
                     }
                 }
-                Err(e) => {
-                    log::error!("Subscribe stream error: {e}");
-                    state.connection_status.set(ConnectionStatus::Disconnected);
-                    break;
+                // Trigger incremental sync
+                if let Err(e) = incremental_sync(&client, state).await {
+                    return Err(format!("Incremental sync failed: {e}"));
                 }
+            }
+            Err(e) => {
+                return Err(format!("Subscribe stream error: {e}"));
             }
         }
-    });
+    }
 }
