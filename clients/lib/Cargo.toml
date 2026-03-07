@@ -1,0 +1,24 @@
+[package]
+name = "blazelist-client-lib"
+version = "1.0.0"
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+native = []
+wasm = []
+
+[dependencies]
+blake3.workspace = true
+blazelist-protocol = { path = "../../protocol", default-features = false }
+chrono.workspace = true
+comrak.workspace = true
+regex.workspace = true
+rgb.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+expect-test.workspace = true

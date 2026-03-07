@@ -1,0 +1,7 @@
+/target
+*.db
+*.db-shm
+*.db-wal
+
+# Trunk build output
+clients/wasm/dist/

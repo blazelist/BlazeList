@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BlazeList</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link data-trunk rel="css" href="style/main.css" />
+    <link data-trunk rel="copy-file" href="public/manifest.webmanifest" />
+    <link data-trunk rel="copy-file" href="public/sw.js" />
+    <meta name="theme-color" content="#0c0c0f" />
+</head>
+<body>
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js');
+        }
+    </script>
+</body>
+</html>

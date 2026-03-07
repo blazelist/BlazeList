@@ -1,0 +1,242 @@
+use crate::state::query_params::{
+    get_query_params, parse_due_date_filter_from_params, parse_filter_from_params,
+    parse_linked_cards_from_params, parse_no_tags_from_params, parse_selected_card_from_params,
+    parse_sort_from_params, parse_tag_mode_from_params, parse_tags_from_params,
+};
+use crate::transport::client::Client;
+use blazelist_client_lib::filter;
+pub use blazelist_client_lib::filter::DueDateFilter;
+pub use blazelist_client_lib::filter::SortOrder;
+pub use blazelist_client_lib::filter::TagFilterMode;
+use blazelist_protocol::CardFilter;
+use blazelist_protocol::{Card, Entity, RootState, Tag, Utc};
+use chrono::DateTime;
+use leptos::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
+use uuid::Uuid;
+use wasm_bindgen::prelude::*;
+
+// Re-export moved utilities so existing imports keep working.
+pub use crate::state::query_params::sync_query_params;
+pub use blazelist_client_lib::color::tag_chip_style;
+pub use blazelist_client_lib::display::format_relative_time;
+pub use blazelist_client_lib::due_date::{
+    DueDatePreset, format_due_date_badge, format_due_date_display,
+};
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_name = "confirm")]
+    fn js_confirm(message: &str) -> bool;
+}
+
+/// Derive the WebTransport server URL from the page's port.
+///
+/// Port layout (all share the same offset):
+///   QUIC          47200 + offset
+///   WebTransport  47400 + offset
+///   HTTP cert     47600 + offset
+///   Trunk         47800 + offset
+///
+/// So WT port = page port - 400.  Falls back to the default if the page
+/// port can't be parsed (e.g. running outside the dev workflow).
+fn derive_wt_url() -> String {
+    const DEFAULT_WT_PORT: u16 = 47400;
+    const TRUNK_TO_WT_DELTA: u16 = 400;
+
+    let window = web_sys::window();
+    let location = window.as_ref().map(|w| w.location());
+
+    let host = location
+        .as_ref()
+        .and_then(|l| l.hostname().ok())
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+
+    let wt_port = location
+        .as_ref()
+        .and_then(|l| l.port().ok())
+        .and_then(|p| p.parse::<u16>().ok())
+        .map(|trunk_port| trunk_port.wrapping_sub(TRUNK_TO_WT_DELTA))
+        .unwrap_or(DEFAULT_WT_PORT);
+
+    format!("https://{host}:{wt_port}")
+}
+
+/// Returns `true` if there are no unsaved changes, or the user confirms discard.
+pub fn confirm_discard_changes(state: &AppState) -> bool {
+    if state.has_unsaved_changes.get_untracked() {
+        js_confirm("You have unsaved changes. Discard them?")
+    } else {
+        true
+    }
+}
+
+thread_local! {
+    static CLIENT: RefCell<Option<Rc<Client>>> = RefCell::new(None);
+}
+
+pub fn set_client(client: Rc<Client>) {
+    CLIENT.with(|c| *c.borrow_mut() = Some(client));
+}
+
+pub fn get_client() -> Option<Rc<Client>> {
+    CLIENT.with(|c| c.borrow().clone())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionStatus {
+    Disconnected,
+    Connecting,
+    Connected,
+    Syncing,
+}
+
+/// Global application state, provided via Leptos context.
+#[derive(Clone, Copy)]
+pub struct AppState {
+    pub cards: RwSignal<Vec<Card>>,
+    pub tags: RwSignal<Vec<Tag>>,
+    pub root: RwSignal<Option<RootState>>,
+    pub filter: RwSignal<CardFilter>,
+    pub due_date_filter: RwSignal<DueDateFilter>,
+    pub sort_order: RwSignal<SortOrder>,
+    pub tag_filter: RwSignal<Vec<Uuid>>,
+    pub tag_filter_mode: RwSignal<TagFilterMode>,
+    pub no_tags_filter: RwSignal<bool>,
+    pub search_query: RwSignal<String>,
+    pub selected_card: RwSignal<Option<Uuid>>,
+    pub sidebar_visible: RwSignal<bool>,
+    pub sidebar_width: RwSignal<f64>,
+    pub detail_width: RwSignal<f64>,
+    pub connection_status: RwSignal<ConnectionStatus>,
+    pub server_url: RwSignal<String>,
+    pub creating_new: RwSignal<bool>,
+    pub editing: RwSignal<bool>,
+    pub has_unsaved_changes: RwSignal<bool>,
+    pub last_synced: RwSignal<Option<DateTime<Utc>>>,
+    pub deleted_count: RwSignal<usize>,
+    pub tick: RwSignal<u64>,
+    /// When set, the filtered view shows only cards whose UUIDs are in this list.
+    /// Used for "show linked cards" — contains the source card + its linked UUIDs.
+    pub linked_card_filter: RwSignal<Vec<Uuid>>,
+}
+
+/// Reset all filter/view state to defaults and clear query params.
+/// Prompts the user if there are unsaved changes; returns false if cancelled.
+pub fn clear_all_state(state: &AppState) -> bool {
+    if !confirm_discard_changes(state) {
+        return false;
+    }
+    state.filter.set(CardFilter::Extinguished);
+    state.due_date_filter.set(DueDateFilter::All);
+    state.sort_order.set(SortOrder::default());
+    state.tag_filter.set(Vec::new());
+    state.tag_filter_mode.set(TagFilterMode::Or);
+    state.no_tags_filter.set(false);
+    state.search_query.set(String::new());
+    state.selected_card.set(None);
+    state.creating_new.set(false);
+    state.editing.set(false);
+    state.has_unsaved_changes.set(false);
+    state.linked_card_filter.set(Vec::new());
+    sync_query_params(state);
+    true
+}
+
+impl AppState {
+    pub fn new() -> Self {
+        let params = get_query_params();
+
+        let viewport_width = web_sys::window()
+            .and_then(|w| w.inner_width().ok())
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1024.0);
+
+        let initial_detail_width = (viewport_width * 0.5).min(800.0).max(280.0);
+
+        // Hide sidebar by default on small viewports (matches the 768px CSS breakpoint)
+        let initial_sidebar_visible = viewport_width > 768.0;
+
+        Self {
+            cards: RwSignal::new(Vec::new()),
+            tags: RwSignal::new(Vec::new()),
+            root: RwSignal::new(None),
+            filter: RwSignal::new(parse_filter_from_params(&params)),
+            due_date_filter: RwSignal::new(parse_due_date_filter_from_params(&params)),
+            sort_order: RwSignal::new(parse_sort_from_params(&params)),
+            tag_filter: RwSignal::new({
+                let tags = parse_tags_from_params(&params);
+                if parse_no_tags_from_params(&params)
+                    && parse_tag_mode_from_params(&params) == TagFilterMode::And
+                {
+                    Vec::new()
+                } else {
+                    tags
+                }
+            }),
+            tag_filter_mode: RwSignal::new({
+                let mode = parse_tag_mode_from_params(&params);
+                if parse_no_tags_from_params(&params) && mode == TagFilterMode::And {
+                    TagFilterMode::Or
+                } else {
+                    mode
+                }
+            }),
+            no_tags_filter: RwSignal::new(parse_no_tags_from_params(&params)),
+            search_query: RwSignal::new(String::new()),
+            selected_card: RwSignal::new(parse_selected_card_from_params(&params)),
+            sidebar_visible: RwSignal::new(initial_sidebar_visible),
+            sidebar_width: RwSignal::new(180.0),
+            detail_width: RwSignal::new(initial_detail_width),
+            connection_status: RwSignal::new(ConnectionStatus::Disconnected),
+            server_url: RwSignal::new(derive_wt_url()),
+            creating_new: RwSignal::new(false),
+            editing: RwSignal::new(false),
+            has_unsaved_changes: RwSignal::new(false),
+            last_synced: RwSignal::new(None),
+            deleted_count: RwSignal::new(0),
+            tick: RwSignal::new(0),
+            linked_card_filter: RwSignal::new(parse_linked_cards_from_params(&params)),
+        }
+    }
+
+    /// Replace or insert a card in the local card list.
+    pub fn upsert_card(&self, card: Card) {
+        let card_id = card.id();
+        self.cards.update(|cards| {
+            cards.retain(|c| c.id() != card_id);
+            cards.push(card);
+        });
+    }
+
+    /// Derived signal: filtered cards based on current filter, tag selections, and search query.
+    /// Cards sorted according to current sort order.
+    pub fn filtered_cards(&self) -> Memo<Vec<Card>> {
+        let cards = self.cards;
+        let blaze_filter = self.filter;
+        let due_date_filter = self.due_date_filter;
+        let tag_filter = self.tag_filter;
+        let tag_filter_mode = self.tag_filter_mode;
+        let no_tags_filter = self.no_tags_filter;
+        let search_query = self.search_query;
+        let sort_order = self.sort_order;
+        let linked_card_filter = self.linked_card_filter;
+
+        Memo::new(move |_| {
+            let mut result = cards.get();
+            filter::apply_all_filters(
+                &mut result,
+                &linked_card_filter.get(),
+                blaze_filter.get(),
+                &search_query.get(),
+                &tag_filter.get(),
+                tag_filter_mode.get(),
+                no_tags_filter.get(),
+            );
+            filter::apply_due_date_filter(&mut result, due_date_filter.get());
+            filter::sort_cards(&mut result, sort_order.get());
+            result
+        })
+    }
+}

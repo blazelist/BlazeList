@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+    "clients/dev-seeder",
+    "clients/lib",
+    "clients/wasm",
+    "protocol",
+    "server",
+]
+default-members = [
+    "clients/dev-seeder",
+    "clients/lib",
+    "protocol",
+    "server",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+blazelist-client-lib = { path = "clients/lib" }
+blazelist-protocol = { path = "protocol" }
+blake3 = { version = "1", features = ["serde"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock", "std"] }
+clap = { version = "4", features = ["derive"] }
+comrak = { version = "0.50", default-features = false }
+criterion = { version = "0.8", features = ["html_reports"] }
+expect-test = "1"
+postcard = { version = "1", features = ["alloc"] }
+quinn = "0.11"
+rand = "0.10"
+rgb = { version = "0.8", features = ["serde"] }
+regex = "1"
+rcgen = "0.14"
+rusqlite = { version = "0.38", features = ["bundled"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+semver = { version = "1", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+wtransport = "0.7"
+
+[workspace.lints.clippy]
+module_inception = "allow"
+# rusqlite::Connection uses an internal RefCell and requires exclusive
+# access even for reads, so RwLock read guards are not actually usable.
+readonly_write_lock = "allow"

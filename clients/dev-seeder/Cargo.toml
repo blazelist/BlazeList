@@ -1,0 +1,25 @@
+[package]
+name = "blazelist-dev-seeder"
+version = "1.0.0"
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "blazelist-dev-seeder"
+path = "src/main.rs"
+
+[dependencies]
+blazelist-protocol.workspace = true
+chrono.workspace = true
+clap.workspace = true
+fake = "4"
+quinn.workspace = true
+# fake uses rand 0.9 internally; these must match fake's expected version.
+rand = "0.9"
+rand_chacha = "0.9"
+rgb.workspace = true
+rustls.workspace = true
+tokio.workspace = true
+uuid.workspace = true

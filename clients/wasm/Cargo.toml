@@ -1,0 +1,70 @@
+[package]
+name = "blazelist-wasm"
+version = "1.0.0"
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+blazelist-client-lib = { path = "../lib", features = ["wasm"] }
+blazelist-protocol = { path = "../../protocol", default-features = false }
+rgb = { version = "0.8", features = ["serde"] }
+
+# UI framework
+leptos = { version = "0.8", features = ["csr"] }
+
+# WebTransport via web-sys
+web-sys = { version = "0.3", features = [
+    "Clipboard",
+    "Document",
+    "DomStringMap",
+    "Element",
+    "EventTarget",
+    "History",
+    "HtmlElement",
+    "HtmlInputElement",
+    "Location",
+    "MouseEvent",
+    "Navigator",
+    "Node",
+    "NodeList",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "ReadableStreamReadResult",
+    "Url",
+    "UrlSearchParams",
+    "WebTransport",
+    "WebTransportBidirectionalStream",
+    "WebTransportCloseInfo",
+    "WebTransportHash",
+    "WebTransportOptions",
+    "WebTransportReceiveStream",
+    "WebTransportSendStream",
+    "Window",
+    "WritableStream",
+    "WritableStreamDefaultWriter",
+] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+
+# Serialization
+postcard = { version = "1", features = ["alloc"] }
+serde.workspace = true
+
+# WASM-compatible features for shared deps
+uuid = { version = "1", features = ["v4", "serde", "js"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "wasmbind", "std"] }
+blake3 = { version = "1", features = ["serde"] }
+
+# WASM entropy source (needed by rand, uuid, etc.)
+getrandom = { version = "0.4", features = ["wasm_js"] }
+
+# Markdown rendering
+comrak = { version = "0.50", default-features = false }
+
+# Logging
+log = "0.4"
+console_log = "1"
+console_error_panic_hook = "0.1"

@@ -1,0 +1,32 @@
+# Docker Compose for BlazeList.
+#
+# Ports are bound to 127.0.0.1. To expose on all interfaces, use
+# 0.0.0.0 (e.g., "0.0.0.0:47800:47800").
+#
+# The container runs as UID:GID 1000:1000 by default. To override:
+#   user: "5000:5000"
+
+services:
+  blazelist:
+    build: .
+    ports:
+      # - "127.0.0.1:47200:47200/udp" # QUIC — uncomment for native clients or the dev-seeder
+      - "127.0.0.1:47400:47400/udp"   # WebTransport (browser clients)
+      - "127.0.0.1:47600:47600"       # HTTP cert-hash endpoint
+      - "127.0.0.1:47800:47800"       # WASM client (HTTPS)
+    volumes:
+      - blazelist-data:/data
+    environment:
+      # When the server detects a database created by a different major
+      # protocol version (i.e. a breaking schema change), it will refuse
+      # to start unless this variable is set to "true".
+      #
+      # Automatic migration is currently NOT implemented — enabling this
+      # flag will cause the server to exit with a "not yet implemented"
+      # error.  It exists so the upgrade path is explicit and opt-in
+      # once migration logic is added in the future.
+      BLAZELIST_ALLOW_IRREVERSIBLE_AUTOMATIC_UPGRADE_MIGRATION: "false"
+    command: ["--db", "/data/blazelist.db"]
+
+volumes:
+  blazelist-data:
