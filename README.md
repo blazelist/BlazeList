@@ -5,7 +5,7 @@
 
 A TODO list of sorts—one list to rule them all: centered around a mono-list called the Blaze List.
 
-Designed to scale to thousands of cards without introducing noticeable latency or lag, with local caching and non-destructive sync.
+Designed to scale to thousands of cards without introducing noticeable latency or lag.
 
 </div>
 
