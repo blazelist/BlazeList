@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] - 2026-03-15
+
+### Added
+
+- "Include tags in search" setting (default: enabled) — search matches card
+  content and tag names; the "no tags" special filter is excluded from search
+- `BLAZELIST_DEFAULT_SEARCH_TAGS` server-side environment variable
+- UI scale setting (75 % - 200 %) to increase or decrease the size of the
+  entire interface
+- `BLAZELIST_DEFAULT_UI_SCALE` server-side environment variable
+- UI density setting: compact (default, unchanged) or cozy (larger tag dots,
+  more spacing between cards)
+- `BLAZELIST_DEFAULT_UI_DENSITY` server-side environment variable
+- Keyboard shortcuts for due dates: `t` (set to today), `T` (set to tomorrow),
+  `C` (clear due date)
+- Keyboard shortcut `,` to open settings
+- Keyboard shortcuts panel as a normal pane (like settings) instead of a popup
+  overlay — press `?` or click "View shortcuts" in settings
+- Touch swipe gestures on cards (disabled by default, enable in settings):
+  swipe right to blaze/extinguish, swipe left to set due date to today
+  (or tomorrow if already today)
+- `BLAZELIST_DEFAULT_TOUCH_SWIPE` server-side environment variable
+- Auto-save for new cards — seamlessly transitions to editing mode after the
+  initial save without losing editor state
+- Offline card and tag operations with a pending push queue that drains
+  automatically on reconnect
+- Tag creation uses the same color picker style as editing an existing tag;
+  default color shown as placeholder when no color is explicitly selected
+
+### Changed
+
+- Auto-save while editing is now disabled by default (was enabled)
+- Keyboard shortcuts help is now a pane in the detail panel area instead of a
+  modal overlay
+- Pane transitions (settings, shortcuts, card detail) share an unsaved-changes
+  guard that prompts before discarding edits
+- Linked card UUID underlines are now colored green for active cards and red
+  for blazed cards, matching the card header status color
+- Markdown horizontal rule (`---`) styling improved with balanced spacing and
+  slightly brighter color
+
+### Fixed
+
+- Offline queue no longer silently drops cards on `DuplicatePriority` — the
+  flush now recomputes priority (with rebalancing if gaps are exhausted) and
+  retries the push
+- Auto-sync no longer destroys unsaved editor content — the detail panel uses
+  a memoized open signal to prevent unnecessary re-renders
+- Query parameters now update when saving a new card, keeping the URL in sync
+  with the selected card
+- Reconnect no longer gets stuck in "Connecting..." — simplified to a fixed
+  5-second retry instead of exponential backoff
+
+### Removed
+
+- Drag & drop card reorder option and all associated drag-and-drop handlers
+- `BLAZELIST_DEFAULT_DRAG_DROP` server-side environment variable
+
 ## [2.0.0] - 2026-03-15
 
 ### Added

@@ -2,7 +2,6 @@
 ///
 /// These settings are not synced to the server — they stay on the device.
 
-const STORAGE_KEY_DRAG_DROP: &str = "blazelist_drag_drop_reorder";
 const STORAGE_KEY_SHOW_PREVIEW: &str = "blazelist_show_preview";
 const STORAGE_KEY_AUTO_SAVE: &str = "blazelist_auto_save";
 const STORAGE_KEY_AUTO_SAVE_DELAY: &str = "blazelist_auto_save_delay";
@@ -11,17 +10,24 @@ const STORAGE_KEY_AUTO_SYNC_INTERVAL: &str = "blazelist_auto_sync_interval";
 const STORAGE_KEY_DEBOUNCE_ENABLED: &str = "blazelist_debounce_enabled";
 const STORAGE_KEY_DEBOUNCE_DELAY: &str = "blazelist_debounce_delay";
 const STORAGE_KEY_KEYBOARD_SHORTCUTS: &str = "blazelist_keyboard_shortcuts";
+const STORAGE_KEY_SEARCH_TAGS: &str = "blazelist_search_tags";
+const STORAGE_KEY_UI_SCALE: &str = "blazelist_ui_scale";
+const STORAGE_KEY_UI_DENSITY: &str = "blazelist_ui_density";
+const STORAGE_KEY_TOUCH_SWIPE: &str = "blazelist_touch_swipe";
 
 /// Default values (used when localStorage has no value and no server override).
-pub const DEFAULT_DRAG_DROP: bool = false;
 pub const DEFAULT_SHOW_PREVIEW: bool = false;
-pub const DEFAULT_AUTO_SAVE: bool = true;
+pub const DEFAULT_AUTO_SAVE: bool = false;
 pub const DEFAULT_AUTO_SAVE_DELAY: u32 = 5;
 pub const DEFAULT_AUTO_SYNC: bool = true;
 pub const DEFAULT_AUTO_SYNC_INTERVAL: u32 = 10;
 pub const DEFAULT_DEBOUNCE_ENABLED: bool = false;
 pub const DEFAULT_DEBOUNCE_DELAY: u32 = 5;
 pub const DEFAULT_KEYBOARD_SHORTCUTS: bool = true;
+pub const DEFAULT_SEARCH_TAGS: bool = true;
+pub const DEFAULT_UI_SCALE: u32 = 100;
+pub const DEFAULT_UI_DENSITY: &str = "compact";
+pub const DEFAULT_TOUCH_SWIPE: bool = false;
 
 fn local_storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok()?
@@ -55,9 +61,20 @@ fn save_u32(key: &str, value: u32) {
     }
 }
 
+/// Read a string setting. Returns `None` if not set.
+fn load_string(key: &str) -> Option<String> {
+    local_storage().and_then(|s| s.get_item(key).ok()?)
+}
+
+/// Save a string setting.
+fn save_string(key: &str, value: &str) {
+    if let Some(storage) = local_storage() {
+        let _ = storage.set_item(key, value);
+    }
+}
+
 // -- "has" checks: true if the user has explicitly set a value in localStorage --
 
-pub fn has_drag_drop_reorder() -> bool { load_bool(STORAGE_KEY_DRAG_DROP).is_some() }
 pub fn has_show_preview() -> bool { load_bool(STORAGE_KEY_SHOW_PREVIEW).is_some() }
 pub fn has_auto_save() -> bool { load_bool(STORAGE_KEY_AUTO_SAVE).is_some() }
 pub fn has_auto_save_delay() -> bool { load_u32(STORAGE_KEY_AUTO_SAVE_DELAY).is_some() }
@@ -66,14 +83,10 @@ pub fn has_auto_sync_interval() -> bool { load_u32(STORAGE_KEY_AUTO_SYNC_INTERVA
 pub fn has_debounce_enabled() -> bool { load_bool(STORAGE_KEY_DEBOUNCE_ENABLED).is_some() }
 pub fn has_debounce_delay() -> bool { load_u32(STORAGE_KEY_DEBOUNCE_DELAY).is_some() }
 pub fn has_keyboard_shortcuts() -> bool { load_bool(STORAGE_KEY_KEYBOARD_SHORTCUTS).is_some() }
-
-pub fn load_drag_drop_reorder() -> bool {
-    load_bool(STORAGE_KEY_DRAG_DROP).unwrap_or(DEFAULT_DRAG_DROP)
-}
-
-pub fn save_drag_drop_reorder(enabled: bool) {
-    save_bool(STORAGE_KEY_DRAG_DROP, enabled);
-}
+pub fn has_search_tags() -> bool { load_bool(STORAGE_KEY_SEARCH_TAGS).is_some() }
+pub fn has_ui_scale() -> bool { load_u32(STORAGE_KEY_UI_SCALE).is_some() }
+pub fn has_ui_density() -> bool { load_string(STORAGE_KEY_UI_DENSITY).is_some() }
+pub fn has_touch_swipe() -> bool { load_bool(STORAGE_KEY_TOUCH_SWIPE).is_some() }
 
 pub fn load_show_preview() -> bool {
     load_bool(STORAGE_KEY_SHOW_PREVIEW).unwrap_or(DEFAULT_SHOW_PREVIEW)
@@ -137,4 +150,36 @@ pub fn load_keyboard_shortcuts() -> bool {
 
 pub fn save_keyboard_shortcuts(enabled: bool) {
     save_bool(STORAGE_KEY_KEYBOARD_SHORTCUTS, enabled);
+}
+
+pub fn load_search_tags() -> bool {
+    load_bool(STORAGE_KEY_SEARCH_TAGS).unwrap_or(DEFAULT_SEARCH_TAGS)
+}
+
+pub fn save_search_tags(enabled: bool) {
+    save_bool(STORAGE_KEY_SEARCH_TAGS, enabled);
+}
+
+pub fn load_ui_scale() -> u32 {
+    load_u32(STORAGE_KEY_UI_SCALE).unwrap_or(DEFAULT_UI_SCALE)
+}
+
+pub fn save_ui_scale(pct: u32) {
+    save_u32(STORAGE_KEY_UI_SCALE, pct);
+}
+
+pub fn load_ui_density() -> String {
+    load_string(STORAGE_KEY_UI_DENSITY).unwrap_or_else(|| DEFAULT_UI_DENSITY.to_string())
+}
+
+pub fn save_ui_density(density: &str) {
+    save_string(STORAGE_KEY_UI_DENSITY, density);
+}
+
+pub fn load_touch_swipe() -> bool {
+    load_bool(STORAGE_KEY_TOUCH_SWIPE).unwrap_or(DEFAULT_TOUCH_SWIPE)
+}
+
+pub fn save_touch_swipe(enabled: bool) {
+    save_bool(STORAGE_KEY_TOUCH_SWIPE, enabled);
 }

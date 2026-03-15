@@ -12,6 +12,8 @@
     padding: 0.5rem 0.75rem 0.5rem 0.5rem;
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border);
+    position: relative;
+    flex-wrap: wrap;
 }
 
 .header-left {
@@ -72,6 +74,10 @@
 
 .sync-sep {
     color: var(--text-muted);
+}
+
+.sync-queued {
+    color: var(--due-overdue);
 }
 
 .status-connected { color: var(--status-connected); }
@@ -173,6 +179,30 @@
     color: var(--text-primary);
     font-size: 0.78rem;
     text-align: center;
+}
+
+.settings-select {
+    padding: 0.25rem 0.35rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 0.78rem;
+}
+
+.settings-link-btn {
+    background: none;
+    border: none;
+    color: var(--accent);
+    cursor: pointer;
+    font-size: 0.62rem;
+    font-style: italic;
+    padding: 0;
+    text-decoration: underline;
+}
+
+.settings-link-btn:hover {
+    color: var(--accent-hover);
 }
 
 

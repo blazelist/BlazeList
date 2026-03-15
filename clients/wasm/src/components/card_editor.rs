@@ -1,8 +1,9 @@
 use crate::components::hooks::use_click_outside_close;
 use crate::state::store::{
     AppState, AutoSaveStatus, DueDatePreset, NewCardPosition, format_due_date_badge, get_client,
-    tag_chip_style,
+    sync_query_params, tag_chip_style,
 };
+use crate::state::sync::push_card_or_queue;
 use blazelist_client_lib::client::Client as _;
 use blazelist_client_lib::priority::{
     InsertPosition, Placement, build_shifted_versions, place_card,
@@ -85,8 +86,11 @@ pub fn CardEditor(
     });
 
     let stored_editing = StoredValue::new(editing_card.clone());
+    // Tracks whether a server-side card exists (true for edits, becomes
+    // true after auto-save creates a new card).
+    let card_created = RwSignal::new(is_editing);
 
-    // --- Auto-save machinery (only for editing existing cards) ---
+    // --- Auto-save machinery ---
     let auto_save_status = state.auto_save_status;
     let interval_handle = RwSignal::new(0i32);
     let saved_timeout_handle = RwSignal::new(0i32);
@@ -105,8 +109,8 @@ pub fn CardEditor(
         }
     };
 
-    if is_editing {
-        // Watch for dirty changes and manage countdown.
+    // Auto-save: watch for dirty changes and manage countdown.
+    {
         Effect::new(move |_| {
             let dirty = state.has_unsaved_changes.get();
             let auto_save = state.auto_save_enabled.get();
@@ -123,7 +127,13 @@ pub fn CardEditor(
                 return;
             }
 
-            // Dirty and auto-save enabled: start countdown.
+            // Dirty and auto-save enabled: start countdown if not already running.
+            // This avoids restarting the timer on every keystroke (debounce),
+            // so the save fires promptly after the initial change.
+            let current_status = auto_save_status.get_untracked();
+            if matches!(current_status, AutoSaveStatus::Countdown(_) | AutoSaveStatus::Saving) {
+                return;
+            }
             clear_auto_save_timers();
             auto_save_status.set(AutoSaveStatus::Countdown(delay));
 
@@ -159,25 +169,100 @@ pub fn CardEditor(
                                 selected_due,
                             );
 
-                            let card_for_update = card.clone();
+                            // Optimistic local update.
+                            state.upsert_card(card.clone());
+                            leptos::task::spawn_local(async move {
+                                push_card_or_queue(&state, card.clone()).await;
+                                // Update base snapshot so dirty resets.
+                                stored_editing.set_value(Some(card));
+                                orig_content.set(text);
+                                let mut sorted_tags = tags;
+                                sorted_tags.sort();
+                                orig_tags.set(sorted_tags);
+                                orig_due_date.set(selected_due);
+
+                                auto_save_status.set(AutoSaveStatus::Saved);
+                                // Clear "Saved" after 2s.
+                                let reset_cb = Closure::once(move || {
+                                    if auto_save_status.get_untracked() == AutoSaveStatus::Saved
+                                    {
+                                        auto_save_status.set(AutoSaveStatus::Idle);
+                                    }
+                                    saved_timeout_handle.set(0);
+                                });
+                                let func = reset_cb.into_js_value();
+                                let h = set_timeout_js(func.unchecked_ref(), 2000);
+                                saved_timeout_handle.set(h);
+                            });
+                        } else {
+                            // New card auto-save: create the card and push.
+                            let new_id = Uuid::new_v4();
+                            let mut cards_for_placement = state.cards.get_untracked();
+                            blazelist_client_lib::filter::sort_by_priority(&mut cards_for_placement);
+                            let position = state.new_card_position.get_untracked();
+                            let insert_pos = match position {
+                                NewCardPosition::Top => InsertPosition::Top,
+                                NewCardPosition::Bottom => InsertPosition::Bottom,
+                                NewCardPosition::Above(ref_id) => {
+                                    match cards_for_placement.iter().position(|c| c.id() == ref_id) {
+                                        Some(idx) => InsertPosition::At(idx),
+                                        None => InsertPosition::Bottom,
+                                    }
+                                }
+                                NewCardPosition::Below(ref_id) => {
+                                    match cards_for_placement.iter().position(|c| c.id() == ref_id) {
+                                        Some(idx) => InsertPosition::At(idx + 1),
+                                        None => InsertPosition::Bottom,
+                                    }
+                                }
+                            };
+                            let placement = place_card(&cards_for_placement, insert_pos);
+                            let (priority, shifted) = match placement {
+                                Placement::Simple(p) => (p, Vec::new()),
+                                Placement::Rebalanced { priority, shifted } => (priority, shifted),
+                            };
+                            let card = Card::first(
+                                new_id, text.clone(), priority, tags.clone(),
+                                false, Utc::now(), selected_due,
+                            );
+                            let shifted_cards = if shifted.is_empty() {
+                                Vec::new()
+                            } else {
+                                build_shifted_versions(&shifted, &cards_for_placement)
+                            };
                             leptos::task::spawn_local(async move {
                                 if let Some(client) = get_client() {
-                                    if let Err(e) = client.push_card(card.clone()).await {
-                                        log::error!("Auto-save failed: {e}");
-                                        auto_save_status.set(AutoSaveStatus::Idle);
-                                        return;
+                                    if shifted_cards.is_empty() {
+                                        if let Err(e) = client.push_card(card.clone()).await {
+                                            log::error!("Auto-save new card failed: {e}");
+                                            auto_save_status.set(AutoSaveStatus::Idle);
+                                            return;
+                                        }
+                                    } else {
+                                        let mut items: Vec<PushItem> = shifted_cards
+                                            .into_iter()
+                                            .map(|c| PushItem::Cards(vec![c]))
+                                            .collect();
+                                        items.push(PushItem::Cards(vec![card.clone()]));
+                                        if let Err(e) = client.push_batch(items).await {
+                                            log::error!("Auto-save new card failed: {e}");
+                                            auto_save_status.set(AutoSaveStatus::Idle);
+                                            return;
+                                        }
                                     }
                                     state.upsert_card(card.clone());
-                                    // Update base snapshot so dirty resets.
+                                    // Keep the editor alive — update internal state so
+                                    // subsequent auto-saves use the existing-card path.
                                     stored_editing.set_value(Some(card));
                                     orig_content.set(text);
                                     let mut sorted_tags = tags;
                                     sorted_tags.sort();
                                     orig_tags.set(sorted_tags);
                                     orig_due_date.set(selected_due);
-
+                                    card_created.set(true);
                                     auto_save_status.set(AutoSaveStatus::Saved);
-                                    // Clear "Saved" after 2s.
+                                    state.selected_card.set(Some(new_id));
+                                    sync_query_params(&state);
                                     let reset_cb = Closure::once(move || {
                                         if auto_save_status.get_untracked() == AutoSaveStatus::Saved
                                         {
@@ -190,8 +275,6 @@ pub fn CardEditor(
                                     saved_timeout_handle.set(h);
                                 }
                             });
-                            // Optimistic local update while push is in flight.
-                            state.upsert_card(card_for_update);
                         }
                     }
                     AutoSaveStatus::Countdown(n) if n > 1 => {
@@ -211,6 +294,8 @@ pub fn CardEditor(
     });
 
     // --- Save handler (manual save / new card) ---
+    // Works offline: creates the card locally and queues the push for when
+    // connectivity is restored.
     let on_submit = move |_| {
         let state = state.clone();
         let on_save = on_save.clone();
@@ -226,39 +311,48 @@ pub fn CardEditor(
 
         let editing = stored_editing.get_value();
         leptos::task::spawn_local(async move {
-            if let Some(client) = get_client() {
-                let card = if let Some(existing) = editing {
-                    existing.next(
-                        text,
-                        existing.priority(),
+            let card = if let Some(existing) = editing {
+                existing.next(
+                    text,
+                    existing.priority(),
+                    tags,
+                    existing.blazed(),
+                    Utc::now(),
+                    selected_due,
+                )
+            } else {
+                let mut cards = state.cards.get_untracked();
+                blazelist_client_lib::filter::sort_by_priority(&mut cards);
+                let position = state.new_card_position.get_untracked();
+                let insert_pos = match position {
+                    NewCardPosition::Top => InsertPosition::Top,
+                    NewCardPosition::Bottom => InsertPosition::Bottom,
+                    NewCardPosition::Above(ref_id) => {
+                        match cards.iter().position(|c| c.id() == ref_id) {
+                            Some(idx) => InsertPosition::At(idx),
+                            None => InsertPosition::Bottom,
+                        }
+                    }
+                    NewCardPosition::Below(ref_id) => {
+                        match cards.iter().position(|c| c.id() == ref_id) {
+                            Some(idx) => InsertPosition::At(idx + 1),
+                            None => InsertPosition::Bottom,
+                        }
+                    }
+                };
+                let placement = place_card(&cards, insert_pos);
+                match placement {
+                    Placement::Simple(priority) => Card::first(
+                        Uuid::new_v4(),
+                        text.clone(),
+                        priority,
                         tags,
-                        existing.blazed(),
+                        false,
                         Utc::now(),
                         selected_due,
-                    )
-                } else {
-                    let mut cards = state.cards.get_untracked();
-                    blazelist_client_lib::filter::sort_by_priority(&mut cards);
-                    let position = state.new_card_position.get_untracked();
-                    let insert_pos = match position {
-                        NewCardPosition::Top => InsertPosition::Top,
-                        NewCardPosition::Bottom => InsertPosition::Bottom,
-                        NewCardPosition::Above(ref_id) => {
-                            match cards.iter().position(|c| c.id() == ref_id) {
-                                Some(idx) => InsertPosition::At(idx),
-                                None => InsertPosition::Bottom,
-                            }
-                        }
-                        NewCardPosition::Below(ref_id) => {
-                            match cards.iter().position(|c| c.id() == ref_id) {
-                                Some(idx) => InsertPosition::At(idx + 1),
-                                None => InsertPosition::Bottom,
-                            }
-                        }
-                    };
-                    let placement = place_card(&cards, insert_pos);
-                    match placement {
-                        Placement::Simple(priority) => Card::first(
+                    ),
+                    Placement::Rebalanced { priority, shifted } => {
+                        let card = Card::first(
                             Uuid::new_v4(),
                             text.clone(),
                             priority,
@@ -266,46 +360,43 @@ pub fn CardEditor(
                             false,
                             Utc::now(),
                             selected_due,
-                        ),
-                        Placement::Rebalanced { priority, shifted } => {
-                            let card = Card::first(
-                                Uuid::new_v4(),
-                                text.clone(),
-                                priority,
-                                tags,
-                                false,
-                                Utc::now(),
-                                selected_due,
-                            );
-                            let shifted_cards = build_shifted_versions(&shifted, &cards);
+                        );
+                        // Update local state optimistically.
+                        let shifted_cards = build_shifted_versions(&shifted, &cards);
+                        for sc in &shifted_cards {
+                            state.upsert_card(sc.clone());
+                        }
+                        let new_id = card.id();
+                        state.upsert_card(card.clone());
+                        state.selected_card.set(Some(new_id));
+                        sync_query_params(&state);
+                        // Push (or queue) all shifted + new card.
+                        if let Some(client) = get_client() {
                             let mut items: Vec<PushItem> = shifted_cards
                                 .into_iter()
                                 .map(|c| PushItem::Cards(vec![c]))
                                 .collect();
                             items.push(PushItem::Cards(vec![card.clone()]));
                             if let Err(e) = client.push_batch(items).await {
-                                log::error!("Failed to push rebalanced card: {e}");
-                                return;
+                                log::warn!("Batch push failed, queuing: {e}");
+                                push_card_or_queue(&state, card).await;
                             }
-                            let new_id = card.id();
-                            state.upsert_card(card);
-                            state.selected_card.set(Some(new_id));
-                            on_save.run(());
-                            return;
+                        } else {
+                            push_card_or_queue(&state, card).await;
                         }
+                        on_save.run(());
+                        return;
                     }
-                };
-                if let Err(e) = client.push_card(card.clone()).await {
-                    log::error!("Failed to save card: {e}");
-                    return;
                 }
-                let new_id = card.id();
-                state.upsert_card(card);
-                if !is_editing {
-                    state.selected_card.set(Some(new_id));
-                }
-                on_save.run(());
+            };
+            let new_id = card.id();
+            state.upsert_card(card.clone());
+            if !is_editing {
+                state.selected_card.set(Some(new_id));
+                sync_query_params(&state);
             }
+            on_save.run(());
+            push_card_or_queue(&state, card).await;
         });
     };
 
@@ -317,7 +408,7 @@ pub fn CardEditor(
         comrak::markdown_to_html(&text, &blazelist_client_lib::display::markdown_options())
     };
 
-    let save_label = if is_editing { "Update" } else { "Save" };
+    let save_label = move || if card_created.get() { "Update" } else { "Save" };
 
     let editor_body_class = move || {
         if show_preview.get() {
@@ -344,7 +435,7 @@ pub fn CardEditor(
     };
 
     let auto_save_indicator = move || {
-        if !is_editing || !state.auto_save_enabled.get() {
+        if !state.auto_save_enabled.get() {
             return String::new();
         }
         match auto_save_status.get() {

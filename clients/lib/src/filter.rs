@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 
 use blazelist_protocol::CardFilter;
-use blazelist_protocol::{Card, Entity};
+use blazelist_protocol::{Card, Entity, Tag};
 use chrono::{NaiveDate, Utc};
 use uuid::Uuid;
 
@@ -103,15 +103,38 @@ pub fn apply_blaze_filter(cards: &mut Vec<Card>, filter: CardFilter) {
     }
 }
 
-/// Apply a search query filter (case-insensitive content match).
+/// Apply a search query filter (case-insensitive content match, optionally
+/// including tag names).
+///
+/// When `search_tags` is `true`, a card also matches if any of its tags'
+/// titles contain the query. The "no tags" special tag is excluded.
 ///
 /// No-op if `query` is empty.
-pub fn apply_search_filter(cards: &mut Vec<Card>, query: &str) {
+pub fn apply_search_filter(
+    cards: &mut Vec<Card>,
+    query: &str,
+    search_tags: bool,
+    all_tags: &[Tag],
+) {
     if query.is_empty() {
         return;
     }
     let q = query.to_lowercase();
-    cards.retain(|c| c.content().to_lowercase().contains(&q));
+    cards.retain(|c| {
+        if c.content().to_lowercase().contains(&q) {
+            return true;
+        }
+        if search_tags {
+            for tag_id in c.tags() {
+                if let Some(tag) = all_tags.iter().find(|t| t.id() == *tag_id) {
+                    if tag.title().to_lowercase().contains(&q) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    });
 }
 
 /// Apply a tag filter using the given mode (AND/OR), optionally including
@@ -260,10 +283,12 @@ pub fn apply_all_filters(
     selected_tags: &[Uuid],
     tag_mode: TagFilterMode,
     no_tags: bool,
+    search_tags: bool,
+    all_tags: &[Tag],
 ) {
     apply_linked_card_filter(cards, linked_ids);
     apply_blaze_filter(cards, blaze_filter);
-    apply_search_filter(cards, search_query);
+    apply_search_filter(cards, search_query, search_tags, all_tags);
     apply_tag_filter(cards, selected_tags, tag_mode, no_tags);
 }
 
@@ -493,7 +518,7 @@ mod tests {
     #[test]
     fn search_filter_matches() {
         let mut cards = sample_cards();
-        apply_search_filter(&mut cards, "groceries");
+        apply_search_filter(&mut cards, "groceries", false, &[]);
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].content(), "Buy groceries");
     }
@@ -501,7 +526,7 @@ mod tests {
     #[test]
     fn search_filter_case_insensitive() {
         let mut cards = sample_cards();
-        apply_search_filter(&mut cards, "DEPLOY");
+        apply_search_filter(&mut cards, "DEPLOY", false, &[]);
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].content(), "Deploy app");
     }
@@ -509,7 +534,7 @@ mod tests {
     #[test]
     fn search_filter_empty_query_noop() {
         let mut cards = sample_cards();
-        apply_search_filter(&mut cards, "");
+        apply_search_filter(&mut cards, "", false, &[]);
         assert_eq!(cards.len(), 3);
     }
 
@@ -593,6 +618,8 @@ mod tests {
             &[],
             TagFilterMode::Or,
             false,
+            false,
+            &[],
         );
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].content(), "Deploy app");
@@ -633,6 +660,8 @@ mod tests {
             &[],
             TagFilterMode::Or,
             false,
+            false,
+            &[],
         );
         assert_eq!(cards.len(), 2);
         assert_eq!(cards[0].content(), "Buy groceries");

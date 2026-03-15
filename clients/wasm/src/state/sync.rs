@@ -1,10 +1,14 @@
-use crate::state::store::{AppState, ConnectionStatus};
+use crate::state::store::{AppState, ConnectionStatus, get_client};
 use crate::storage;
 use crate::transport::client::Client;
 use blazelist_client_lib::client::Client as _;
 use blazelist_client_lib::error::ClientError;
+use blazelist_client_lib::filter::sort_by_priority;
+use blazelist_client_lib::priority::{build_shifted_versions, resolve_collision, Placement};
 use blazelist_client_lib::sync;
-use blazelist_protocol::{DeletedEntity, NonNegativeI64, ProtocolError, ZERO_HASH};
+use blazelist_protocol::{
+    Card, DeletedEntity, Entity, NonNegativeI64, ProtocolError, PushError, PushItem, ZERO_HASH,
+};
 use leptos::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -118,6 +122,9 @@ pub async fn incremental_sync(client: &Client, state: &AppState) -> Result<(), S
 
             save_local_state(state).await;
 
+            // Flush any offline-queued cards now that we have a working connection.
+            flush_offline_queue(client, state).await;
+
             Ok(())
         }
         Err(ClientError::Protocol(ProtocolError::RootHashMismatch { .. })) => {
@@ -128,13 +135,218 @@ pub async fn incremental_sync(client: &Client, state: &AppState) -> Result<(), S
             storage::clear_history_cache().await;
             DELETED_ENTITIES.with(|de| de.borrow_mut().clear());
             state.root.set(None);
-            initial_sync(client, state).await
+            let result = initial_sync(client, state).await;
+            if result.is_ok() {
+                flush_offline_queue(client, state).await;
+            }
+            result
         }
         Err(e) => {
             state.connection_status.set(ConnectionStatus::Connected);
             Err(e.to_string())
         }
     }
+}
+
+/// Push a card to the server, falling back to the offline queue on failure.
+///
+/// If the client is `None` (never connected) or the push fails with a
+/// connection error, the card is added to the offline queue and persisted
+/// to OPFS.  The queue is flushed automatically on the next successful sync.
+pub async fn push_card_or_queue(state: &AppState, card: Card) {
+    let card_id = card.id();
+    if let Some(client) = get_client() {
+        match client.push_card(card.clone()).await {
+            Ok(_) => {
+                // Remove any stale queued version of this card.
+                let had_queued = state.offline_queue.with_untracked(|q| q.iter().any(|c| c.id() == card_id));
+                if had_queued {
+                    state.offline_queue.update(|q| q.retain(|c| c.id() != card_id));
+                    storage::save_offline_queue(&state.offline_queue.get_untracked()).await;
+                }
+                return;
+            }
+            Err(e) => {
+                log::warn!("Push failed, queuing for later: {e}");
+            }
+        }
+    }
+    // Replace any existing entry for the same card (keep only the latest version).
+    state.offline_queue.update(|q| {
+        q.retain(|c| c.id() != card_id);
+        q.push(card);
+    });
+    storage::save_offline_queue(&state.offline_queue.get_untracked()).await;
+}
+
+/// Push a chain of card versions, falling back to queuing the latest on failure.
+///
+/// Tries `push_card_versions` when a client is available. If that fails or
+/// there is no client, the **last** version in the chain is queued (it
+/// represents the current state of the card). The server may see a version
+/// gap on reconnect, but the reconciliation in [`flush_offline_queue`] and
+/// the server's conflict handling ensure consistency.
+pub async fn push_versions_or_queue(state: &AppState, versions: Vec<Card>) {
+    if versions.is_empty() {
+        return;
+    }
+    let last = versions.last().unwrap().clone();
+    let card_id = last.id();
+    if let Some(client) = get_client() {
+        match client.push_card_versions(versions).await {
+            Ok(_) => {
+                let had_queued =
+                    state.offline_queue.with_untracked(|q| q.iter().any(|c| c.id() == card_id));
+                if had_queued {
+                    state.offline_queue.update(|q| q.retain(|c| c.id() != card_id));
+                    storage::save_offline_queue(&state.offline_queue.get_untracked()).await;
+                }
+                return;
+            }
+            Err(e) => {
+                log::warn!("Push versions failed, queuing latest: {e}");
+            }
+        }
+    }
+    state.offline_queue.update(|q| {
+        q.retain(|c| c.id() != card_id);
+        q.push(last);
+    });
+    storage::save_offline_queue(&state.offline_queue.get_untracked()).await;
+}
+
+/// Reconcile and flush the offline queue after a successful sync.
+///
+/// First drops any queued cards the server already has at the same or newer
+/// version (server is source of truth). Then pushes whatever remains.
+pub async fn flush_offline_queue(client: &Client, state: &AppState) {
+    let queue = state.offline_queue.get_untracked();
+    if queue.is_empty() {
+        return;
+    }
+
+    // Reconcile: drop queued cards the server already has (same or newer version).
+    let server_cards = state.cards.get_untracked();
+    let queue: Vec<Card> = queue
+        .into_iter()
+        .filter(|queued| {
+            match server_cards.iter().find(|sc| sc.id() == queued.id()) {
+                Some(server_card) if server_card.count() >= queued.count() => {
+                    log::info!("Dropping stale queued card {} (server has version {}; queued {})",
+                        queued.id(), server_card.count(), queued.count());
+                    false
+                }
+                _ => true,
+            }
+        })
+        .collect();
+
+    if queue.is_empty() {
+        state.offline_queue.set(Vec::new());
+        storage::save_offline_queue(&[]).await;
+        return;
+    }
+
+    let total = queue.len();
+    log::info!("Flushing {total} offline queued cards");
+    let mut remaining = Vec::new();
+    let mut hit_connection_error = false;
+
+    for card in queue {
+        if hit_connection_error {
+            remaining.push(card);
+            continue;
+        }
+        match client.push_card(card.clone()).await {
+            Ok(_) => {}
+            Err(ClientError::ConnectionLost) => {
+                log::warn!("Connection lost during flush, keeping remaining cards queued");
+                remaining.push(card);
+                hit_connection_error = true;
+            }
+            Err(ClientError::Protocol(ProtocolError::PushFailed(
+                PushError::DuplicatePriority { .. },
+            ))) => {
+                log::warn!("Priority collision for card {}, recomputing", card.id());
+                let mut cards = state.cards.get_untracked();
+                cards.retain(|c| c.id() != card.id());
+                sort_by_priority(&mut cards);
+
+                if card.ancestor_hash() != ZERO_HASH {
+                    // Existing card update with collision — keep for next cycle.
+                    remaining.push(card);
+                    continue;
+                }
+
+                let placement = resolve_collision(&cards, card.priority());
+                match placement {
+                    Placement::Simple(new_priority) => {
+                        let retry = Card::first(
+                            card.id(),
+                            card.content().to_string(),
+                            new_priority,
+                            card.tags().to_vec(),
+                            card.blazed(),
+                            card.created_at(),
+                            card.due_date(),
+                        );
+                        match client.push_card(retry.clone()).await {
+                            Ok(_) => {
+                                state.upsert_card(retry);
+                            }
+                            Err(ClientError::ConnectionLost) => {
+                                remaining.push(card);
+                                hit_connection_error = true;
+                            }
+                            Err(_) => {
+                                remaining.push(card);
+                            }
+                        }
+                    }
+                    Placement::Rebalanced { priority, shifted } => {
+                        let retry = Card::first(
+                            card.id(),
+                            card.content().to_string(),
+                            priority,
+                            card.tags().to_vec(),
+                            card.blazed(),
+                            card.created_at(),
+                            card.due_date(),
+                        );
+                        let shifted_cards = build_shifted_versions(&shifted, &cards);
+                        let mut items: Vec<PushItem> = shifted_cards
+                            .iter()
+                            .map(|c| PushItem::Cards(vec![c.clone()]))
+                            .collect();
+                        items.push(PushItem::Cards(vec![retry.clone()]));
+                        match client.push_batch(items).await {
+                            Ok(_) => {
+                                for sc in &shifted_cards {
+                                    state.upsert_card(sc.clone());
+                                }
+                                state.upsert_card(retry);
+                            }
+                            Err(ClientError::ConnectionLost) => {
+                                remaining.push(card);
+                                hit_connection_error = true;
+                            }
+                            Err(_) => {
+                                remaining.push(card);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                // Other non-connection errors (stale data, etc.) — drop to avoid
+                // blocking the queue permanently.
+                log::warn!("Dropping queued card (push rejected): {e}");
+            }
+        }
+    }
+
+    state.offline_queue.set(remaining.clone());
+    storage::save_offline_queue(&remaining).await;
 }
 
 /// Run the subscription loop, reading notifications until the stream breaks.

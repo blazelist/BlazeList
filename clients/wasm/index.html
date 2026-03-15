@@ -29,10 +29,19 @@
     <meta name="theme-color" content="#0c0c0f" />
 </head>
 <body>
+    <div id="app-loading" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;color:#888890;font-family:system-ui,sans-serif;">
+        <h1 style="font-size:1.2rem;font-weight:600;color:#d0d0d4;margin-bottom:0.5rem;">BlazeList</h1>
+        <p style="font-size:0.75rem;" id="loading-text">Loading&hellip;</p>
+    </div>
     <script>
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('/sw.js');
         }
+        // If WASM hasn't mounted after 8 seconds, show a helpful message.
+        setTimeout(function() {
+            var el = document.getElementById('loading-text');
+            if (el) el.textContent = 'Unable to load the app. Please check your connection and reload.';
+        }, 8000);
     </script>
 </body>
 </html>

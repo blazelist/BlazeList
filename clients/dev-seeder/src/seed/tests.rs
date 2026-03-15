@@ -216,10 +216,10 @@ fn resolve_priority_finds_midpoint_on_collision() {
 #[test]
 fn resolve_priority_handles_consecutive_values() {
     // Packed range: 10, 11, 12. Collide on 11.
+    // Both immediate gaps are size 1, so it falls through to the largest-gap scan.
     let used = BTreeSet::from([10, 11, 12]);
     let resolved = resolve_priority(11, &used);
     assert!(!used.contains(&resolved), "resolved priority must be free");
-    assert!(resolved >= 0, "priority must be non-negative");
 }
 
 #[test]

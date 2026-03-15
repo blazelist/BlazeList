@@ -207,7 +207,7 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
                                 let modified = v.modified_at().format("%Y-%m-%d %H:%M:%S UTC").to_string();
                                 let is_blazed = v.blazed();
                                 let priority = v.priority();
-                                let priority_pct = blazelist_protocol::priority_percentage(priority);
+                                let priority_pct = blazelist_client_lib::priority::priority_percentage(priority);
 
                                 let all_tags = state.tags.get_untracked();
                                 let mut tag_entries: Vec<(String, Option<rgb::RGB8>)> = v.tags().iter().filter_map(|tid| {

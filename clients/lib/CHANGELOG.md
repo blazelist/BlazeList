@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] - 2026-03-15
+
+### Added
+
+- Tag-inclusive search: `filter_cards` accepts an optional tag list to include
+  tag names in full-text search matching
+- Linked card preview underline coloring by status (active vs blazed)
+- `compute_priority` and `priority_percentage` functions (moved from protocol)
+- `resolve_collision` function for computing a valid priority when the desired
+  value is already taken by another card
+
+### Changed
+
+- Edge inserts (top/bottom of list) now cap priority jumps to ~32k instead of
+  halving the full i64 range, dramatically reducing rebalance frequency for
+  sequential insertions
+- Named constants for priority computation: `MAX_EDGE_GAP` (65,536) and
+  `JITTER_DIVISOR` (16)
+- Markdown horizontal rule rendering with balanced vertical spacing
+
 ## [2.0.0] - 2026-03-15
 
 ### Added

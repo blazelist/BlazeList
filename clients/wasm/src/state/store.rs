@@ -73,6 +73,23 @@ pub fn confirm_discard_changes(state: &AppState) -> bool {
     }
 }
 
+/// Switch to viewing a specific card. Guards unsaved changes, closes any open
+/// settings/shortcuts pane, clears editing state, and syncs query params.
+/// Returns `false` if the user cancels (due to unsaved changes).
+pub fn select_card_view(state: &AppState, card_id: Uuid) -> bool {
+    if !confirm_discard_changes(state) {
+        return false;
+    }
+    state.selected_card.set(Some(card_id));
+    state.editing.set(false);
+    state.creating_new.set(false);
+    state.creating_new_tag.set(false);
+    state.settings_open.set(false);
+    state.shortcuts_open.set(false);
+    sync_query_params(state);
+    true
+}
+
 thread_local! {
     static CLIENT: RefCell<Option<Rc<Client>>> = RefCell::new(None);
 }
@@ -150,8 +167,6 @@ pub struct AppState {
     /// When set, the filtered view shows only cards whose UUIDs are in this list.
     /// Used for "show linked cards" — contains the source card + its linked UUIDs.
     pub linked_card_filter: RwSignal<Vec<Uuid>>,
-    /// Device-local setting: allow drag-and-drop reordering of cards.
-    pub drag_drop_reorder: RwSignal<bool>,
     /// Device-local setting: show markdown preview by default when editing.
     pub show_preview: RwSignal<bool>,
     /// Device-local setting: whether push debounce is enabled.
@@ -176,6 +191,14 @@ pub struct AppState {
     pub push_debounce_countdown: RwSignal<u32>,
     /// Device-local setting: enable keyboard shortcuts.
     pub keyboard_shortcuts_enabled: RwSignal<bool>,
+    /// Device-local setting: include tags in search.
+    pub search_tags: RwSignal<bool>,
+    /// Device-local setting: UI scale percentage (100 = default).
+    pub ui_scale: RwSignal<u32>,
+    /// Device-local setting: UI density ("compact" or "cozy").
+    pub ui_density: RwSignal<String>,
+    /// Whether the keyboard shortcuts pane is open.
+    pub shortcuts_open: RwSignal<bool>,
     /// Pending card versions queued for debounced push.
     pub pending_versions: RwSignal<Vec<Card>>,
     /// ID of the card currently being debounced.
@@ -184,6 +207,10 @@ pub struct AppState {
     pub debounce_timeout_handle: RwSignal<i32>,
     /// Where the next new card should be placed.
     pub new_card_position: RwSignal<NewCardPosition>,
+    /// Cards queued for push while offline. Flushed on reconnect.
+    pub offline_queue: RwSignal<Vec<Card>>,
+    /// Device-local setting: enable touch swipe gestures on cards.
+    pub touch_swipe_enabled: RwSignal<bool>,
 }
 
 /// Reset all filter/view state to defaults and clear query params.
@@ -207,6 +234,7 @@ pub fn clear_all_state(state: &AppState) -> bool {
     state.has_unsaved_changes.set(false);
     state.linked_card_filter.set(Vec::new());
     state.settings_open.set(false);
+    state.shortcuts_open.set(false);
     sync_query_params(state);
     true
 }
@@ -270,7 +298,6 @@ impl AppState {
             reconnect_countdown: RwSignal::new(0),
             last_sync_duration_ms: RwSignal::new(None),
             linked_card_filter: RwSignal::new(parse_linked_cards_from_params(&params)),
-            drag_drop_reorder: RwSignal::new(settings::load_drag_drop_reorder()),
             show_preview: RwSignal::new(settings::load_show_preview()),
             debounce_enabled: RwSignal::new(settings::load_debounce_enabled()),
             debounce_delay_secs: RwSignal::new(settings::load_debounce_delay()),
@@ -283,10 +310,16 @@ impl AppState {
             auto_sync_countdown: RwSignal::new(0),
             push_debounce_countdown: RwSignal::new(0),
             keyboard_shortcuts_enabled: RwSignal::new(settings::load_keyboard_shortcuts()),
+            search_tags: RwSignal::new(settings::load_search_tags()),
+            ui_scale: RwSignal::new(settings::load_ui_scale()),
+            ui_density: RwSignal::new(settings::load_ui_density()),
+            shortcuts_open: RwSignal::new(false),
             pending_versions: RwSignal::new(Vec::new()),
             pending_card_id: RwSignal::new(None),
             debounce_timeout_handle: RwSignal::new(0),
             new_card_position: RwSignal::new(NewCardPosition::Bottom),
+            offline_queue: RwSignal::new(Vec::new()),
+            touch_swipe_enabled: RwSignal::new(settings::load_touch_swipe()),
         }
     }
 
@@ -303,6 +336,7 @@ impl AppState {
     /// Cards sorted according to current sort order.
     pub fn filtered_cards(&self) -> Memo<Vec<Card>> {
         let cards = self.cards;
+        let tags_signal = self.tags;
         let blaze_filter = self.filter;
         let due_date_filter = self.due_date_filter;
         let include_overdue = self.include_overdue;
@@ -312,9 +346,11 @@ impl AppState {
         let search_query = self.search_query;
         let sort_order = self.sort_order;
         let linked_card_filter = self.linked_card_filter;
+        let search_tags = self.search_tags;
 
         Memo::new(move |_| {
             let mut result = cards.get();
+            let all_tags = tags_signal.get();
             filter::apply_all_filters(
                 &mut result,
                 &linked_card_filter.get(),
@@ -323,6 +359,8 @@ impl AppState {
                 &tag_filter.get(),
                 tag_filter_mode.get(),
                 no_tags_filter.get(),
+                search_tags.get(),
+                &all_tags,
             );
             filter::apply_due_date_filter(&mut result, due_date_filter.get(), include_overdue.get());
             filter::sort_cards(&mut result, sort_order.get());

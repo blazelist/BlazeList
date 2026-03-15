@@ -135,18 +135,18 @@ pub(super) fn resolve_priority(priority: i64, used: &BTreeSet<i64>) -> i64 {
         .next()
         .copied()
         .unwrap_or(MAX_PRIORITY);
-    let lower = used.range(..priority).next_back().copied().unwrap_or(0);
+    let lower = used.range(..priority).next_back().copied().unwrap_or(i64::MIN);
 
-    let gap_above = upper - priority;
-    let gap_below = priority - lower;
+    let gap_above = upper as i128 - priority as i128;
+    let gap_below = priority as i128 - lower as i128;
 
     // Pick the gap with more room and use its midpoint.
     if gap_above >= gap_below && gap_above > 1 {
-        priority + gap_above / 2
+        (priority as i128 + gap_above / 2) as i64
     } else if gap_below > 1 {
-        lower + gap_below / 2
+        (lower as i128 + gap_below / 2) as i64
     } else if gap_above > 1 {
-        priority + gap_above / 2
+        (priority as i128 + gap_above / 2) as i64
     } else {
         // Both immediate gaps are exhausted — scan for the largest gap in
         // the entire set (extremely unlikely in practice).
@@ -156,22 +156,22 @@ pub(super) fn resolve_priority(priority: i64, used: &BTreeSet<i64>) -> i64 {
 
 /// Scan the full `used` set and return the midpoint of the largest gap.
 fn find_largest_gap_midpoint(used: &BTreeSet<i64>) -> i64 {
-    let mut best_gap_midpoint = MAX_PRIORITY / 2;
-    let mut best_gap: i64 = 0;
+    let mut best_gap_midpoint: i64 = MAX_PRIORITY / 2;
+    let mut best_gap: i128 = 0;
 
-    let mut prev = 0i64;
+    let mut prev = i64::MIN;
     for &p in used {
-        let gap = p - prev;
+        let gap = p as i128 - prev as i128;
         if gap > best_gap {
             best_gap = gap;
-            best_gap_midpoint = prev + gap / 2;
+            best_gap_midpoint = (prev as i128 + gap / 2) as i64;
         }
         prev = p;
     }
     // Check the gap after the last element.
-    let gap = MAX_PRIORITY - prev;
+    let gap = MAX_PRIORITY as i128 - prev as i128;
     if gap > best_gap {
-        best_gap_midpoint = prev + gap / 2;
+        best_gap_midpoint = (prev as i128 + gap / 2) as i64;
     }
 
     best_gap_midpoint
@@ -243,16 +243,16 @@ fn generate_cards(
     base_time: DateTime<Utc>,
     used_priorities: &mut BTreeSet<i64>,
 ) -> Vec<Vec<Card>> {
-    // Space priorities evenly across the i64 range.
-    // Leave room at both ends so insertion around them is possible.
-    let max_val = i64::MAX;
-    let step = max_val / (num_cards as i64 + 1);
+    // Space priorities evenly across the full i64 range (i64::MIN..=i64::MAX).
+    // Use i128 arithmetic to avoid overflow.
+    let range: i128 = i64::MAX as i128 - i64::MIN as i128;
+    let step = range / (num_cards as i128 + 1);
 
     (0..num_cards)
         .map(|i| {
             let id = gen_uuid(rng);
             let content = gen_card_content(rng, i);
-            let raw_priority = max_val - step * (i as i64 + 1);
+            let raw_priority = (i64::MAX as i128 - step * (i as i128 + 1)) as i64;
             let resolved = resolve_priority(raw_priority, used_priorities);
             used_priorities.insert(resolved);
             let priority = resolved;
@@ -487,13 +487,13 @@ fn gen_card_content(rng: &mut ChaCha8Rng, index: usize) -> String {
             let s: String = Sentence(8..20).fake_with_rng(rng);
             s
         }
-        // Heading + multiple paragraphs
+        // Heading + multiple paragraphs separated by horizontal rules
         1 => {
             let heading: String = Sentence(4..8).fake_with_rng(rng);
             let p1: String = Paragraph(4..7).fake_with_rng(rng);
             let p2: String = Paragraph(3..6).fake_with_rng(rng);
             let p3: String = Paragraph(3..5).fake_with_rng(rng);
-            format!("# {heading}\n\n{p1}\n\n{p2}\n\n{p3}")
+            format!("# {heading}\n\n{p1}\n\n---\n\n{p2}\n\n---\n\n{p3}")
         }
         // Long checklist (GFM task list)
         2 => {
@@ -544,12 +544,12 @@ fn gen_card_content(rng: &mut ChaCha8Rng, index: usize) -> String {
                 .collect();
             format!("# {heading}\n\n{}", paragraphs.join("\n\n"))
         }
-        // Blockquote with context
+        // Blockquote with context, separated by horizontal rules
         6 => {
             let context: String = Paragraph(3..5).fake_with_rng(rng);
             let quote: String = Sentence(10..22).fake_with_rng(rng);
             let analysis: String = Paragraph(3..5).fake_with_rng(rng);
-            format!("{context}\n\n> {quote}\n\n{analysis}")
+            format!("{context}\n\n---\n\n> {quote}\n\n---\n\n{analysis}")
         }
         // Heading + bullet list + multiple notes
         7 => {
@@ -588,8 +588,8 @@ fn generate_deleted_cards(
             let id = gen_uuid(rng);
             let content = gen_card_content(rng, i + 3);
 
-            // Random priority, resolved against used set to avoid collisions.
-            let raw = (rng.next_u64() % i64::MAX as u64) as i64;
+            // Random priority across full i64 range, resolved to avoid collisions.
+            let raw = rng.next_u64() as i64;
             let resolved = resolve_priority(raw, used_priorities);
             used_priorities.insert(resolved);
             let priority = resolved;
@@ -621,7 +621,7 @@ fn make_fresh_card(
     let id = gen_uuid(rng);
     let content_idx = rng.next_u32() as usize;
     let content = gen_card_content(rng, content_idx);
-    let raw = (rng.next_u64() % i64::MAX as u64) as i64;
+    let raw = rng.next_u64() as i64;
     let resolved = resolve_priority(raw, used_priorities);
     used_priorities.insert(resolved);
     let priority = resolved;

@@ -105,7 +105,7 @@ These override default values for WASM client settings. Served via the `/config`
 
 | Variable | Description | Default |
 |---|---|---|
-| `BLAZELIST_DEFAULT_AUTO_SAVE` | Auto-save cards while editing | `true` |
+| `BLAZELIST_DEFAULT_AUTO_SAVE` | Auto-save cards while editing | `false` |
 | `BLAZELIST_DEFAULT_AUTO_SAVE_DELAY` | Auto-save delay in seconds | `5` |
 | `BLAZELIST_DEFAULT_AUTO_SYNC` | Periodic sync check with server | `true` |
 | `BLAZELIST_DEFAULT_AUTO_SYNC_INTERVAL` | Periodic sync check interval in seconds | `10` |
@@ -113,7 +113,10 @@ These override default values for WASM client settings. Served via the `/config`
 | `BLAZELIST_DEFAULT_DEBOUNCE_DELAY` | Push debounce delay in seconds | `5` |
 | `BLAZELIST_DEFAULT_KEYBOARD_SHORTCUTS` | Enable keyboard shortcuts | `true` |
 | `BLAZELIST_DEFAULT_SHOW_PREVIEW` | Show markdown preview when editing | `false` |
-| `BLAZELIST_DEFAULT_DRAG_DROP` | Enable drag & drop card reordering | `false` |
+| `BLAZELIST_DEFAULT_SEARCH_TAGS` | Include tag names in search | `true` |
+| `BLAZELIST_DEFAULT_UI_SCALE` | UI scale percentage | `100` |
+| `BLAZELIST_DEFAULT_UI_DENSITY` | UI density mode (`compact` or `cozy`) | `compact` |
+| `BLAZELIST_DEFAULT_TOUCH_SWIPE` | Enable touch swipe gestures on cards | `false` |
 
 Boolean values are compared against `"true"` (case-sensitive). Numeric values must be valid unsigned integers.
 
@@ -161,8 +164,9 @@ The WASM PWA operates **offline-first**:
 
 1. **Instant startup** — Renders immediately from a local cache in the browser's Origin Private File System (OPFS).
 2. **Background sync** — Incremental sync over WebTransport fetches changes since the last session. Real-time subscription notifications keep the UI current.
-3. **Graceful degradation** — If the server is unreachable, the UI remains readable. Editing requires server connectivity.
-4. **Automatic recovery** — If the local cache is evicted or corrupt, falls back to a full sync.
+3. **Offline editing** — Cards can be created and edited while offline. Changes are queued locally and pushed automatically when the connection is restored. The sync indicator shows a count of unsynced changes.
+4. **Automatic reconnection** — Connection attempts use exponential backoff (5s to 60s). Returning to the app (visibility change) or regaining network connectivity triggers an immediate reconnect, even if a stale connection attempt was in progress.
+5. **Automatic recovery** — If the local cache is evicted or corrupt, falls back to a full sync.
 
 ### Browser Requirements
 
@@ -172,10 +176,18 @@ The WASM PWA operates **offline-first**:
 
 ## Keyboard Shortcuts
 
-Press `?` to display the shortcuts help overlay. Shortcuts are suppressed while typing in inputs and can be disabled entirely in Settings.
+Press `?` to open the shortcuts panel. Shortcuts are suppressed while typing in inputs and can be disabled entirely in Settings.
 
 Shortcuts can be disabled by default for all clients via the `BLAZELIST_DEFAULT_KEYBOARD_SHORTCUTS` environment variable.
 
+---
+
+## Touch Swipe Gestures
+
+Disabled by default. Enable in Settings or via the `BLAZELIST_DEFAULT_TOUCH_SWIPE` environment variable.
+
+- **Swipe right** — Blaze or extinguish the card.
+- **Swipe left** — Set due date to today. If already set to today, sets to tomorrow.
 ---
 
 ## Attachments / File Hosting

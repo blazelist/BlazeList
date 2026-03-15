@@ -45,12 +45,15 @@ pub fn build_client_config_json() -> String {
     let auto_save = std::env::var("BLAZELIST_DEFAULT_AUTO_SAVE").ok();
     let auto_save_delay = std::env::var("BLAZELIST_DEFAULT_AUTO_SAVE_DELAY").ok();
     let show_preview = std::env::var("BLAZELIST_DEFAULT_SHOW_PREVIEW").ok();
-    let drag_drop = std::env::var("BLAZELIST_DEFAULT_DRAG_DROP").ok();
     let auto_sync = std::env::var("BLAZELIST_DEFAULT_AUTO_SYNC").ok();
     let auto_sync_interval = std::env::var("BLAZELIST_DEFAULT_AUTO_SYNC_INTERVAL").ok();
     let debounce_enabled = std::env::var("BLAZELIST_DEFAULT_DEBOUNCE_ENABLED").ok();
     let debounce_delay = std::env::var("BLAZELIST_DEFAULT_DEBOUNCE_DELAY").ok();
     let keyboard_shortcuts = std::env::var("BLAZELIST_DEFAULT_KEYBOARD_SHORTCUTS").ok();
+    let search_tags = std::env::var("BLAZELIST_DEFAULT_SEARCH_TAGS").ok();
+    let ui_scale = std::env::var("BLAZELIST_DEFAULT_UI_SCALE").ok();
+    let ui_density = std::env::var("BLAZELIST_DEFAULT_UI_DENSITY").ok();
+    let touch_swipe = std::env::var("BLAZELIST_DEFAULT_TOUCH_SWIPE").ok();
 
     // Only include env vars that are explicitly set.
     let mut pairs = Vec::new();
@@ -64,9 +67,6 @@ pub fn build_client_config_json() -> String {
     }
     if let Some(v) = show_preview {
         pairs.push(format!(r#""show_preview":{}"#, v == "true"));
-    }
-    if let Some(v) = drag_drop {
-        pairs.push(format!(r#""drag_drop":{}"#, v == "true"));
     }
     if let Some(v) = auto_sync {
         pairs.push(format!(r#""auto_sync":{}"#, v == "true"));
@@ -86,6 +86,20 @@ pub fn build_client_config_json() -> String {
     }
     if let Some(v) = keyboard_shortcuts {
         pairs.push(format!(r#""keyboard_shortcuts":{}"#, v == "true"));
+    }
+    if let Some(v) = search_tags {
+        pairs.push(format!(r#""search_tags":{}"#, v == "true"));
+    }
+    if let Some(v) = ui_scale {
+        if let Ok(n) = v.parse::<u32>() {
+            pairs.push(format!(r#""ui_scale":{n}"#));
+        }
+    }
+    if let Some(v) = ui_density {
+        pairs.push(format!(r#""ui_density":"{}""#, v.replace('"', "")));
+    }
+    if let Some(v) = touch_swipe {
+        pairs.push(format!(r#""touch_swipe":{}"#, v == "true"));
     }
 
     format!("{{{}}}", pairs.join(","))

@@ -263,7 +263,7 @@ pub fn compute_all_link_counts(cards: &[Card]) -> HashMap<Uuid, LinkCounts> {
 /// corrupting attributes. Each matched UUID is wrapped in a
 /// `<span class="card-uuid-link" data-card-id="UUID">` element.
 pub fn linkify_card_uuids(html: &str, card_ids: &HashSet<Uuid>) -> String {
-    linkify_card_uuids_with_previews(html, card_ids, &HashMap::new())
+    linkify_card_uuids_with_previews(html, card_ids, &HashMap::new(), &HashSet::new())
 }
 
 /// Post-process rendered HTML to wrap known card UUIDs in clickable spans and
@@ -275,6 +275,7 @@ pub fn linkify_card_uuids_with_previews(
     html: &str,
     card_ids: &HashSet<Uuid>,
     card_previews: &HashMap<Uuid, String>,
+    blazed_ids: &HashSet<Uuid>,
 ) -> String {
     if card_ids.is_empty() {
         return html.to_string();
@@ -289,6 +290,7 @@ pub fn linkify_card_uuids_with_previews(
             &html[last_end..tag_match.start()],
             card_ids,
             card_previews,
+            blazed_ids,
             &mut result,
         );
         // Append the tag as-is (don't touch attributes).
@@ -296,7 +298,7 @@ pub fn linkify_card_uuids_with_previews(
         last_end = tag_match.end();
     }
     // Remaining text after the last tag.
-    linkify_segment(&html[last_end..], card_ids, card_previews, &mut result);
+    linkify_segment(&html[last_end..], card_ids, card_previews, blazed_ids, &mut result);
 
     result
 }
@@ -306,6 +308,7 @@ fn linkify_segment(
     text: &str,
     card_ids: &HashSet<Uuid>,
     card_previews: &HashMap<Uuid, String>,
+    blazed_ids: &HashSet<Uuid>,
     out: &mut String,
 ) {
     let mut last = 0;
@@ -315,7 +318,11 @@ fn linkify_segment(
             if card_ids.contains(&uuid) {
                 let full_id = uuid.to_string();
                 let short_id = &full_id[..8];
-                out.push_str(r#"<span class="card-uuid-link" data-card-id=""#);
+                if blazed_ids.contains(&uuid) {
+                    out.push_str(r#"<span class="card-uuid-link blazed" data-card-id=""#);
+                } else {
+                    out.push_str(r#"<span class="card-uuid-link" data-card-id=""#);
+                }
                 out.push_str(&full_id);
                 out.push_str(r#"">"#);
                 out.push_str(r#"<span class="card-uuid-link-id">"#);
@@ -1157,7 +1164,7 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
                 .collect();
 
         let html = format!("<p>{id}</p>");
-        let result = linkify_card_uuids_with_previews(&html, &card_ids, &previews);
+        let result = linkify_card_uuids_with_previews(&html, &card_ids, &previews, &std::collections::HashSet::new());
 
         assert!(result.contains("card-uuid-link-preview"));
         assert!(result.contains("Linked card preview"));
@@ -1173,7 +1180,7 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
                 .collect();
 
         let html = format!("<p>{id}</p>");
-        let result = linkify_card_uuids_with_previews(&html, &card_ids, &previews);
+        let result = linkify_card_uuids_with_previews(&html, &card_ids, &previews, &std::collections::HashSet::new());
 
         assert!(result.contains("&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;"));
         assert!(!result.contains("<script>alert"));

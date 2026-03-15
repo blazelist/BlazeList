@@ -1,11 +1,12 @@
-use crate::components::card_list::DragState;
 use crate::state::store::{
     AppState, confirm_discard_changes, format_due_date_badge, format_relative_time,
-    sync_query_params,
+    select_card_view, sync_query_params,
 };
-use blazelist_protocol::{Card, Entity};
+use crate::state::sync::push_card_or_queue;
+use blazelist_protocol::{Card, Entity, Utc};
 use leptos::prelude::*;
-use wasm_bindgen::JsCast;
+use std::cell::Cell;
+use std::rc::Rc;
 
 #[component]
 pub fn CardItem(
@@ -22,12 +23,8 @@ pub fn CardItem(
     link_back: usize,
 ) -> impl IntoView {
     let state = use_context::<AppState>().expect("AppState not provided");
-    let drag_state = use_context::<DragState>().expect("DragState not provided");
     let card_id = card.id();
-    let card_id_str = card_id.to_string();
     let is_blazed = card.blazed();
-    // 0-based index in the filtered list
-    let list_index = index - 1;
 
     let modified_at = card.modified_at();
     let due_date = card.due_date();
@@ -40,20 +37,17 @@ pub fn CardItem(
     let number = format!("{:0>width$}", index, width = width);
 
     let on_click = move |_| {
-        if !confirm_discard_changes(&state) {
-            return;
-        }
         let current = state.selected_card.get_untracked();
         if current == Some(card_id) {
+            // Toggle off — deselect the current card.
+            if !confirm_discard_changes(&state) {
+                return;
+            }
             state.selected_card.set(None);
+            sync_query_params(&state);
         } else {
-            state.selected_card.set(Some(card_id));
-            state.editing.set(false);
-            state.creating_new.set(false);
-            state.creating_new_tag.set(false);
-            state.settings_open.set(false);
+            select_card_view(&state, card_id);
         }
-        sync_query_params(&state);
     };
 
     let card_class = move || {
@@ -63,17 +57,6 @@ pub fn CardItem(
         }
         if state.selected_card.get() == Some(card_id) {
             cls.push_str(" selected");
-        }
-        // Show drop indicator above or below this card
-        if let Some(target) = drag_state.drop_target_index.get() {
-            let dragged = drag_state.dragged_card_id.get();
-            if !dragged.is_empty() {
-                if target == list_index {
-                    cls.push_str(" drop-above");
-                } else if target == list_index + 1 {
-                    cls.push_str(" drop-below");
-                }
-            }
         }
         cls
     };
@@ -166,66 +149,183 @@ pub fn CardItem(
         })
     };
 
-    // Drag-and-drop handlers (only active when setting enabled)
-    let on_dragstart = {
-        let card_id_str = card_id_str.clone();
-        move |ev: web_sys::DragEvent| {
-            if !state.drag_drop_reorder.get_untracked() {
-                ev.prevent_default();
+    // --- Touch swipe state ---
+    let swipe_offset = RwSignal::new(0.0f64);
+    let touch_start_x = Rc::new(Cell::new(0.0f64));
+    let touch_start_y = Rc::new(Cell::new(0.0f64));
+    let swiping = Rc::new(Cell::new(false));
+
+    let stored_card = StoredValue::new(card.clone());
+    let card_due = card.due_date();
+
+    let on_touchstart = {
+        let tsx = touch_start_x.clone();
+        let tsy = touch_start_y.clone();
+        let sw = swiping.clone();
+        move |ev: web_sys::TouchEvent| {
+            if !state.touch_swipe_enabled.get_untracked() {
                 return;
             }
-            if let Some(dt) = ev.data_transfer() {
-                let _ = dt.set_data("text/plain", &card_id_str);
-                let _ = dt.set_drop_effect("move");
+            if let Some(touch) = ev.touches().get(0) {
+                tsx.set(touch.client_x() as f64);
+                tsy.set(touch.client_y() as f64);
+                sw.set(false);
+                swipe_offset.set(0.0);
             }
-            drag_state.dragged_card_id.set(card_id_str.clone());
         }
     };
 
-    let on_dragend = move |_: web_sys::DragEvent| {
-        drag_state.dragged_card_id.set(String::new());
-        drag_state.drop_target_index.set(None);
+    let on_touchmove = {
+        let tsx = touch_start_x.clone();
+        let tsy = touch_start_y.clone();
+        let sw = swiping.clone();
+        move |ev: web_sys::TouchEvent| {
+            if !state.touch_swipe_enabled.get_untracked() {
+                return;
+            }
+            if let Some(touch) = ev.touches().get(0) {
+                let dx = touch.client_x() as f64 - tsx.get();
+                let dy = touch.client_y() as f64 - tsy.get();
+                // Only start swiping if horizontal movement dominates
+                if !sw.get() {
+                    if dx.abs() > 10.0 && dx.abs() > dy.abs() * 1.5 {
+                        sw.set(true);
+                    } else if dy.abs() > 10.0 {
+                        return;
+                    } else {
+                        return;
+                    }
+                }
+                if sw.get() {
+                    ev.prevent_default();
+                    // Clamp to reasonable range
+                    swipe_offset.set(dx.clamp(-120.0, 120.0));
+                }
+            }
+        }
     };
 
-    let on_dragover = move |ev: web_sys::DragEvent| {
-        if !state.drag_drop_reorder.get_untracked() {
-            return;
+    let on_touchend = {
+        let sw = swiping.clone();
+        move |_: web_sys::TouchEvent| {
+            if !state.touch_swipe_enabled.get_untracked() || !sw.get() {
+                swipe_offset.set(0.0);
+                return;
+            }
+            let offset = swipe_offset.get_untracked();
+            swipe_offset.set(0.0);
+            sw.set(false);
+
+            const THRESHOLD: f64 = 60.0;
+            if offset > THRESHOLD {
+                // Swipe right → blaze/extinguish
+                let c = stored_card.get_value();
+                let updated = c.next(
+                    c.content().to_string(),
+                    c.priority(),
+                    c.tags().to_vec(),
+                    !c.blazed(),
+                    Utc::now(),
+                    c.due_date(),
+                );
+                state.upsert_card(updated.clone());
+                leptos::task::spawn_local(async move {
+                    push_card_or_queue(&state, updated).await;
+                });
+            } else if offset < -THRESHOLD {
+                // Swipe left → set due date to today (or tomorrow if already today)
+                let c = stored_card.get_value();
+                let today = blazelist_protocol::Utc::now()
+                    .date_naive()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap()
+                    .and_utc();
+                let new_due = if card_due == Some(today) {
+                    let tomorrow = today + chrono::Duration::days(1);
+                    Some(tomorrow)
+                } else {
+                    Some(today)
+                };
+                let updated = c.next(
+                    c.content().to_string(),
+                    c.priority(),
+                    c.tags().to_vec(),
+                    c.blazed(),
+                    Utc::now(),
+                    new_due,
+                );
+                state.upsert_card(updated.clone());
+                leptos::task::spawn_local(async move {
+                    push_card_or_queue(&state, updated).await;
+                });
+            }
         }
-        ev.prevent_default();
-        // Determine if we're in the top or bottom half of the card
-        if let Some(target) = ev.current_target() {
-            let el: web_sys::Element = target.unchecked_into();
-            let rect = el.get_bounding_client_rect();
-            let mid = rect.top() + rect.height() / 2.0;
-            let y = ev.client_y() as f64;
-            if y < mid {
-                drag_state.drop_target_index.set(Some(list_index));
+    };
+
+    let swipe_style = move || {
+        let offset = swipe_offset.get();
+        if offset.abs() < 1.0 {
+            String::new()
+        } else {
+            format!("transform:translateX({offset:.0}px);transition:none;")
+        }
+    };
+
+    let swipe_bg_class = move || {
+        let offset = swipe_offset.get();
+        if offset > 40.0 {
+            "swipe-bg swipe-bg-blaze"
+        } else if offset < -40.0 {
+            "swipe-bg swipe-bg-due"
+        } else {
+            "swipe-bg"
+        }
+    };
+
+    let swipe_label = move || {
+        let offset = swipe_offset.get();
+        if offset > 40.0 {
+            if is_blazed { "Extinguish" } else { "Blaze" }
+        } else if offset < -40.0 {
+            if card_due == Some(
+                blazelist_protocol::Utc::now()
+                    .date_naive()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap()
+                    .and_utc(),
+            ) {
+                "Tomorrow"
             } else {
-                drag_state.drop_target_index.set(Some(list_index + 1));
+                "Today"
             }
+        } else {
+            ""
         }
     };
-
-    let is_draggable = move || state.drag_drop_reorder.get();
 
     view! {
-        <div
-            class=card_class
-            on:click=on_click
-            draggable=move || if is_draggable() { "true" } else { "false" }
-            on:dragstart=on_dragstart
-            on:dragend=on_dragend
-            on:dragover=on_dragover
-        >
-            <span class="card-number">{number}</span>
-            <div class=preview_class>{preview_display}</div>
-            {link_indicators}
-            {tag_dots}
-            {task_progress.map(|(done, total)| view! {
-                <span class="card-tasks">{format!("{done}/{total}")}</span>
-            })}
-            {due_badge}
-            <span class="card-time">{time_text}</span>
+        <div class="card-item-wrapper">
+            <div class=swipe_bg_class>
+                <span class="swipe-label">{swipe_label}</span>
+            </div>
+            <div
+                class=card_class
+                style=swipe_style
+                on:click=on_click
+                on:touchstart=on_touchstart
+                on:touchmove=on_touchmove
+                on:touchend=on_touchend
+            >
+                <span class="card-number">{number}</span>
+                <div class=preview_class>{preview_display}</div>
+                {link_indicators}
+                {tag_dots}
+                {task_progress.map(|(done, total)| view! {
+                    <span class="card-tasks">{format!("{done}/{total}")}</span>
+                })}
+                {due_badge}
+                <span class="card-time">{time_text}</span>
+            </div>
         </div>
     }
 }

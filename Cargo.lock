@@ -261,7 +261,7 @@ dependencies = [
 
 [[package]]
 name = "blazelist-client-lib"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "blake3",
  "blazelist-protocol",
@@ -269,6 +269,7 @@ dependencies = [
  "comrak",
  "expect-test",
  "indexmap",
+ "rand 0.10.0",
  "regex",
  "rgb",
  "uuid",
@@ -276,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "blazelist-dev-seeder"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "blazelist-protocol",
  "chrono",
@@ -293,14 +294,13 @@ dependencies = [
 
 [[package]]
 name = "blazelist-protocol"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "blake3",
  "chrono",
  "criterion",
  "expect-test",
  "postcard",
- "rand 0.10.0",
  "rgb",
  "semver",
  "serde",
@@ -310,7 +310,7 @@ dependencies = [
 
 [[package]]
 name = "blazelist-server"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "blake3",
  "blazelist-protocol",
@@ -335,7 +335,7 @@ dependencies = [
 
 [[package]]
 name = "blazelist-wasm"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "blake3",
  "blazelist-client-lib",

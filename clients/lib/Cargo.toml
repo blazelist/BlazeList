@@ -1,6 +1,6 @@
 [package]
 name = "blazelist-client-lib"
-version = "2.0.0"
+version = "2.1.0"
 edition.workspace = true
 
 [lints]
@@ -17,6 +17,7 @@ blazelist-protocol = { path = "../../protocol", default-features = false }
 chrono.workspace = true
 comrak.workspace = true
 indexmap.workspace = true
+rand.workspace = true
 regex.workspace = true
 rgb.workspace = true
 uuid.workspace = true

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] - 2026-03-15
+
+### Added
+
+- `BLAZELIST_DEFAULT_SEARCH_TAGS` environment variable (default: `true`)
+- `BLAZELIST_DEFAULT_UI_SCALE` environment variable (default: `100`)
+- `BLAZELIST_DEFAULT_UI_DENSITY` environment variable (default: `compact`)
+- `BLAZELIST_DEFAULT_TOUCH_SWIPE` environment variable (default: `false`)
+
+### Removed
+
+- `BLAZELIST_DEFAULT_DRAG_DROP` environment variable (drag & drop removed from client)
+
 ## [2.0.0] - 2026-03-15
 
 ### Added
@@ -14,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   transaction with full rollback on failure
 - `/config` HTTP and HTTPS endpoint serving client default settings as JSON
 - `BLAZELIST_DEFAULT_*` environment variables for overriding client defaults:
-  `AUTO_SAVE`, `AUTO_SAVE_DELAY`, `SHOW_PREVIEW`, `DRAG_DROP`, `AUTO_SYNC`,
+  `AUTO_SAVE`, `AUTO_SAVE_DELAY`, `SHOW_PREVIEW`, `AUTO_SYNC`,
   `AUTO_SYNC_INTERVAL`, `DEBOUNCE_ENABLED`, `DEBOUNCE_DELAY`
 - `BLAZELIST_DEFAULT_KEYBOARD_SHORTCUTS` environment variable for overriding client keyboard shortcuts default
 

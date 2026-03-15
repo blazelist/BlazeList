@@ -1,6 +1,6 @@
 [package]
 name = "blazelist-wasm"
-version = "2.0.0"
+version = "2.1.0"
 edition.workspace = true
 
 [lints]
@@ -48,6 +48,9 @@ web-sys = { version = "0.3", features = [
     "WebTransportOptions",
     "WebTransportReceiveStream",
     "WebTransportSendStream",
+    "Touch",
+    "TouchEvent",
+    "TouchList",
     "Window",
     "WritableStream",
     "WritableStreamDefaultWriter",

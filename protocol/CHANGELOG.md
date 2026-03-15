@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] - 2026-03-15
+
+### Removed
+
+- `compute_priority` and `priority_percentage` public exports (moved to
+  `blazelist-client-lib::priority` where they are actually used)
+- `rand` dependency — no longer needed without priority computation
+
 ## [2.0.0] - 2026-03-15
 
 ### Added

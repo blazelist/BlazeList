@@ -1714,6 +1714,30 @@ mod tests {
         assert_eq!(fetched.content(), "v2");
     }
 
+    #[test]
+    fn duplicate_priority_retry_with_different_priority_succeeds() {
+        let s = store();
+        let c1 = Card::first(ID_A, "first".into(), 100, vec![], false, ts(0), None);
+        s.push_card_versions(&[c1]).unwrap();
+
+        // Same priority as c1 → should fail.
+        let c2 = Card::first(ID_B, "second".into(), 100, vec![], false, ts(0), None);
+        let err = s.push_card_versions(&[c2]).unwrap_err();
+        assert!(matches!(
+            err,
+            PushOpError::Domain(PushError::DuplicatePriority { .. })
+        ));
+
+        // Retry with a different priority → should succeed.
+        let c2_retry = Card::first(ID_B, "second".into(), 150, vec![], false, ts(0), None);
+        s.push_card_versions(&[c2_retry]).unwrap();
+
+        let a = s.get_card(ID_A).unwrap().unwrap();
+        let b = s.get_card(ID_B).unwrap().unwrap();
+        assert_eq!(a.priority(), 100);
+        assert_eq!(b.priority(), 150);
+    }
+
     // -- Push same version twice -----------------------------------------------
 
     #[test]

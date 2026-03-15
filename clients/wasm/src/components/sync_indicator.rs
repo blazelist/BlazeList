@@ -64,6 +64,15 @@ pub fn SyncIndicator() -> impl IntoView {
         _ => "",
     };
 
+    let offline_queue_text = move || {
+        let count = state.offline_queue.with(|q| q.len());
+        if count > 0 {
+            Some(format!("{count} unsynced"))
+        } else {
+            None
+        }
+    };
+
     let debounce_text = move || {
         let countdown = state.push_debounce_countdown.get();
         if countdown > 0 {
@@ -86,6 +95,12 @@ pub fn SyncIndicator() -> impl IntoView {
         <div class=indicator_class on:click=on_click
             title=title_text
         >
+            {move || {
+                offline_queue_text().map(|text| view! {
+                    <span class="sync-detail sync-queued">{text}</span>
+                    <span class="sync-sep">{"\u{00b7}"}</span>
+                })
+            }}
             {move || {
                 debounce_text().map(|text| view! {
                     <span class="sync-detail">{text}</span>

@@ -143,23 +143,6 @@
     border-color: var(--blaze-border);
 }
 
-/* Drag-and-drop indicators */
-.card-item.drop-above {
-    box-shadow: 0 -2px 0 0 var(--accent);
-}
-
-.card-item.drop-below {
-    box-shadow: 0 2px 0 0 var(--accent);
-}
-
-.card-item[draggable="true"] {
-    cursor: grab;
-}
-
-.card-item[draggable="true"]:active {
-    cursor: grabbing;
-}
-
 .card-preview {
     color: var(--text-primary);
     font-size: 0.8rem;
@@ -249,4 +232,84 @@
     font-size: 0.5rem;
     color: var(--text-muted);
     line-height: 1;
+}
+
+/* Cozy density overrides */
+.density-cozy .card-item {
+    padding: 0.5rem 0.625rem;
+    gap: 0.65rem;
+}
+
+.density-cozy .card-preview {
+    font-size: 0.88rem;
+    line-height: 1.4;
+}
+
+.density-cozy .card-tag-dots-grid {
+    grid-template-rows: repeat(3, 7px);
+    grid-auto-columns: 7px;
+    gap: 3px;
+}
+
+.density-cozy .card-tag-dot {
+    width: 7px;
+    height: 7px;
+}
+
+.density-cozy .card-tag-dots {
+    gap: 4px;
+}
+
+.density-cozy .cards {
+    gap: 2px;
+}
+
+.density-cozy .card-number {
+    font-size: 0.74rem;
+}
+
+.density-cozy .card-time {
+    font-size: 0.68rem;
+}
+
+.density-cozy .card-due {
+    font-size: 0.66rem;
+    padding: 0.15rem 0.4rem;
+}
+
+/* Touch swipe */
+.card-item-wrapper {
+    position: relative;
+    overflow: hidden;
+}
+
+.swipe-bg {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    opacity: 0;
+    transition: opacity 0.1s;
+    pointer-events: none;
+}
+
+.swipe-bg.swipe-bg-blaze {
+    opacity: 1;
+    background: var(--danger-subtle);
+    justify-content: flex-start;
+    padding-left: 1rem;
+}
+
+.swipe-bg.swipe-bg-due {
+    opacity: 1;
+    background: var(--due-today-subtle);
+    justify-content: flex-end;
+    padding-right: 1rem;
+}
+
+.swipe-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    user-select: none;
 }

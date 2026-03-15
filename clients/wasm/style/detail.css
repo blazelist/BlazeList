@@ -146,9 +146,15 @@
     margin-bottom: 0.5rem;
 }
 
+.card-content hr {
+    border: none;
+    border-top: 1px solid #363640;
+    margin: 0.5rem 0;
+}
+
 /* Clickable card UUID links in markdown content */
 .card-uuid-link {
-    color: var(--accent);
+    color: var(--status-connected);
     cursor: pointer;
     text-decoration: underline;
     text-decoration-style: dotted;
@@ -157,7 +163,16 @@
 }
 
 .card-uuid-link:hover {
-    color: var(--accent-hover);
+    color: var(--action-hover);
+    text-decoration-style: solid;
+}
+
+.card-uuid-link.blazed {
+    color: var(--status-disconnected);
+}
+
+.card-uuid-link.blazed:hover {
+    color: var(--danger);
     text-decoration-style: solid;
 }
 

@@ -16,6 +16,7 @@ use wasm_bindgen::prelude::*;
 
 const DB_FILENAME: &str = "blazelist.db";
 const HISTORY_FILENAME: &str = "blazelist-history.db";
+const QUEUE_FILENAME: &str = "blazelist-queue.db";
 
 /// Check that OPFS is available. Panics with a user-visible alert if not.
 pub async fn require_opfs() {
@@ -122,6 +123,44 @@ pub async fn request_persistent_storage() -> bool {
     match request_persistence().await {
         Ok(val) => val.as_bool().unwrap_or(false),
         Err(_) => false,
+    }
+}
+
+// -- Offline queue API -------------------------------------------------------
+
+/// Load queued offline card pushes from OPFS.
+pub async fn load_offline_queue() -> Vec<Card> {
+    match opfs_read(QUEUE_FILENAME).await {
+        Ok(data) => {
+            if data.is_null() || data.is_undefined() {
+                return Vec::new();
+            }
+            let array = js_sys::Uint8Array::new(&data);
+            let bytes = array.to_vec();
+            if bytes.is_empty() {
+                return Vec::new();
+            }
+            postcard::from_bytes(&bytes).unwrap_or_default()
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Persist the offline queue to OPFS. Deletes the file when empty.
+pub async fn save_offline_queue(queue: &[Card]) {
+    if queue.is_empty() {
+        let _ = opfs_delete(QUEUE_FILENAME).await;
+        return;
+    }
+    match postcard::to_allocvec(queue) {
+        Ok(bytes) => {
+            if let Err(e) = opfs_write(QUEUE_FILENAME, &bytes).await {
+                log::error!("Failed to save offline queue: {e:?}");
+            }
+        }
+        Err(e) => {
+            log::error!("Failed to serialize offline queue: {e}");
+        }
     }
 }
 

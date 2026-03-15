@@ -5,6 +5,7 @@ use crate::components::card_detail::CardDetail;
 use crate::components::card_list::CardList;
 use crate::components::filter_bar::FilterBar;
 use crate::components::header::Header;
+use crate::components::keyboard::ShortcutsPanel;
 use crate::components::settings_panel::SettingsPanel;
 use crate::components::tag_sidebar::TagSidebar;
 use crate::state::store::AppState;
@@ -76,7 +77,18 @@ fn start_resize(
 pub fn Home() -> impl IntoView {
     let state = use_context::<AppState>().expect("AppState not provided");
 
-    let detail_open = move || state.selected_card.get().is_some() || state.creating_new.get() || state.creating_new_tag.get() || state.settings_open.get();
+    // Memo ensures the DynChild only re-renders when visibility truly
+    // changes (false↔true), not when underlying signals change while
+    // the panel stays open.  Without this, setting `selected_card`
+    // during auto-save would destroy and recreate the entire detail
+    // panel, losing unsaved editor state.
+    let detail_open = Memo::new(move |_| {
+        state.selected_card.get().is_some()
+            || state.creating_new.get()
+            || state.creating_new_tag.get()
+            || state.settings_open.get()
+            || state.shortcuts_open.get()
+    });
     let sidebar_visible = move || state.sidebar_visible.get();
 
     let sidebar_style = move || {
@@ -129,7 +141,7 @@ pub fn Home() -> impl IntoView {
                     <FilterBar />
                     <CardList />
                 </main>
-                {move || detail_open().then(|| view! {
+                {move || detail_open.get().then(|| view! {
                     <div class="resize-handle"
                         on:mousedown=move |ev: web_sys::MouseEvent| {
                             ev.prevent_default();
@@ -145,6 +157,8 @@ pub fn Home() -> impl IntoView {
                     <aside class="detail-panel" style=detail_style>
                         {move || if state.settings_open.get() {
                             view! { <SettingsPanel /> }.into_any()
+                        } else if state.shortcuts_open.get() {
+                            view! { <ShortcutsPanel /> }.into_any()
                         } else {
                             view! { <CardDetail /> }.into_any()
                         }}

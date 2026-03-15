@@ -5,11 +5,14 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
-use crate::components::keyboard::{KeyboardHelp, register_keyboard_shortcuts};
+use crate::components::keyboard::register_keyboard_shortcuts;
+use crate::components::settings_panel::{apply_ui_density, apply_ui_scale};
 use crate::pages::home::Home;
 use crate::state::settings;
 use crate::state::store::{AppState, ConnectionStatus, get_client, restore_from_query_params, set_client};
-use crate::state::sync::{incremental_sync, initial_sync, load_local_state, run_subscription};
+use crate::state::sync::{
+    flush_offline_queue, incremental_sync, initial_sync, load_local_state, run_subscription,
+};
 use crate::storage;
 use crate::transport::client::Client;
 
@@ -122,19 +125,29 @@ pub fn App() -> impl IntoView {
         // Load cached state from OPFS so the UI renders instantly.
         load_local_state(&state).await;
         storage::load_history_cache().await;
+        state.offline_queue.set(storage::load_offline_queue().await);
 
         // Then enter the connection loop for background sync.
         connection_loop(state).await;
     });
 
+    // Apply initial UI customizations from settings
+    apply_ui_scale(state.ui_scale.get_untracked());
+    apply_ui_density(&state.ui_density.get_untracked());
+
     view! {
         <Home />
-        <KeyboardHelp />
     }
 }
 
 /// Main connection loop with automatic reconnection on a fixed 5-second retry.
+///
+/// Each connection attempt is spawned in a subtask so it can be interrupted
+/// by a timeout or a reconnect request (e.g., `visibilitychange` / `online`
+/// listeners). This prevents the loop from getting stuck on a hanging
+/// WebTransport handshake when the device returns from sleep.
 async fn connection_loop(state: AppState) {
+    const CONNECT_TIMEOUT_SECS: u32 = 15;
     const RETRY_SECS: u32 = 5;
 
     loop {
@@ -142,7 +155,46 @@ async fn connection_loop(state: AppState) {
         state.reconnect_countdown.set(0);
         take_reconnect_request(); // clear any stale flag
 
-        connect_and_run(&state).await;
+        // Spawn the connection attempt so we can poll for timeout/interrupt.
+        let finished = Rc::new(Cell::new(false));
+        {
+            let f = finished.clone();
+            let s = state;
+            leptos::task::spawn_local(async move {
+                connect_and_run(&s).await;
+                f.set(true);
+            });
+        }
+
+        // Phase 1: Wait for connection to establish (with timeout).
+        let mut was_connected = false;
+        let timeout_checks = CONNECT_TIMEOUT_SECS * 10; // 100ms intervals
+        for _ in 0..timeout_checks {
+            sleep_ms(100).await;
+            if finished.get() {
+                break;
+            }
+            if take_reconnect_request() {
+                break;
+            }
+            let status = state.connection_status.get_untracked();
+            if matches!(status, ConnectionStatus::Connected | ConnectionStatus::Syncing) {
+                was_connected = true;
+                break;
+            }
+        }
+
+        // Phase 2: If connected, wait for connection to end naturally.
+        if was_connected {
+            while !finished.get() {
+                sleep_ms(200).await;
+                if take_reconnect_request() {
+                    break;
+                }
+            }
+        } else if !finished.get() {
+            log::warn!("Connection attempt timed out after {CONNECT_TIMEOUT_SECS}s");
+        }
 
         state.connection_status.set(ConnectionStatus::Disconnected);
 
@@ -196,6 +248,9 @@ async fn connect_and_run(state: &AppState) {
         return;
     }
 
+    // Flush any cards that were queued while offline.
+    flush_offline_queue(&client, state).await;
+
     if let Err(e) = run_subscription(Rc::clone(&client), state).await {
         log::error!("Subscription stream ended: {e}");
     }
@@ -217,14 +272,18 @@ fn register_reconnect_listeners(state: AppState) {
     let window = web_sys::window().expect("no window");
 
     // visibilitychange — fires when the user switches back to the tab or
-    // unlocks their phone.
+    // unlocks their phone. Also handles `Connecting` state to interrupt
+    // stale connection attempts that may be hanging.
     if let Some(document) = window.document() {
         let cb = Closure::wrap(Box::new(move || {
             if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
                 if !doc.hidden()
-                    && state.connection_status.get_untracked() == ConnectionStatus::Disconnected
+                    && matches!(
+                        state.connection_status.get_untracked(),
+                        ConnectionStatus::Disconnected | ConnectionStatus::Connecting
+                    )
                 {
-                    log::info!("Page visible while disconnected, requesting reconnection");
+                    log::info!("Page visible while not connected, requesting reconnection");
                     request_reconnect();
                 }
             }
@@ -238,8 +297,11 @@ fn register_reconnect_listeners(state: AppState) {
     // online — fires when the browser regains network connectivity.
     {
         let cb = Closure::wrap(Box::new(move || {
-            if state.connection_status.get_untracked() == ConnectionStatus::Disconnected {
-                log::info!("Browser online while disconnected, requesting reconnection");
+            if matches!(
+                state.connection_status.get_untracked(),
+                ConnectionStatus::Disconnected | ConnectionStatus::Connecting
+            ) {
+                log::info!("Browser online while not connected, requesting reconnection");
                 request_reconnect();
             }
         }) as Box<dyn FnMut()>);
@@ -357,11 +419,6 @@ async fn apply_server_config(state: &AppState) {
             state.show_preview.set(v);
         }
     }
-    if !settings::has_drag_drop_reorder() {
-        if let Some(v) = get_bool(&config, "drag_drop") {
-            state.drag_drop_reorder.set(v);
-        }
-    }
     if !settings::has_auto_sync() {
         if let Some(v) = get_bool(&config, "auto_sync") {
             state.auto_sync_enabled.set(v);
@@ -385,6 +442,31 @@ async fn apply_server_config(state: &AppState) {
     if !settings::has_keyboard_shortcuts() {
         if let Some(v) = get_bool(&config, "keyboard_shortcuts") {
             state.keyboard_shortcuts_enabled.set(v);
+        }
+    }
+    if !settings::has_search_tags() {
+        if let Some(v) = get_bool(&config, "search_tags") {
+            state.search_tags.set(v);
+        }
+    }
+    if !settings::has_ui_scale() {
+        if let Some(v) = get_u32(&config, "ui_scale") {
+            state.ui_scale.set(v);
+            apply_ui_scale(v);
+        }
+    }
+    if !settings::has_ui_density() {
+        if let Some(v) = js_sys::Reflect::get(&config, &JsValue::from_str("ui_density"))
+            .ok()
+            .and_then(|v| v.as_string())
+        {
+            apply_ui_density(&v);
+            state.ui_density.set(v);
+        }
+    }
+    if !settings::has_touch_swipe() {
+        if let Some(v) = get_bool(&config, "touch_swipe") {
+            state.touch_swipe_enabled.set(v);
         }
     }
 

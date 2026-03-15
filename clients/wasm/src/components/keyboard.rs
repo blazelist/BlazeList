@@ -4,22 +4,17 @@
 //! or contenteditable element, and can be disabled entirely in settings.
 
 use crate::components::card_detail::apply_move_placement;
+use crate::components::settings_panel::switch_to_pane;
 use crate::state::store::{
-    AppState, NewCardPosition, confirm_discard_changes, get_client, sync_query_params,
+    AppState, NewCardPosition, confirm_discard_changes, select_card_view, sync_query_params,
 };
-use blazelist_client_lib::client::Client as _;
+use crate::state::sync::push_card_or_queue;
 use blazelist_client_lib::priority::{InsertPosition, move_card};
 use blazelist_protocol::{CardFilter, Entity, Utc};
+use chrono::Days;
 use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-
-/// Signal controlling visibility of the keyboard shortcuts help overlay.
-pub static SHOW_HELP: std::sync::OnceLock<RwSignal<bool>> = std::sync::OnceLock::new();
-
-fn help_signal() -> RwSignal<bool> {
-    *SHOW_HELP.get_or_init(|| RwSignal::new(false))
-}
 
 /// Register a global `keydown` listener that dispatches keyboard shortcuts.
 ///
@@ -78,15 +73,9 @@ fn is_search_focused() -> bool {
 
 fn handle_keydown(ev: web_sys::KeyboardEvent, state: AppState) {
     let key = ev.key();
-    let help = help_signal();
 
     // Escape always works, even when typing or shortcuts disabled
     if key == "Escape" {
-        if help.get_untracked() {
-            help.set(false);
-            ev.prevent_default();
-            return;
-        }
         handle_escape(state);
         ev.prevent_default();
         return;
@@ -105,16 +94,23 @@ fn handle_keydown(ev: web_sys::KeyboardEvent, state: AppState) {
         return;
     }
 
-    // Close help overlay on any key
-    if help.get_untracked() {
-        help.set(false);
+    // ? and , toggle panes — work even while editing (guarded by switch_to_pane)
+    if key == "?" {
+        if state.shortcuts_open.get_untracked() {
+            state.shortcuts_open.set(false);
+        } else {
+            switch_to_pane(&state, false, true);
+        }
         ev.prevent_default();
         return;
     }
 
-    // Check if shortcuts are enabled (? for help always works)
-    if key == "?" {
-        help.update(|v| *v = !*v);
+    if key == "," {
+        if state.settings_open.get_untracked() {
+            state.settings_open.set(false);
+        } else {
+            switch_to_pane(&state, true, false);
+        }
         ev.prevent_default();
         return;
     }
@@ -193,7 +189,7 @@ fn handle_keydown(ev: web_sys::KeyboardEvent, state: AppState) {
             ev.prevent_default();
         }
 
-        // Cycle blaze filter: Active → All → Blazed → Active
+        // Cycle blaze filter: Active -> All -> Blazed -> Active
         "f" => {
             cycle_blaze_filter(state);
             ev.prevent_default();
@@ -217,12 +213,30 @@ fn handle_keydown(ev: web_sys::KeyboardEvent, state: AppState) {
             ev.prevent_default();
         }
 
+        // Set due date to today
+        "t" => {
+            set_due_date_shortcut(state, DueDateShortcut::Today);
+            ev.prevent_default();
+        }
+
+        // Set due date to tomorrow
+        "T" => {
+            set_due_date_shortcut(state, DueDateShortcut::Tomorrow);
+            ev.prevent_default();
+        }
+
+        // Clear due date
+        "C" => {
+            set_due_date_shortcut(state, DueDateShortcut::Clear);
+            ev.prevent_default();
+        }
+
         _ => {}
     }
 }
 
 fn handle_escape(state: AppState) {
-    // Priority: close edit/create → close detail → clear search → clear filters
+    // Priority: close edit/create -> close settings/shortcuts -> close detail -> clear search -> clear filters
     if state.editing.get_untracked() || state.creating_new.get_untracked() {
         if !confirm_discard_changes(&state) {
             return;
@@ -236,6 +250,11 @@ fn handle_escape(state: AppState) {
 
     if state.settings_open.get_untracked() {
         state.settings_open.set(false);
+        return;
+    }
+
+    if state.shortcuts_open.get_untracked() {
+        state.shortcuts_open.set(false);
         return;
     }
 
@@ -292,6 +311,8 @@ fn start_new_card(state: AppState, position: NewCardPosition) {
     }
     state.selected_card.set(None);
     state.editing.set(false);
+    state.settings_open.set(false);
+    state.shortcuts_open.set(false);
     state.new_card_position.set(position);
     state.creating_new.set(true);
     sync_query_params(&state);
@@ -300,20 +321,14 @@ fn start_new_card(state: AppState, position: NewCardPosition) {
 fn select_first_card(state: AppState) {
     let filtered = state.filtered_cards().get_untracked();
     if let Some(first) = filtered.first() {
-        state.selected_card.set(Some(first.id()));
-        state.editing.set(false);
-        state.creating_new.set(false);
-        sync_query_params(&state);
+        select_card_view(&state, first.id());
     }
 }
 
 fn select_last_card(state: AppState) {
     let filtered = state.filtered_cards().get_untracked();
     if let Some(last) = filtered.last() {
-        state.selected_card.set(Some(last.id()));
-        state.editing.set(false);
-        state.creating_new.set(false);
-        sync_query_params(&state);
+        select_card_view(&state, last.id());
     }
 }
 
@@ -330,22 +345,14 @@ fn select_next_card(state: AppState) {
             let pos = filtered.iter().position(|c| c.id() == id);
             match pos {
                 Some(i) if i + 1 < filtered.len() => Some(filtered[i + 1].id()),
-                // Already at end — stay
                 Some(_) => Some(id),
-                // Current card not in filtered list — select first
                 None => filtered.first().map(|c| c.id()),
             }
         }
     };
 
     if let Some(id) = next_id {
-        if !confirm_discard_changes(&state) {
-            return;
-        }
-        state.selected_card.set(Some(id));
-        state.editing.set(false);
-        state.creating_new.set(false);
-        sync_query_params(&state);
+        select_card_view(&state, id);
     }
 }
 
@@ -361,7 +368,7 @@ fn select_prev_card(state: AppState) {
         Some(id) => {
             let pos = filtered.iter().position(|c| c.id() == id);
             match pos {
-                Some(0) => Some(id), // already at top
+                Some(0) => Some(id),
                 Some(i) => Some(filtered[i - 1].id()),
                 None => filtered.last().map(|c| c.id()),
             }
@@ -369,13 +376,7 @@ fn select_prev_card(state: AppState) {
     };
 
     if let Some(id) = next_id {
-        if !confirm_discard_changes(&state) {
-            return;
-        }
-        state.selected_card.set(Some(id));
-        state.editing.set(false);
-        state.creating_new.set(false);
-        sync_query_params(&state);
+        select_card_view(&state, id);
     }
 }
 
@@ -403,11 +404,7 @@ fn toggle_blaze(state: AppState) {
     state.upsert_card(next.clone());
 
     leptos::task::spawn_local(async move {
-        if let Some(client) = get_client() {
-            if let Err(e) = client.push_card(next).await {
-                log::error!("Failed to toggle blaze via shortcut: {e}");
-            }
-        }
+        push_card_or_queue(&state, next).await;
     });
 }
 
@@ -478,51 +475,97 @@ fn move_card_down(state: AppState) {
     apply_move_placement(placement, &card, &filtered, state);
 }
 
-/// Renders the keyboard shortcuts help overlay.
-#[component]
-pub fn KeyboardHelp() -> impl IntoView {
-    let show = help_signal();
+// -- Due date shortcuts -------------------------------------------------------
 
-    let on_backdrop = move |_| {
-        show.set(false);
+enum DueDateShortcut {
+    Today,
+    Tomorrow,
+    Clear,
+}
+
+fn set_due_date_shortcut(state: AppState, shortcut: DueDateShortcut) {
+    let card_id = match state.selected_card.get_untracked() {
+        Some(id) => id,
+        None => return,
+    };
+
+    let card = match state.cards.get_untracked().into_iter().find(|c| c.id() == card_id) {
+        Some(c) => c,
+        None => return,
+    };
+
+    let new_due = match shortcut {
+        DueDateShortcut::Today => {
+            let today = Utc::now().date_naive();
+            Some(today.and_hms_opt(12, 0, 0).unwrap().and_utc())
+        }
+        DueDateShortcut::Tomorrow => {
+            let tomorrow = Utc::now().date_naive() + Days::new(1);
+            Some(tomorrow.and_hms_opt(12, 0, 0).unwrap().and_utc())
+        }
+        DueDateShortcut::Clear => None,
+    };
+
+    let next = card.next(
+        card.content().to_string(),
+        card.priority(),
+        card.tags().to_vec(),
+        card.blazed(),
+        Utc::now(),
+        new_due,
+    );
+    state.upsert_card(next.clone());
+
+    leptos::task::spawn_local(async move {
+        push_card_or_queue(&state, next).await;
+    });
+}
+
+/// Renders the keyboard shortcuts pane in the detail panel area.
+#[component]
+pub fn ShortcutsPanel() -> impl IntoView {
+    let state = use_context::<AppState>().expect("AppState not provided");
+
+    let on_close = move |_| {
+        state.shortcuts_open.set(false);
     };
 
     view! {
-        {move || show.get().then(|| view! {
-            <div class="help-overlay" on:click=on_backdrop>
-                <div class="help-dialog" on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()>
-                    <div class="help-header">
-                        <h2>"Keyboard Shortcuts"</h2>
-                        <button class="help-close" on:click=move |_| show.set(false)>"×"</button>
-                    </div>
-                    <div class="help-body">
-                        <table class="help-table">
-                            <thead>
-                                <tr><th>"Key"</th><th>"Action"</th></tr>
-                            </thead>
-                            <tbody>
-                                <tr><td><kbd>"j"</kbd></td><td>"Select next card"</td></tr>
-                                <tr><td><kbd>"k"</kbd></td><td>"Select previous card"</td></tr>
-                                <tr><td><kbd>"g"</kbd></td><td>"Go to first card"</td></tr>
-                                <tr><td><kbd>"G"</kbd>" (shift)"</td><td>"Go to last card"</td></tr>
-                                <tr><td><kbd>"J"</kbd>" (shift)"</td><td>"Move card down"</td></tr>
-                                <tr><td><kbd>"K"</kbd>" (shift)"</td><td>"Move card up"</td></tr>
-                                <tr><td><kbd>"n"</kbd></td><td>"New card (bottom)"</td></tr>
-                                <tr><td><kbd>"N"</kbd>" (shift)"</td><td>"New card (top)"</td></tr>
-                                <tr><td><kbd>"o"</kbd></td><td>"New card below selected"</td></tr>
-                                <tr><td><kbd>"O"</kbd>" (shift)"</td><td>"New card above selected"</td></tr>
-                                <tr><td><kbd>"e"</kbd></td><td>"Edit selected card"</td></tr>
-                                <tr><td><kbd>"b"</kbd></td><td>"Blaze / extinguish"</td></tr>
-                                <tr><td><kbd>"f"</kbd></td><td>"Cycle filter (Active → All → Blazed)"</td></tr>
-                                <tr><td><kbd>"/"</kbd></td><td>"Focus search"</td></tr>
-                                <tr><td><kbd>"Enter"</kbd></td><td>"Confirm search and select first card"</td></tr>
-                                <tr><td><kbd>"Esc"</kbd></td><td>"Close panel / clear search / clear filters & sorting"</td></tr>
-                                <tr><td><kbd>"?"</kbd></td><td>"Toggle this help"</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+        <div class="settings-page">
+            <div class="detail-header">
+                <span class="detail-status">"Keyboard Shortcuts"</span>
+                <button class="detail-close" on:click=on_close>"x"</button>
             </div>
-        })}
+            <div class="help-body">
+                <table class="help-table">
+                    <thead>
+                        <tr><th>"Key"</th><th>"Action"</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><kbd>"j"</kbd></td><td>"Select next card"</td></tr>
+                        <tr><td><kbd>"k"</kbd></td><td>"Select previous card"</td></tr>
+                        <tr><td><kbd>"g"</kbd></td><td>"Go to first card"</td></tr>
+                        <tr><td><kbd>"G"</kbd>" (shift)"</td><td>"Go to last card"</td></tr>
+                        <tr><td><kbd>"J"</kbd>" (shift)"</td><td>"Move card down"</td></tr>
+                        <tr><td><kbd>"K"</kbd>" (shift)"</td><td>"Move card up"</td></tr>
+                        <tr><td><kbd>"n"</kbd></td><td>"New card (bottom)"</td></tr>
+                        <tr><td><kbd>"N"</kbd>" (shift)"</td><td>"New card (top)"</td></tr>
+                        <tr><td><kbd>"o"</kbd></td><td>"New card below selected"</td></tr>
+                        <tr><td><kbd>"O"</kbd>" (shift)"</td><td>"New card above selected"</td></tr>
+                        <tr><td><kbd>"e"</kbd></td><td>"Edit selected card"</td></tr>
+                        <tr><td><kbd>"b"</kbd></td><td>"Blaze / extinguish"</td></tr>
+                        <tr><td><kbd>"t"</kbd></td><td>"Set due date to today"</td></tr>
+                        <tr><td><kbd>"T"</kbd>" (shift)"</td><td>"Set due date to tomorrow"</td></tr>
+                        <tr><td><kbd>"C"</kbd>" (shift)"</td><td>"Clear due date"</td></tr>
+                        <tr><td><kbd>"f"</kbd></td><td>"Cycle filter (Active / All / Blazed)"</td></tr>
+                        <tr><td><kbd>"/"</kbd></td><td>"Focus search"</td></tr>
+                        <tr><td><kbd>"Enter"</kbd></td><td>"Confirm search and select first card"</td></tr>
+                        <tr><td><kbd>","</kbd></td><td>"Toggle settings"</td></tr>
+                        <tr><td><kbd>"Esc"</kbd></td><td>"Close panel / clear search / clear filters & sorting"</td></tr>
+                        <tr><td><kbd>"?"</kbd></td><td>"Toggle this shortcuts panel"</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
     }
 }
