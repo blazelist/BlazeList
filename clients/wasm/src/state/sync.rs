@@ -258,7 +258,12 @@ pub async fn flush_offline_queue(client: &Client, state: &AppState) {
             continue;
         }
         match client.push_card(card.clone()).await {
-            Ok(_) => {}
+            Ok(_) => {
+                // Ensure the card is in local state — may have been wiped
+                // by initial_sync (RootHashMismatch recovery) before this
+                // flush ran.
+                state.upsert_card(card);
+            }
             Err(ClientError::ConnectionLost) => {
                 log::warn!("Connection lost during flush, keeping remaining cards queued");
                 remaining.push(card);
@@ -345,8 +350,14 @@ pub async fn flush_offline_queue(client: &Client, state: &AppState) {
         }
     }
 
+    let flushed = remaining.len() < total;
     state.offline_queue.set(remaining.clone());
     storage::save_offline_queue(&remaining).await;
+
+    // Persist the updated card list so OPFS reflects successfully pushed cards.
+    if flushed {
+        save_local_state(state).await;
+    }
 }
 
 /// Run the subscription loop, reading notifications until the stream breaks.

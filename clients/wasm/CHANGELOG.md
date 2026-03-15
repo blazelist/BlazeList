@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.1.1] - 2026-03-15
+
+### Fixed
+
+- Offline queue flush now re-adds pushed cards to local state and persists to
+  OPFS, preventing cards from disappearing until page reload after reconnect
+- App header wraps gracefully on small viewports with consistent row spacing
+
 ## [2.1.0] - 2026-03-15
 
 ### Added
