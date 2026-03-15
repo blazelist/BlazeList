@@ -81,6 +81,10 @@
     color: var(--due-overdue);
 }
 
+.sync-error {
+    color: var(--due-overdue);
+}
+
 .status-connected { color: var(--status-connected); }
 .status-syncing { color: var(--status-syncing); }
 .status-disconnected { color: var(--status-disconnected); }
@@ -189,6 +193,58 @@
     background: var(--bg-input);
     color: var(--text-primary);
     font-size: 0.78rem;
+}
+
+.settings-counter {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.settings-counter-btn {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 0.78rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    line-height: 1;
+    transition: all 0.15s;
+}
+
+.settings-counter-btn:hover:not(:disabled) {
+    border-color: var(--border-hover);
+    background: var(--bg-card-hover);
+}
+
+.settings-counter-btn:disabled {
+    opacity: 0.3;
+    cursor: default;
+}
+
+.settings-counter-value {
+    font-size: 0.78rem;
+    color: var(--text-primary);
+    min-width: 3rem;
+    text-align: center;
+}
+
+.settings-reset-btn {
+    width: 100%;
+    padding: 0.4rem 0.75rem;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.settings-reset-btn:hover {
+    color: var(--danger);
+    border-color: var(--danger);
 }
 
 .settings-link-btn {

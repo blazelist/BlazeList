@@ -9,7 +9,7 @@ use crate::components::keyboard::register_keyboard_shortcuts;
 use crate::components::settings_panel::{apply_ui_density, apply_ui_scale};
 use crate::pages::home::Home;
 use crate::state::settings;
-use crate::state::store::{AppState, ConnectionStatus, get_client, restore_from_query_params, set_client};
+use crate::state::store::{AppState, ConnectionStatus, clear_client, get_client, restore_from_query_params, set_client};
 use crate::state::sync::{
     flush_offline_queue, incremental_sync, initial_sync, load_local_state, run_subscription,
 };
@@ -46,14 +46,22 @@ pub fn App() -> impl IntoView {
     let state = AppState::new();
     provide_context(state.clone());
 
-    // Conditional tooltips: show title on .meta-value only when text is truncated
+    // Conditional tooltips: show title only when text is truncated
     js_sys::eval(
         r#"document.addEventListener('mouseenter', function(e) {
-            if (e.target.classList && e.target.classList.contains('meta-value')) {
-                if (e.target.scrollHeight > e.target.clientHeight) {
-                    e.target.title = e.target.textContent;
+            var t = e.target;
+            if (!t.classList) return;
+            if (t.classList.contains('meta-value')) {
+                if (t.scrollHeight > t.clientHeight) {
+                    t.title = t.textContent;
                 } else {
-                    e.target.removeAttribute('title');
+                    t.removeAttribute('title');
+                }
+            } else if (t.classList.contains('card-preview') || t.classList.contains('tag-title')) {
+                if (t.scrollWidth > t.clientWidth) {
+                    t.title = t.textContent;
+                } else {
+                    t.removeAttribute('title');
                 }
             }
         }, true);"#,
@@ -94,7 +102,7 @@ pub fn App() -> impl IntoView {
             if let Some(client) = get_client() {
                 leptos::task::spawn_local(async move {
                     if let Err(e) = incremental_sync(&client, &state).await {
-                        log::error!("Automatic sync failed: {e}");
+                        tracing::error!(%e, "Automatic sync failed");
                     }
                 });
             }
@@ -119,7 +127,7 @@ pub fn App() -> impl IntoView {
 
         // Request persistent storage to reduce eviction risk.
         if storage::request_persistent_storage().await {
-            log::info!("Persistent storage granted by browser");
+            tracing::info!("Persistent storage granted by browser");
         }
 
         // Load cached state from OPFS so the UI renders instantly.
@@ -193,7 +201,7 @@ async fn connection_loop(state: AppState) {
                 }
             }
         } else if !finished.get() {
-            log::warn!("Connection attempt timed out after {CONNECT_TIMEOUT_SECS}s");
+            tracing::warn!(timeout_secs = CONNECT_TIMEOUT_SECS, "Connection attempt timed out");
         }
 
         state.connection_status.set(ConnectionStatus::Disconnected);
@@ -215,12 +223,16 @@ async fn connection_loop(state: AppState) {
 /// Uses incremental sync when local state exists (from OPFS or a previous
 /// connection), falling back to a full initial sync when starting fresh.
 async fn connect_and_run(state: &AppState) {
+    // Clear any stale client from a previous connection so pushes during
+    // sync go to the offline queue rather than a dead transport.
+    clear_client();
+
     let url = state.server_url.get_untracked();
 
     let cert_hash = match fetch_cert_hash(&url).await {
         Ok(h) => h,
         Err(e) => {
-            log::error!("Failed to fetch certificate hash: {e}");
+            tracing::error!(%e, "Failed to fetch certificate hash");
             return;
         }
     };
@@ -228,15 +240,14 @@ async fn connect_and_run(state: &AppState) {
     let client = match Client::connect(&url, &cert_hash).await {
         Ok(c) => Rc::new(c),
         Err(e) => {
-            log::error!("Connection failed: {e}");
+            tracing::error!(%e, "Connection failed");
             return;
         }
     };
 
-    set_client(Rc::clone(&client));
-
-    // Use incremental sync when we already have local state, otherwise
-    // perform a full initial sync.
+    // Sync before exposing the client globally. While sync is in progress,
+    // get_client() returns None so any user-triggered pushes go to the
+    // offline queue instead of racing with stale OPFS-cached ancestor hashes.
     let sync_result = if state.root.get_untracked().is_some() {
         incremental_sync(&client, state).await
     } else {
@@ -244,15 +255,17 @@ async fn connect_and_run(state: &AppState) {
     };
 
     if let Err(e) = sync_result {
-        log::error!("Synchronization failed: {e}");
+        tracing::error!(%e, "Synchronization failed");
         return;
     }
+
+    set_client(Rc::clone(&client));
 
     // Flush any cards that were queued while offline.
     flush_offline_queue(&client, state).await;
 
     if let Err(e) = run_subscription(Rc::clone(&client), state).await {
-        log::error!("Subscription stream ended: {e}");
+        tracing::error!(%e, "Subscription stream ended");
     }
 }
 
@@ -283,7 +296,7 @@ fn register_reconnect_listeners(state: AppState) {
                         ConnectionStatus::Disconnected | ConnectionStatus::Connecting
                     )
                 {
-                    log::info!("Page visible while not connected, requesting reconnection");
+                    tracing::info!("Page visible while not connected, requesting reconnection");
                     request_reconnect();
                 }
             }
@@ -301,7 +314,7 @@ fn register_reconnect_listeners(state: AppState) {
                 state.connection_status.get_untracked(),
                 ConnectionStatus::Disconnected | ConnectionStatus::Connecting
             ) {
-                log::info!("Browser online while not connected, requesting reconnection");
+                tracing::info!("Browser online while not connected, requesting reconnection");
                 request_reconnect();
             }
         }) as Box<dyn FnMut()>);
@@ -387,7 +400,7 @@ async fn apply_server_config(state: &AppState) {
     let config = match fetch_config().await {
         Ok(c) => c,
         Err(e) => {
-            log::info!("Server configuration fetch skipped: {e}");
+            tracing::info!(%e, "Server configuration fetch skipped");
             return;
         }
     };
@@ -469,8 +482,43 @@ async fn apply_server_config(state: &AppState) {
             state.touch_swipe_enabled.set(v);
         }
     }
+    if !settings::has_swipe_threshold_right() {
+        if let Some(v) = get_u32(&config, "swipe_threshold_right") {
+            state.swipe_threshold_right.set(v);
+        }
+    }
+    if !settings::has_swipe_threshold_left() {
+        if let Some(v) = get_u32(&config, "swipe_threshold_left") {
+            state.swipe_threshold_left.set(v);
+        }
+    }
+    if !settings::has_clear_tag_search() {
+        if let Some(v) = get_bool(&config, "clear_tag_search") {
+            state.clear_tag_search.set(v);
+        }
+    }
+    if !settings::has_default_sidebar_width() {
+        if let Some(v) = get_u32(&config, "default_sidebar_width") {
+            state.default_sidebar_width.set(v);
+        }
+    }
+    if !settings::has_default_detail_width() {
+        if let Some(v) = get_u32(&config, "default_detail_width") {
+            state.default_detail_width.set(v);
+        }
+    }
+    if !settings::has_override_sidebar_width() {
+        if let Some(v) = get_bool(&config, "override_sidebar_width") {
+            state.override_sidebar_width.set(v);
+        }
+    }
+    if !settings::has_override_detail_width() {
+        if let Some(v) = get_bool(&config, "override_detail_width") {
+            state.override_detail_width.set(v);
+        }
+    }
 
-    log::info!("Applied server configuration defaults");
+    tracing::info!("Applied server configuration defaults");
 }
 
 /// Fetch the `/config` JSON from the server.

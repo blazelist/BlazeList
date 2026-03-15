@@ -52,6 +52,7 @@ seed := "true"
 dev-build:
     cargo build -p blazelist-server
     trunk build --config {{WASM_DIR}}/Trunk.toml
+    sh {{WASM_DIR}}/inject-precache.sh {{WASM_DIR}}/dist
 
 # Start server, seed data, and serve WASM client (Ctrl+C to stop)
 # Usage: just dev                       — full (server + WASM)
@@ -117,6 +118,7 @@ dev-lan:
 
     echo "Building WASM client..."
     trunk build --config {{WASM_DIR}}/Trunk.toml
+    sh {{WASM_DIR}}/inject-precache.sh {{WASM_DIR}}/dist
 
     echo "Starting BlazeList server with HTTPS (offset={{offset}})..."
     cargo run -p blazelist-server -- \
@@ -181,10 +183,12 @@ wasm-check:
 # Build the WASM client with Trunk (dev mode)
 wasm-build:
     trunk build --config {{WASM_DIR}}/Trunk.toml
+    sh {{WASM_DIR}}/inject-precache.sh {{WASM_DIR}}/dist
 
 # Build the WASM client with Trunk (release mode)
 wasm-build-release:
     trunk build --release --config {{WASM_DIR}}/Trunk.toml
+    sh {{WASM_DIR}}/inject-precache.sh {{WASM_DIR}}/dist
 
 # Serve the WASM client with Trunk (live-reload dev server)
 wasm-serve:

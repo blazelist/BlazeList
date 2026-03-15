@@ -47,6 +47,9 @@ pub fn TagSidebar() -> impl IntoView {
                                     state.tag_filter.set(Vec::new());
                                     state.tag_filter_mode.set(blazelist_client_lib::filter::TagFilterMode::Or);
                                 }
+                                if state.clear_tag_search.get_untracked() {
+                                    search.set(String::new());
+                                }
                                 sync_query_params(&state);
                             }
                         >
@@ -78,6 +81,9 @@ pub fn TagSidebar() -> impl IntoView {
                                 tags.push(tag_id);
                             }
                         });
+                        if state.clear_tag_search.get_untracked() {
+                            search.set(String::new());
+                        }
                         sync_query_params(&state);
                     };
 

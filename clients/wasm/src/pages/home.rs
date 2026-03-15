@@ -131,7 +131,7 @@ pub fn Home() -> impl IntoView {
                                 ev.client_x(),
                                 state.sidebar_width.get_untracked(),
                                 state.sidebar_width,
-                                120.0, 400.0,
+                                80.0, 500.0,
                                 "right",
                             );
                         }
@@ -149,7 +149,7 @@ pub fn Home() -> impl IntoView {
                                 ev.client_x(),
                                 state.detail_width.get_untracked(),
                                 state.detail_width,
-                                280.0, 1200.0,
+                                200.0, 1400.0,
                                 "left",
                             );
                         }

@@ -422,4 +422,14 @@ impl SqliteStorage {
         }
         Ok(())
     }
+
+    /// Force a WAL checkpoint, writing all committed WAL pages back to the
+    /// main database file and truncating the WAL.
+    pub fn checkpoint(&self) {
+        let conn = self.writer.lock().unwrap();
+        match conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)") {
+            Ok(()) => tracing::debug!("WAL checkpoint completed"),
+            Err(e) => tracing::debug!(%e, "WAL checkpoint failed"),
+        }
+    }
 }

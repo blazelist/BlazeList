@@ -96,10 +96,10 @@ impl BufReader {
 
             let done = done_val.as_bool().unwrap_or(false);
             if done {
-                log::warn!(
-                    "read_exact: stream done with {} of {} bytes read",
-                    self.buffer.len(),
-                    len
+                tracing::warn!(
+                    buffered = self.buffer.len(),
+                    expected = len,
+                    "read_exact: stream done prematurely",
                 );
                 return Err(WireError::StreamClosed);
             }

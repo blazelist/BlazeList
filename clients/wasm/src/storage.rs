@@ -83,13 +83,13 @@ pub async fn load() -> LocalState {
             match postcard::from_bytes(&bytes) {
                 Ok(state) => state,
                 Err(e) => {
-                    log::warn!("Local database corrupted, starting fresh: {e}");
+                    tracing::warn!(%e, "Local database corrupted, starting fresh");
                     LocalState::default()
                 }
             }
         }
         Err(e) => {
-            log::info!("No local database found (first run): {e:?}");
+            tracing::info!(?e, "No local database found (first run)");
             LocalState::default()
         }
     }
@@ -100,11 +100,11 @@ pub async fn save(state: &LocalState) {
     match postcard::to_allocvec(state) {
         Ok(bytes) => {
             if let Err(e) = opfs_write(DB_FILENAME, &bytes).await {
-                log::error!("Failed to save local database: {e:?}");
+                tracing::error!(?e, "Failed to save local database");
             }
         }
         Err(e) => {
-            log::error!("Failed to serialize local state: {e}");
+            tracing::error!(%e, "Failed to serialize local state");
         }
     }
 }
@@ -112,7 +112,7 @@ pub async fn save(state: &LocalState) {
 /// Clear the local database (e.g., on `RootHashMismatch`).
 pub async fn clear() {
     if let Err(e) = opfs_delete(DB_FILENAME).await {
-        log::warn!("Failed to clear local database: {e:?}");
+        tracing::warn!(?e, "Failed to clear local database");
     }
 }
 
@@ -155,11 +155,11 @@ pub async fn save_offline_queue(queue: &[Card]) {
     match postcard::to_allocvec(queue) {
         Ok(bytes) => {
             if let Err(e) = opfs_write(QUEUE_FILENAME, &bytes).await {
-                log::error!("Failed to save offline queue: {e:?}");
+                tracing::error!(?e, "Failed to save offline queue");
             }
         }
         Err(e) => {
-            log::error!("Failed to serialize offline queue: {e}");
+            tracing::error!(%e, "Failed to serialize offline queue");
         }
     }
 }
@@ -183,7 +183,7 @@ pub async fn load_history_cache() {
                     HISTORY.with(|h| *h.borrow_mut() = cache);
                 }
                 Err(e) => {
-                    log::warn!("History cache corrupted, starting fresh: {e}");
+                    tracing::warn!(%e, "History cache corrupted, starting fresh");
                 }
             }
         }
@@ -197,11 +197,11 @@ pub async fn save_history_cache() {
     match postcard::to_allocvec(&cache) {
         Ok(bytes) => {
             if let Err(e) = opfs_write(HISTORY_FILENAME, &bytes).await {
-                log::error!("Failed to save history cache: {e:?}");
+                tracing::error!(?e, "Failed to save history cache");
             }
         }
         Err(e) => {
-            log::error!("Failed to serialize history cache: {e}");
+            tracing::error!(%e, "Failed to serialize history cache");
         }
     }
 }
@@ -210,7 +210,7 @@ pub async fn save_history_cache() {
 pub async fn clear_history_cache() {
     HISTORY.with(|h| *h.borrow_mut() = HistoryCache::default());
     if let Err(e) = opfs_delete(HISTORY_FILENAME).await {
-        log::warn!("Failed to clear history cache: {e:?}");
+        tracing::warn!(?e, "Failed to clear history cache");
     }
 }
 

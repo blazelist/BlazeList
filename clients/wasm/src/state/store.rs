@@ -98,6 +98,10 @@ pub fn set_client(client: Rc<Client>) {
     CLIENT.with(|c| *c.borrow_mut() = Some(client));
 }
 
+pub fn clear_client() {
+    CLIENT.with(|c| *c.borrow_mut() = None);
+}
+
 pub fn get_client() -> Option<Rc<Client>> {
     CLIENT.with(|c| c.borrow().clone())
 }
@@ -211,6 +215,22 @@ pub struct AppState {
     pub offline_queue: RwSignal<Vec<Card>>,
     /// Device-local setting: enable touch swipe gestures on cards.
     pub touch_swipe_enabled: RwSignal<bool>,
+    /// Device-local setting: swipe right trigger threshold in px.
+    pub swipe_threshold_right: RwSignal<u32>,
+    /// Device-local setting: swipe left trigger threshold in px.
+    pub swipe_threshold_left: RwSignal<u32>,
+    /// Last sync error message, displayed in the sync indicator.
+    pub last_sync_error: RwSignal<Option<String>>,
+    /// Device-local setting: clear tag search input after selecting a tag.
+    pub clear_tag_search: RwSignal<bool>,
+    /// Device-local setting: default sidebar width in px.
+    pub default_sidebar_width: RwSignal<u32>,
+    /// Device-local setting: default detail panel width in px (0 = auto).
+    pub default_detail_width: RwSignal<u32>,
+    /// Device-local setting: whether to override the default sidebar width.
+    pub override_sidebar_width: RwSignal<bool>,
+    /// Device-local setting: whether to override the default detail panel width.
+    pub override_detail_width: RwSignal<bool>,
 }
 
 /// Reset all filter/view state to defaults and clear query params.
@@ -248,7 +268,19 @@ impl AppState {
             .and_then(|v| v.as_f64())
             .unwrap_or(1024.0);
 
-        let initial_detail_width = (viewport_width * 0.5).min(800.0).max(280.0);
+        let override_sidebar = settings::load_override_sidebar_width();
+        let override_detail = settings::load_override_detail_width();
+        let default_sidebar_w = if override_sidebar {
+            settings::load_default_sidebar_width()
+        } else {
+            settings::DEFAULT_SIDEBAR_WIDTH
+        };
+        let initial_detail_width = if override_detail {
+            let w = settings::load_default_detail_width();
+            if w > 0 { (w as f64).clamp(280.0, 1200.0) } else { (viewport_width * 0.5).min(800.0).max(280.0) }
+        } else {
+            (viewport_width * 0.5).min(800.0).max(280.0)
+        };
 
         // Hide sidebar by default on small viewports (matches the 768px CSS breakpoint)
         let initial_sidebar_visible = viewport_width > 768.0;
@@ -283,7 +315,7 @@ impl AppState {
             search_query: RwSignal::new(String::new()),
             selected_card: RwSignal::new(parse_selected_card_from_params(&params)),
             sidebar_visible: RwSignal::new(initial_sidebar_visible),
-            sidebar_width: RwSignal::new(180.0),
+            sidebar_width: RwSignal::new(default_sidebar_w as f64),
             detail_width: RwSignal::new(initial_detail_width),
             connection_status: RwSignal::new(ConnectionStatus::Disconnected),
             server_url: RwSignal::new(derive_wt_url()),
@@ -320,6 +352,14 @@ impl AppState {
             new_card_position: RwSignal::new(NewCardPosition::Bottom),
             offline_queue: RwSignal::new(Vec::new()),
             touch_swipe_enabled: RwSignal::new(settings::load_touch_swipe()),
+            swipe_threshold_right: RwSignal::new(settings::load_swipe_threshold_right()),
+            swipe_threshold_left: RwSignal::new(settings::load_swipe_threshold_left()),
+            last_sync_error: RwSignal::new(None),
+            clear_tag_search: RwSignal::new(settings::load_clear_tag_search()),
+            default_sidebar_width: RwSignal::new(settings::load_default_sidebar_width()),
+            default_detail_width: RwSignal::new(settings::load_default_detail_width()),
+            override_sidebar_width: RwSignal::new(settings::load_override_sidebar_width()),
+            override_detail_width: RwSignal::new(settings::load_override_detail_width()),
         }
     }
 

@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] - 2026-03-15
+
+### Added
+
+- Periodic WAL checkpointing — writes committed WAL pages back to the main
+  database file on a configurable interval (default: 60 s), preventing
+  unbounded WAL growth during long-running sessions
+- `BLAZELIST_SQLITE_CHECKPOINT_INTERVAL` environment variable (seconds,
+  default: `60`, set to `0` to disable)
+- Graceful shutdown on SIGINT and SIGTERM — aborts the checkpoint task,
+  runs a final WAL checkpoint, and exits cleanly
+- `BLAZELIST_DEFAULT_SWIPE_THRESHOLD_RIGHT` environment variable
+- `BLAZELIST_DEFAULT_SWIPE_THRESHOLD_LEFT` environment variable
+- `BLAZELIST_DEFAULT_CLEAR_TAG_SEARCH` environment variable
+- `BLAZELIST_DEFAULT_SIDEBAR_WIDTH` environment variable
+- `BLAZELIST_DEFAULT_DETAIL_WIDTH` environment variable
+- `BLAZELIST_DEFAULT_OVERRIDE_SIDEBAR_WIDTH` environment variable
+- `BLAZELIST_DEFAULT_OVERRIDE_DETAIL_WIDTH` environment variable
+
+### Added
+
+- `tracing` dependency for structured checkpoint diagnostics
+
 ## [2.1.0] - 2026-03-15
 
 ### Added

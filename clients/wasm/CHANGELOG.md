@@ -5,6 +5,71 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] - 2026-03-15
+
+### Added
+
+- UI scale setting changed to a simple number input field (50–300%)
+- Configurable swipe trigger distance for left and right directions separately
+  (default: 100 px right, 90 px left; range 40–150 px), shown in settings when
+  touch swipe is enabled
+- `BLAZELIST_DEFAULT_SWIPE_THRESHOLD_RIGHT` and
+  `BLAZELIST_DEFAULT_SWIPE_THRESHOLD_LEFT` server-side environment variables
+- "Clear tag search on select" setting (default: enabled) — clears the tag
+  search input in the sidebar and card editor after clicking a tag
+- `BLAZELIST_DEFAULT_CLEAR_TAG_SEARCH` server-side environment variable
+- Override sidebar/detail panel width settings — each is a toggle that reveals
+  a width input when enabled (default: off, uses standard defaults)
+- `BLAZELIST_DEFAULT_OVERRIDE_SIDEBAR_WIDTH`,
+  `BLAZELIST_DEFAULT_OVERRIDE_DETAIL_WIDTH`,
+  `BLAZELIST_DEFAULT_SIDEBAR_WIDTH`, and `BLAZELIST_DEFAULT_DETAIL_WIDTH`
+  server-side environment variables
+- Conditional tooltips on card previews and tag names in the sidebar — tooltip
+  appears only when the text is actually truncated
+- "Reset all settings to defaults" button at the bottom of the settings page;
+  clears all saved preferences and reloads the page
+- Full offline PWA startup — service worker precaches all app assets so the
+  UI loads instantly even without a network connection
+
+### Changed
+
+- Replaced `log`/`console_log` with `tracing`/`tracing-wasm` for structured,
+  level-filtered logging
+- Touch swipe uses rubber-band physics — 1:1 movement until the threshold,
+  then diminishing drag beyond it; action label and background color fade in
+  progressively and only commit when the threshold is reached
+- Sidebar and detail panel can be resized to smaller minimums (sidebar 80 px,
+  detail 200 px) and larger maximums (sidebar 500 px, detail 1400 px)
+- Card list indicator: thin left accent bar on each card — green for active,
+  red for blazed (matching card header status colors), brighter when selected
+- Tag names in the sidebar truncate with ellipsis instead of wrapping,
+  showing full text naturally when the sidebar is wider
+
+### Fixed
+
+- Pushes with stale OPFS-cached ancestor hashes no longer race against
+  the initial sync — the client is not exposed globally until sync completes,
+  so user-triggered saves during connection go to the offline queue and are
+  reconciled after sync finishes
+- Stale client from a previous connection is cleared on reconnect, preventing
+  pushes through a dead transport during the sync window
+- Live card and version pushes now rebase on ancestor hash mismatch instead
+  of falling through to the offline queue — edits are applied on top of the
+  server's latest version immediately, avoiding unnecessary queuing
+- Offline queue flush also rebases on ancestor hash mismatch instead of
+  silently dropping queued cards — the user's content is preserved on top of
+  the server's latest version
+- New card auto-save now works offline — card is added to local state and
+  queued for sync instead of silently failing when disconnected
+- Existing card updates with `DuplicatePriority` in the offline queue are
+  now resolved by fetching the server version and rebasing with `.next()`,
+  instead of looping forever in `remaining`
+- Offline queue no longer silently drops cards on unhandled push errors —
+  only `AlreadyDeleted` cards are dropped; all other errors keep the card
+  queued for retry on the next sync cycle
+- Sync failures now display an error message in the sync indicator bar,
+  clearing automatically on the next successful sync
+
 ## [2.1.1] - 2026-03-15
 
 ### Fixed

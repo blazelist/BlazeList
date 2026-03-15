@@ -34,7 +34,7 @@ pub async fn load_local_state(state: &AppState) -> bool {
         state.deleted_count.set(local.deleted_entities.len());
         state.root.set(Some(local.root));
         DELETED_ENTITIES.with(|de| *de.borrow_mut() = local.deleted_entities);
-        log::info!("Loaded local state from Origin Private File System");
+        tracing::info!("Loaded local state from Origin Private File System");
     }
 
     has_data
@@ -77,6 +77,7 @@ pub async fn initial_sync(client: &Client, state: &AppState) -> Result<(), Strin
     state.last_sync_ops.set(ops);
     state.last_sync_duration_ms.set(Some((js_sys::Date::now() - t0).round() as u32));
     state.auto_sync_countdown.set(state.auto_sync_interval_secs.get_untracked());
+    state.last_sync_error.set(None);
 
     save_local_state(state).await;
 
@@ -119,6 +120,7 @@ pub async fn incremental_sync(client: &Client, state: &AppState) -> Result<(), S
             state.deleted_count.update(|c| *c += deleted_in_changeset);
             state.last_sync_duration_ms.set(Some((js_sys::Date::now() - t0).round() as u32));
             state.auto_sync_countdown.set(state.auto_sync_interval_secs.get_untracked());
+            state.last_sync_error.set(None);
 
             save_local_state(state).await;
 
@@ -130,7 +132,7 @@ pub async fn incremental_sync(client: &Client, state: &AppState) -> Result<(), S
         Err(ClientError::Protocol(ProtocolError::RootHashMismatch { .. })) => {
             // Local state is out of sync with the server.
             // Wipe the local DB and history cache, then perform a full re-sync.
-            log::warn!("Root hash mismatch — wiping local database and performing full synchronization");
+            tracing::warn!("Root hash mismatch — wiping local database and performing full synchronization");
             storage::clear().await;
             storage::clear_history_cache().await;
             DELETED_ENTITIES.with(|de| de.borrow_mut().clear());
@@ -143,7 +145,9 @@ pub async fn incremental_sync(client: &Client, state: &AppState) -> Result<(), S
         }
         Err(e) => {
             state.connection_status.set(ConnectionStatus::Connected);
-            Err(e.to_string())
+            let msg = e.to_string();
+            state.last_sync_error.set(Some(msg.clone()));
+            Err(msg)
         }
     }
 }
@@ -158,16 +162,36 @@ pub async fn push_card_or_queue(state: &AppState, card: Card) {
     if let Some(client) = get_client() {
         match client.push_card(card.clone()).await {
             Ok(_) => {
-                // Remove any stale queued version of this card.
-                let had_queued = state.offline_queue.with_untracked(|q| q.iter().any(|c| c.id() == card_id));
-                if had_queued {
-                    state.offline_queue.update(|q| q.retain(|c| c.id() != card_id));
-                    storage::save_offline_queue(&state.offline_queue.get_untracked()).await;
-                }
+                clear_queued_card(state, card_id).await;
                 return;
             }
+            Err(ClientError::Protocol(ProtocolError::PushFailed(
+                PushError::CardAncestorMismatch(server_card),
+            ))) => {
+                // Server has a newer version — rebase our edit on top of it
+                // so content is preserved instead of silently lost in the queue.
+                tracing::info!(card_id = %card.id(), "Ancestor mismatch, rebasing edit");
+                let rebased = server_card.next(
+                    card.content().to_string(),
+                    card.priority(),
+                    card.tags().to_vec(),
+                    card.blazed(),
+                    blazelist_protocol::Utc::now(),
+                    card.due_date(),
+                );
+                match client.push_card(rebased.clone()).await {
+                    Ok(_) => {
+                        state.upsert_card(rebased);
+                        clear_queued_card(state, card_id).await;
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::warn!(%e, "Rebased push also failed, queuing for later");
+                    }
+                }
+            }
             Err(e) => {
-                log::warn!("Push failed, queuing for later: {e}");
+                tracing::warn!(%e, "Push failed, queuing for later");
             }
         }
     }
@@ -195,16 +219,36 @@ pub async fn push_versions_or_queue(state: &AppState, versions: Vec<Card>) {
     if let Some(client) = get_client() {
         match client.push_card_versions(versions).await {
             Ok(_) => {
-                let had_queued =
-                    state.offline_queue.with_untracked(|q| q.iter().any(|c| c.id() == card_id));
-                if had_queued {
-                    state.offline_queue.update(|q| q.retain(|c| c.id() != card_id));
-                    storage::save_offline_queue(&state.offline_queue.get_untracked()).await;
-                }
+                clear_queued_card(state, card_id).await;
                 return;
             }
+            Err(ClientError::Protocol(ProtocolError::PushFailed(
+                PushError::CardAncestorMismatch(server_card),
+            ))) => {
+                // The version chain's base is stale. Rebase the latest
+                // version's content onto the server's current state.
+                tracing::info!(card_id = %last.id(), "Ancestor mismatch on version chain, rebasing latest");
+                let rebased = server_card.next(
+                    last.content().to_string(),
+                    last.priority(),
+                    last.tags().to_vec(),
+                    last.blazed(),
+                    blazelist_protocol::Utc::now(),
+                    last.due_date(),
+                );
+                match client.push_card(rebased.clone()).await {
+                    Ok(_) => {
+                        state.upsert_card(rebased);
+                        clear_queued_card(state, card_id).await;
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::warn!(%e, "Rebased push also failed, queuing for later");
+                    }
+                }
+            }
             Err(e) => {
-                log::warn!("Push versions failed, queuing latest: {e}");
+                tracing::warn!(%e, "Push versions failed, queuing latest");
             }
         }
     }
@@ -213,6 +257,19 @@ pub async fn push_versions_or_queue(state: &AppState, versions: Vec<Card>) {
         q.push(last);
     });
     storage::save_offline_queue(&state.offline_queue.get_untracked()).await;
+}
+
+/// Remove a card from the offline queue if present, and persist the change.
+async fn clear_queued_card(state: &AppState, card_id: uuid::Uuid) {
+    let had_queued = state
+        .offline_queue
+        .with_untracked(|q| q.iter().any(|c| c.id() == card_id));
+    if had_queued {
+        state
+            .offline_queue
+            .update(|q| q.retain(|c| c.id() != card_id));
+        storage::save_offline_queue(&state.offline_queue.get_untracked()).await;
+    }
 }
 
 /// Reconcile and flush the offline queue after a successful sync.
@@ -232,8 +289,12 @@ pub async fn flush_offline_queue(client: &Client, state: &AppState) {
         .filter(|queued| {
             match server_cards.iter().find(|sc| sc.id() == queued.id()) {
                 Some(server_card) if server_card.count() >= queued.count() => {
-                    log::info!("Dropping stale queued card {} (server has version {}; queued {})",
-                        queued.id(), server_card.count(), queued.count());
+                    tracing::info!(
+                        card_id = %queued.id(),
+                        server_version = %server_card.count(),
+                        queued_version = %queued.count(),
+                        "Dropping stale queued card",
+                    );
                     false
                 }
                 _ => true,
@@ -248,7 +309,7 @@ pub async fn flush_offline_queue(client: &Client, state: &AppState) {
     }
 
     let total = queue.len();
-    log::info!("Flushing {total} offline queued cards");
+    tracing::info!(total, "Flushing offline queued cards");
     let mut remaining = Vec::new();
     let mut hit_connection_error = false;
 
@@ -265,36 +326,63 @@ pub async fn flush_offline_queue(client: &Client, state: &AppState) {
                 state.upsert_card(card);
             }
             Err(ClientError::ConnectionLost) => {
-                log::warn!("Connection lost during flush, keeping remaining cards queued");
+                tracing::warn!("Connection lost during flush, keeping remaining cards queued");
                 remaining.push(card);
                 hit_connection_error = true;
             }
             Err(ClientError::Protocol(ProtocolError::PushFailed(
                 PushError::DuplicatePriority { .. },
             ))) => {
-                log::warn!("Priority collision for card {}, recomputing", card.id());
+                tracing::warn!(card_id = %card.id(), "Priority collision, recomputing");
                 let mut cards = state.cards.get_untracked();
                 cards.retain(|c| c.id() != card.id());
                 sort_by_priority(&mut cards);
 
-                if card.ancestor_hash() != ZERO_HASH {
-                    // Existing card update with collision — keep for next cycle.
-                    remaining.push(card);
-                    continue;
-                }
+                let is_existing = card.ancestor_hash() != ZERO_HASH;
+
+                // For existing cards, fetch the server's current version to use
+                // as ancestor so the version chain is preserved.
+                let server_ancestor = if is_existing {
+                    match client.get_card(card.id()).await {
+                        Ok(sc) => Some(sc),
+                        Err(ClientError::ConnectionLost) => {
+                            remaining.push(card);
+                            hit_connection_error = true;
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::warn!(%e, "Could not fetch server card for rebase, keeping queued");
+                            remaining.push(card);
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                };
 
                 let placement = resolve_collision(&cards, card.priority());
                 match placement {
                     Placement::Simple(new_priority) => {
-                        let retry = Card::first(
-                            card.id(),
-                            card.content().to_string(),
-                            new_priority,
-                            card.tags().to_vec(),
-                            card.blazed(),
-                            card.created_at(),
-                            card.due_date(),
-                        );
+                        let retry = if let Some(ancestor) = &server_ancestor {
+                            ancestor.next(
+                                card.content().to_string(),
+                                new_priority,
+                                card.tags().to_vec(),
+                                card.blazed(),
+                                blazelist_protocol::Utc::now(),
+                                card.due_date(),
+                            )
+                        } else {
+                            Card::first(
+                                card.id(),
+                                card.content().to_string(),
+                                new_priority,
+                                card.tags().to_vec(),
+                                card.blazed(),
+                                card.created_at(),
+                                card.due_date(),
+                            )
+                        };
                         match client.push_card(retry.clone()).await {
                             Ok(_) => {
                                 state.upsert_card(retry);
@@ -309,15 +397,26 @@ pub async fn flush_offline_queue(client: &Client, state: &AppState) {
                         }
                     }
                     Placement::Rebalanced { priority, shifted } => {
-                        let retry = Card::first(
-                            card.id(),
-                            card.content().to_string(),
-                            priority,
-                            card.tags().to_vec(),
-                            card.blazed(),
-                            card.created_at(),
-                            card.due_date(),
-                        );
+                        let retry = if let Some(ancestor) = &server_ancestor {
+                            ancestor.next(
+                                card.content().to_string(),
+                                priority,
+                                card.tags().to_vec(),
+                                card.blazed(),
+                                blazelist_protocol::Utc::now(),
+                                card.due_date(),
+                            )
+                        } else {
+                            Card::first(
+                                card.id(),
+                                card.content().to_string(),
+                                priority,
+                                card.tags().to_vec(),
+                                card.blazed(),
+                                card.created_at(),
+                                card.due_date(),
+                            )
+                        };
                         let shifted_cards = build_shifted_versions(&shifted, &cards);
                         let mut items: Vec<PushItem> = shifted_cards
                             .iter()
@@ -342,10 +441,48 @@ pub async fn flush_offline_queue(client: &Client, state: &AppState) {
                     }
                 }
             }
+            Err(ClientError::Protocol(ProtocolError::PushFailed(
+                PushError::CardAncestorMismatch(server_card),
+            ))) => {
+                // The queued card was built on a stale ancestor hash. Rebase
+                // the user's edits onto the server's latest version so content
+                // is preserved instead of silently dropped.
+                tracing::info!(
+                    card_id = %card.id(),
+                    "Rebasing queued edit onto server version",
+                );
+                let rebased = server_card.next(
+                    card.content().to_string(),
+                    card.priority(),
+                    card.tags().to_vec(),
+                    card.blazed(),
+                    blazelist_protocol::Utc::now(),
+                    card.due_date(),
+                );
+                match client.push_card(rebased.clone()).await {
+                    Ok(_) => {
+                        state.upsert_card(rebased);
+                    }
+                    Err(ClientError::ConnectionLost) => {
+                        remaining.push(card);
+                        hit_connection_error = true;
+                    }
+                    Err(e) => {
+                        tracing::warn!(%e, "Rebased push failed, dropping card");
+                    }
+                }
+            }
+            Err(ClientError::Protocol(ProtocolError::PushFailed(
+                PushError::AlreadyDeleted,
+            ))) => {
+                tracing::info!(card_id = %card.id(), "Card deleted on server, dropping from queue");
+            }
             Err(e) => {
-                // Other non-connection errors (stale data, etc.) — drop to avoid
-                // blocking the queue permanently.
-                log::warn!("Dropping queued card (push rejected): {e}");
+                // Unhandled error — keep the card queued and stop processing
+                // so the next sync cycle's reconciliation can resolve it.
+                tracing::warn!(%e, "Keeping queued card for retry");
+                remaining.push(card);
+                hit_connection_error = true;
             }
         }
     }

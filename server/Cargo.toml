@@ -1,6 +1,6 @@
 [package]
 name = "blazelist-server"
-version = "2.1.0"
+version = "2.2.0"
 edition.workspace = true
 
 [lints]
@@ -20,6 +20,7 @@ rustls.workspace = true
 serde.workspace = true
 time = "0.3"
 tokio.workspace = true
+tracing.workspace = true
 tokio-rustls.workspace = true
 uuid.workspace = true
 wtransport.workspace = true

@@ -14,6 +14,13 @@ const STORAGE_KEY_SEARCH_TAGS: &str = "blazelist_search_tags";
 const STORAGE_KEY_UI_SCALE: &str = "blazelist_ui_scale";
 const STORAGE_KEY_UI_DENSITY: &str = "blazelist_ui_density";
 const STORAGE_KEY_TOUCH_SWIPE: &str = "blazelist_touch_swipe";
+const STORAGE_KEY_SWIPE_THRESHOLD_RIGHT: &str = "blazelist_swipe_threshold_right";
+const STORAGE_KEY_SWIPE_THRESHOLD_LEFT: &str = "blazelist_swipe_threshold_left";
+const STORAGE_KEY_CLEAR_TAG_SEARCH: &str = "blazelist_clear_tag_search";
+const STORAGE_KEY_DEFAULT_SIDEBAR_WIDTH: &str = "blazelist_default_sidebar_width";
+const STORAGE_KEY_DEFAULT_DETAIL_WIDTH: &str = "blazelist_default_detail_width";
+const STORAGE_KEY_OVERRIDE_SIDEBAR_WIDTH: &str = "blazelist_override_sidebar_width";
+const STORAGE_KEY_OVERRIDE_DETAIL_WIDTH: &str = "blazelist_override_detail_width";
 
 /// Default values (used when localStorage has no value and no server override).
 pub const DEFAULT_SHOW_PREVIEW: bool = false;
@@ -28,6 +35,13 @@ pub const DEFAULT_SEARCH_TAGS: bool = true;
 pub const DEFAULT_UI_SCALE: u32 = 100;
 pub const DEFAULT_UI_DENSITY: &str = "compact";
 pub const DEFAULT_TOUCH_SWIPE: bool = false;
+pub const DEFAULT_SWIPE_THRESHOLD_RIGHT: u32 = 100;
+pub const DEFAULT_SWIPE_THRESHOLD_LEFT: u32 = 90;
+pub const DEFAULT_CLEAR_TAG_SEARCH: bool = true;
+pub const DEFAULT_SIDEBAR_WIDTH: u32 = 180;
+pub const DEFAULT_DETAIL_WIDTH: u32 = 0;
+pub const DEFAULT_OVERRIDE_SIDEBAR_WIDTH: bool = false;
+pub const DEFAULT_OVERRIDE_DETAIL_WIDTH: bool = false;
 
 fn local_storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok()?
@@ -87,6 +101,13 @@ pub fn has_search_tags() -> bool { load_bool(STORAGE_KEY_SEARCH_TAGS).is_some() 
 pub fn has_ui_scale() -> bool { load_u32(STORAGE_KEY_UI_SCALE).is_some() }
 pub fn has_ui_density() -> bool { load_string(STORAGE_KEY_UI_DENSITY).is_some() }
 pub fn has_touch_swipe() -> bool { load_bool(STORAGE_KEY_TOUCH_SWIPE).is_some() }
+pub fn has_swipe_threshold_right() -> bool { load_u32(STORAGE_KEY_SWIPE_THRESHOLD_RIGHT).is_some() }
+pub fn has_swipe_threshold_left() -> bool { load_u32(STORAGE_KEY_SWIPE_THRESHOLD_LEFT).is_some() }
+pub fn has_clear_tag_search() -> bool { load_bool(STORAGE_KEY_CLEAR_TAG_SEARCH).is_some() }
+pub fn has_default_sidebar_width() -> bool { load_u32(STORAGE_KEY_DEFAULT_SIDEBAR_WIDTH).is_some() }
+pub fn has_default_detail_width() -> bool { load_u32(STORAGE_KEY_DEFAULT_DETAIL_WIDTH).is_some() }
+pub fn has_override_sidebar_width() -> bool { load_bool(STORAGE_KEY_OVERRIDE_SIDEBAR_WIDTH).is_some() }
+pub fn has_override_detail_width() -> bool { load_bool(STORAGE_KEY_OVERRIDE_DETAIL_WIDTH).is_some() }
 
 pub fn load_show_preview() -> bool {
     load_bool(STORAGE_KEY_SHOW_PREVIEW).unwrap_or(DEFAULT_SHOW_PREVIEW)
@@ -182,4 +203,90 @@ pub fn load_touch_swipe() -> bool {
 
 pub fn save_touch_swipe(enabled: bool) {
     save_bool(STORAGE_KEY_TOUCH_SWIPE, enabled);
+}
+
+pub fn load_swipe_threshold_right() -> u32 {
+    load_u32(STORAGE_KEY_SWIPE_THRESHOLD_RIGHT).unwrap_or(DEFAULT_SWIPE_THRESHOLD_RIGHT)
+}
+
+pub fn save_swipe_threshold_right(px: u32) {
+    save_u32(STORAGE_KEY_SWIPE_THRESHOLD_RIGHT, px);
+}
+
+pub fn load_swipe_threshold_left() -> u32 {
+    load_u32(STORAGE_KEY_SWIPE_THRESHOLD_LEFT).unwrap_or(DEFAULT_SWIPE_THRESHOLD_LEFT)
+}
+
+pub fn save_swipe_threshold_left(px: u32) {
+    save_u32(STORAGE_KEY_SWIPE_THRESHOLD_LEFT, px);
+}
+
+pub fn load_clear_tag_search() -> bool {
+    load_bool(STORAGE_KEY_CLEAR_TAG_SEARCH).unwrap_or(DEFAULT_CLEAR_TAG_SEARCH)
+}
+
+pub fn save_clear_tag_search(enabled: bool) {
+    save_bool(STORAGE_KEY_CLEAR_TAG_SEARCH, enabled);
+}
+
+pub fn load_default_sidebar_width() -> u32 {
+    load_u32(STORAGE_KEY_DEFAULT_SIDEBAR_WIDTH).unwrap_or(DEFAULT_SIDEBAR_WIDTH)
+}
+
+pub fn save_default_sidebar_width(px: u32) {
+    save_u32(STORAGE_KEY_DEFAULT_SIDEBAR_WIDTH, px);
+}
+
+pub fn load_default_detail_width() -> u32 {
+    load_u32(STORAGE_KEY_DEFAULT_DETAIL_WIDTH).unwrap_or(DEFAULT_DETAIL_WIDTH)
+}
+
+pub fn save_default_detail_width(px: u32) {
+    save_u32(STORAGE_KEY_DEFAULT_DETAIL_WIDTH, px);
+}
+
+pub fn load_override_sidebar_width() -> bool {
+    load_bool(STORAGE_KEY_OVERRIDE_SIDEBAR_WIDTH).unwrap_or(DEFAULT_OVERRIDE_SIDEBAR_WIDTH)
+}
+
+pub fn save_override_sidebar_width(enabled: bool) {
+    save_bool(STORAGE_KEY_OVERRIDE_SIDEBAR_WIDTH, enabled);
+}
+
+pub fn load_override_detail_width() -> bool {
+    load_bool(STORAGE_KEY_OVERRIDE_DETAIL_WIDTH).unwrap_or(DEFAULT_OVERRIDE_DETAIL_WIDTH)
+}
+
+pub fn save_override_detail_width(enabled: bool) {
+    save_bool(STORAGE_KEY_OVERRIDE_DETAIL_WIDTH, enabled);
+}
+
+/// Remove all BlazeList settings from localStorage, restoring defaults.
+pub fn clear_all_settings() {
+    if let Some(storage) = local_storage() {
+        let keys = [
+            STORAGE_KEY_SHOW_PREVIEW,
+            STORAGE_KEY_AUTO_SAVE,
+            STORAGE_KEY_AUTO_SAVE_DELAY,
+            STORAGE_KEY_AUTO_SYNC,
+            STORAGE_KEY_AUTO_SYNC_INTERVAL,
+            STORAGE_KEY_DEBOUNCE_ENABLED,
+            STORAGE_KEY_DEBOUNCE_DELAY,
+            STORAGE_KEY_KEYBOARD_SHORTCUTS,
+            STORAGE_KEY_SEARCH_TAGS,
+            STORAGE_KEY_UI_SCALE,
+            STORAGE_KEY_UI_DENSITY,
+            STORAGE_KEY_TOUCH_SWIPE,
+            STORAGE_KEY_SWIPE_THRESHOLD_RIGHT,
+            STORAGE_KEY_SWIPE_THRESHOLD_LEFT,
+            STORAGE_KEY_CLEAR_TAG_SEARCH,
+            STORAGE_KEY_DEFAULT_SIDEBAR_WIDTH,
+            STORAGE_KEY_DEFAULT_DETAIL_WIDTH,
+            STORAGE_KEY_OVERRIDE_SIDEBAR_WIDTH,
+            STORAGE_KEY_OVERRIDE_DETAIL_WIDTH,
+        ];
+        for key in keys {
+            let _ = storage.remove_item(key);
+        }
+    }
 }

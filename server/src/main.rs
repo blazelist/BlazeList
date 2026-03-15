@@ -122,18 +122,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    // Wait for any server to exit (they run forever in normal operation).
+    // --- Periodic WAL checkpoint task ---
+    let checkpoint_interval_secs: u64 = std::env::var("BLAZELIST_SQLITE_CHECKPOINT_INTERVAL")
+        .unwrap_or_else(|_| "60".to_owned())
+        .parse()
+        .expect("BLAZELIST_SQLITE_CHECKPOINT_INTERVAL must be a non-negative integer");
+
+    let checkpoint_storage = Arc::clone(&storage);
+    let checkpoint_handle = tokio::spawn(async move {
+        if checkpoint_interval_secs == 0 {
+            std::future::pending::<()>().await;
+            return;
+        }
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(checkpoint_interval_secs));
+        interval.tick().await; // skip the immediate first tick
+        loop {
+            interval.tick().await;
+            checkpoint_storage.checkpoint();
+        }
+    });
+
+    // Wait for shutdown signal or any server task to exit unexpectedly.
     tokio::select! {
-        _ = quic_handle => eprintln!("QUIC server exited"),
-        _ = wt_handle => eprintln!("WebTransport server exited"),
-        _ = http_handle => eprintln!("HTTP cert-hash server exited"),
+        _ = shutdown_signal() => {},
+        _ = quic_handle => eprintln!("QUIC server exited unexpectedly"),
+        _ = wt_handle => eprintln!("WebTransport server exited unexpectedly"),
+        _ = http_handle => eprintln!("HTTP cert-hash server exited unexpectedly"),
         _ = async {
             match https_handle {
                 Some(h) => { let _ = h.await; }
                 None => std::future::pending().await,
             }
-        } => eprintln!("HTTPS static server exited"),
+        } => eprintln!("HTTPS static server exited unexpectedly"),
     }
 
+    // --- Graceful shutdown ---
+    println!("Shutting down...");
+    checkpoint_handle.abort();
+    storage.checkpoint();
+    println!("Shutdown complete.");
+
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => println!("\nReceived SIGINT"),
+        _ = terminate => println!("\nReceived SIGTERM"),
+    }
 }

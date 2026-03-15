@@ -40,7 +40,7 @@ pub fn SyncIndicator() -> impl IntoView {
             let Some(client) = get_client() else { return };
             leptos::task::spawn_local(async move {
                 if let Err(e) = incremental_sync(&client, &state).await {
-                    log::error!("Manual synchronization failed: {e}");
+                    tracing::error!(%e, "Manual synchronization failed");
                 }
             });
         }
@@ -67,7 +67,8 @@ pub fn SyncIndicator() -> impl IntoView {
     let offline_queue_text = move || {
         let count = state.offline_queue.with(|q| q.len());
         if count > 0 {
-            Some(format!("{count} unsynced"))
+            let label = if count == 1 { "operation" } else { "operations" };
+            Some(format!("{count} unsynced {label}"))
         } else {
             None
         }
@@ -110,6 +111,12 @@ pub fn SyncIndicator() -> impl IntoView {
             {move || {
                 auto_sync_text().map(|text| view! {
                     <span class="sync-detail">{text}</span>
+                    <span class="sync-sep">{"\u{00b7}"}</span>
+                })
+            }}
+            {move || {
+                state.last_sync_error.get().map(|err| view! {
+                    <span class="sync-detail sync-error">{err}</span>
                     <span class="sync-sep">{"\u{00b7}"}</span>
                 })
             }}

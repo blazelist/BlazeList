@@ -71,7 +71,6 @@ pub fn CardItem(
     } else {
         "(empty)".to_string()
     };
-
     let time_text = move || {
         // Read tick to re-evaluate periodically
         let _ = state.tick.get();
@@ -198,8 +197,28 @@ pub fn CardItem(
                 }
                 if sw.get() {
                     ev.prevent_default();
-                    // Clamp to reasonable range
-                    swipe_offset.set(dx.clamp(-120.0, 120.0));
+                    let threshold_r = state.swipe_threshold_right.get_untracked() as f64;
+                    let threshold_l = state.swipe_threshold_left.get_untracked() as f64;
+                    // Rubber-band: 1:1 until threshold, then diminishing returns
+                    let offset = if dx > 0.0 {
+                        if dx <= threshold_r {
+                            dx
+                        } else {
+                            let extra = dx - threshold_r;
+                            let brake = threshold_r * 1.2;
+                            threshold_r + brake * extra / (extra + brake)
+                        }
+                    } else {
+                        let adx = dx.abs();
+                        if adx <= threshold_l {
+                            dx
+                        } else {
+                            let extra = adx - threshold_l;
+                            let brake = threshold_l * 1.2;
+                            -(threshold_l + brake * extra / (extra + brake))
+                        }
+                    };
+                    swipe_offset.set(offset);
                 }
             }
         }
@@ -216,8 +235,9 @@ pub fn CardItem(
             swipe_offset.set(0.0);
             sw.set(false);
 
-            const THRESHOLD: f64 = 60.0;
-            if offset > THRESHOLD {
+            let threshold_r = state.swipe_threshold_right.get_untracked() as f64;
+            let threshold_l = state.swipe_threshold_left.get_untracked() as f64;
+            if offset > threshold_r {
                 // Swipe right → blaze/extinguish
                 let c = stored_card.get_value();
                 let updated = c.next(
@@ -232,7 +252,7 @@ pub fn CardItem(
                 leptos::task::spawn_local(async move {
                     push_card_or_queue(&state, updated).await;
                 });
-            } else if offset < -THRESHOLD {
+            } else if offset < -threshold_l {
                 // Swipe left → set due date to today (or tomorrow if already today)
                 let c = stored_card.get_value();
                 let today = blazelist_protocol::Utc::now()
@@ -273,12 +293,35 @@ pub fn CardItem(
 
     let swipe_bg_class = move || {
         let offset = swipe_offset.get();
-        if offset > 40.0 {
+        let threshold_r = state.swipe_threshold_right.get() as f64;
+        let threshold_l = state.swipe_threshold_left.get() as f64;
+        if offset >= threshold_r {
+            "swipe-bg swipe-bg-blaze swipe-commit"
+        } else if offset > 40.0 {
             "swipe-bg swipe-bg-blaze"
-        } else if offset < -40.0 {
+        } else if offset <= -threshold_l {
+            "swipe-bg swipe-bg-due swipe-commit"
+        } else if offset < -55.0 {
             "swipe-bg swipe-bg-due"
         } else {
             "swipe-bg"
+        }
+    };
+
+    let swipe_label_style = move || {
+        let offset = swipe_offset.get();
+        let fade = 15.0_f64;
+        let opacity = if offset > 40.0 {
+            ((offset - 40.0) / fade).min(1.0)
+        } else if offset < -55.0 {
+            ((offset.abs() - 55.0) / fade).min(1.0)
+        } else {
+            0.0
+        };
+        if opacity >= 1.0 {
+            String::new()
+        } else {
+            format!("opacity:{opacity:.2}")
         }
     };
 
@@ -286,7 +329,7 @@ pub fn CardItem(
         let offset = swipe_offset.get();
         if offset > 40.0 {
             if is_blazed { "Extinguish" } else { "Blaze" }
-        } else if offset < -40.0 {
+        } else if offset < -55.0 {
             if card_due == Some(
                 blazelist_protocol::Utc::now()
                     .date_naive()
@@ -303,10 +346,21 @@ pub fn CardItem(
         }
     };
 
+    let wrapper_class = move || {
+        let mut cls = String::from("card-item-wrapper");
+        if is_blazed {
+            cls.push_str(" blazed");
+        }
+        if state.selected_card.get() == Some(card_id) {
+            cls.push_str(" selected");
+        }
+        cls
+    };
+
     view! {
-        <div class="card-item-wrapper">
+        <div class=wrapper_class>
             <div class=swipe_bg_class>
-                <span class="swipe-label">{swipe_label}</span>
+                <span class="swipe-label" style=swipe_label_style>{swipe_label}</span>
             </div>
             <div
                 class=card_class

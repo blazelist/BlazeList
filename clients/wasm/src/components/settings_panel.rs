@@ -125,10 +125,74 @@ pub fn SettingsPanel() -> impl IntoView {
     let on_change_ui_scale = move |ev: web_sys::Event| {
         let val = event_target_value(&ev);
         if let Ok(pct) = val.parse::<u32>() {
-            let pct = pct.max(75).min(200);
+            let pct = pct.max(50).min(300);
             state.ui_scale.set(pct);
             settings::save_ui_scale(pct);
             apply_ui_scale(pct);
+        }
+    };
+
+    let on_toggle_override_sidebar = move |_| {
+        let new_val = !state.override_sidebar_width.get_untracked();
+        state.override_sidebar_width.set(new_val);
+        settings::save_override_sidebar_width(new_val);
+        if new_val && !settings::has_default_sidebar_width() {
+            let current = state.sidebar_width.get_untracked() as u32;
+            state.default_sidebar_width.set(current);
+            settings::save_default_sidebar_width(current);
+        }
+    };
+
+    let on_toggle_override_detail = move |_| {
+        let new_val = !state.override_detail_width.get_untracked();
+        state.override_detail_width.set(new_val);
+        settings::save_override_detail_width(new_val);
+        if new_val && !settings::has_default_detail_width() {
+            let current = state.detail_width.get_untracked() as u32;
+            state.default_detail_width.set(current);
+            settings::save_default_detail_width(current);
+        }
+    };
+
+    let on_change_swipe_threshold_right = move |ev: web_sys::Event| {
+        let val = event_target_value(&ev);
+        if let Ok(px) = val.parse::<u32>() {
+            let px = px.max(40).min(150);
+            state.swipe_threshold_right.set(px);
+            settings::save_swipe_threshold_right(px);
+        }
+    };
+
+    let on_change_swipe_threshold_left = move |ev: web_sys::Event| {
+        let val = event_target_value(&ev);
+        if let Ok(px) = val.parse::<u32>() {
+            let px = px.max(40).min(150);
+            state.swipe_threshold_left.set(px);
+            settings::save_swipe_threshold_left(px);
+        }
+    };
+
+    let on_toggle_clear_tag_search = move |_| {
+        let new_val = !state.clear_tag_search.get_untracked();
+        state.clear_tag_search.set(new_val);
+        settings::save_clear_tag_search(new_val);
+    };
+
+    let on_change_sidebar_width = move |ev: web_sys::Event| {
+        let val = event_target_value(&ev);
+        if let Ok(px) = val.parse::<u32>() {
+            let px = px.max(80).min(400);
+            state.default_sidebar_width.set(px);
+            settings::save_default_sidebar_width(px);
+        }
+    };
+
+    let on_change_detail_width = move |ev: web_sys::Event| {
+        let val = event_target_value(&ev);
+        if let Ok(px) = val.parse::<u32>() {
+            let px = if px == 0 { 0 } else { px.max(280).min(1200) };
+            state.default_detail_width.set(px);
+            settings::save_default_detail_width(px);
         }
     };
 
@@ -266,6 +330,21 @@ pub fn SettingsPanel() -> impl IntoView {
 
             <div class="settings-section">
                 <label class="settings-item">
+                    <span class="settings-label">"Clear tag search on select"</span>
+                    <input
+                        type="checkbox"
+                        class="toggle-checkbox"
+                        prop:checked=move || state.clear_tag_search.get()
+                        on:change=on_toggle_clear_tag_search
+                    />
+                </label>
+                <div class="settings-hint">
+                    "Clear the search input after selecting a tag in the sidebar or editor"
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <label class="settings-item">
                     <span class="settings-label">"Keyboard shortcuts"</span>
                     <input
                         type="checkbox"
@@ -281,25 +360,18 @@ pub fn SettingsPanel() -> impl IntoView {
 
             <div class="settings-section">
                 <div class="settings-item">
-                    <span class="settings-label">"UI scale"</span>
-                    <select
-                        class="settings-select"
-                        on:change=on_change_ui_scale
+                    <span class="settings-label">"UI scale (%)"</span>
+                    <input
+                        type="number"
+                        class="settings-number"
+                        min="50"
+                        max="300"
                         prop:value=move || state.ui_scale.get().to_string()
-                    >
-                        <option value="75">"75%"</option>
-                        <option value="80">"80%"</option>
-                        <option value="90">"90%"</option>
-                        <option value="100">"100% (default)"</option>
-                        <option value="110">"110%"</option>
-                        <option value="125">"125%"</option>
-                        <option value="150">"150%"</option>
-                        <option value="175">"175%"</option>
-                        <option value="200">"200%"</option>
-                    </select>
+                        on:change=on_change_ui_scale
+                    />
                 </div>
                 <div class="settings-hint">
-                    "Scale the entire UI"
+                    "Scale the entire UI (50% \u{2013} 300%)"
                 </div>
             </div>
 
@@ -322,6 +394,64 @@ pub fn SettingsPanel() -> impl IntoView {
 
             <div class="settings-section">
                 <label class="settings-item">
+                    <span class="settings-label">"Override sidebar width"</span>
+                    <input
+                        type="checkbox"
+                        class="toggle-checkbox"
+                        prop:checked=move || state.override_sidebar_width.get()
+                        on:change=on_toggle_override_sidebar
+                    />
+                </label>
+                <div class="settings-hint">
+                    "Set a custom initial sidebar width on page load"
+                </div>
+                {move || state.override_sidebar_width.get().then(|| view! {
+                    <div class="settings-sub-item">
+                        <span class="settings-label">"Width (px)"</span>
+                        <input
+                            type="number"
+                            class="settings-number"
+                            min="80"
+                            max="400"
+                            step="10"
+                            prop:value=move || state.default_sidebar_width.get().to_string()
+                            on:change=on_change_sidebar_width
+                        />
+                    </div>
+                })}
+            </div>
+
+            <div class="settings-section">
+                <label class="settings-item">
+                    <span class="settings-label">"Override detail panel width"</span>
+                    <input
+                        type="checkbox"
+                        class="toggle-checkbox"
+                        prop:checked=move || state.override_detail_width.get()
+                        on:change=on_toggle_override_detail
+                    />
+                </label>
+                <div class="settings-hint">
+                    "Set a custom initial detail panel width on page load"
+                </div>
+                {move || state.override_detail_width.get().then(|| view! {
+                    <div class="settings-sub-item">
+                        <span class="settings-label">"Width (px)"</span>
+                        <input
+                            type="number"
+                            class="settings-number"
+                            min="280"
+                            max="1200"
+                            step="10"
+                            prop:value=move || state.default_detail_width.get().to_string()
+                            on:change=on_change_detail_width
+                        />
+                    </div>
+                })}
+            </div>
+
+            <div class="settings-section">
+                <label class="settings-item">
                     <span class="settings-label">"Touch swipe gestures"</span>
                     <input
                         type="checkbox"
@@ -332,6 +462,42 @@ pub fn SettingsPanel() -> impl IntoView {
                 </label>
                 <div class="settings-hint">
                     "Swipe right to blaze, swipe left to set due date to today/tomorrow"
+                </div>
+                {move || state.touch_swipe_enabled.get().then(|| view! {
+                    <div class="settings-sub-item">
+                        <span class="settings-label">"Swipe right distance (px)"</span>
+                        <input
+                            type="number"
+                            class="settings-number"
+                            min="40"
+                            max="150"
+                            prop:value=move || state.swipe_threshold_right.get().to_string()
+                            on:change=on_change_swipe_threshold_right
+                        />
+                    </div>
+                    <div class="settings-sub-item">
+                        <span class="settings-label">"Swipe left distance (px)"</span>
+                        <input
+                            type="number"
+                            class="settings-number"
+                            min="40"
+                            max="150"
+                            prop:value=move || state.swipe_threshold_left.get().to_string()
+                            on:change=on_change_swipe_threshold_left
+                        />
+                    </div>
+                })}
+            </div>
+
+            <div class="settings-section">
+                <button class="settings-reset-btn" on:click=move |_| {
+                    settings::clear_all_settings();
+                    if let Some(window) = web_sys::window() {
+                        let _ = window.location().reload();
+                    }
+                }>"Reset all settings to defaults"</button>
+                <div class="settings-hint">
+                    "Clears all saved preferences and reloads the page"
                 </div>
             </div>
         </div>

@@ -34,9 +34,11 @@
     --nav: #c07830;
     --nav-subtle: rgba(192, 120, 48, 0.12);
 
-    /* Blaze */
-    --blaze-bg: #120a0c;
-    --blaze-border: #381616;
+    /* Card list left accent bar */
+    --card-accent-active: rgba(72, 168, 90, 0.25);
+    --card-accent-active-sel: rgba(72, 168, 90, 0.6);
+    --card-accent-blazed: rgba(192, 64, 64, 0.25);
+    --card-accent-blazed-sel: rgba(192, 64, 64, 0.6);
 
     /* Status */
     --status-connected: #48a85a;

@@ -234,7 +234,7 @@ pub fn CardEditor(
                                 if let Some(client) = get_client() {
                                     if shifted_cards.is_empty() {
                                         if let Err(e) = client.push_card(card.clone()).await {
-                                            log::error!("Auto-save new card failed: {e}");
+                                            tracing::error!(%e, "Auto-save new card failed");
                                             auto_save_status.set(AutoSaveStatus::Idle);
                                             return;
                                         }
@@ -245,35 +245,39 @@ pub fn CardEditor(
                                             .collect();
                                         items.push(PushItem::Cards(vec![card.clone()]));
                                         if let Err(e) = client.push_batch(items).await {
-                                            log::error!("Auto-save new card failed: {e}");
+                                            tracing::error!(%e, "Auto-save new card failed");
                                             auto_save_status.set(AutoSaveStatus::Idle);
                                             return;
                                         }
                                     }
+                                } else {
+                                    // Offline: add card to local state and queue for sync.
                                     state.upsert_card(card.clone());
-                                    // Keep the editor alive — update internal state so
-                                    // subsequent auto-saves use the existing-card path.
-                                    stored_editing.set_value(Some(card));
-                                    orig_content.set(text);
-                                    let mut sorted_tags = tags;
-                                    sorted_tags.sort();
-                                    orig_tags.set(sorted_tags);
-                                    orig_due_date.set(selected_due);
-                                    card_created.set(true);
-                                    auto_save_status.set(AutoSaveStatus::Saved);
-                                    state.selected_card.set(Some(new_id));
-                                    sync_query_params(&state);
-                                    let reset_cb = Closure::once(move || {
-                                        if auto_save_status.get_untracked() == AutoSaveStatus::Saved
-                                        {
-                                            auto_save_status.set(AutoSaveStatus::Idle);
-                                        }
-                                        saved_timeout_handle.set(0);
-                                    });
-                                    let func = reset_cb.into_js_value();
-                                    let h = set_timeout_js(func.unchecked_ref(), 2000);
-                                    saved_timeout_handle.set(h);
+                                    push_card_or_queue(&state, card.clone()).await;
                                 }
+                                // Keep the editor alive — update internal state so
+                                // subsequent auto-saves use the existing-card path.
+                                state.upsert_card(card.clone());
+                                stored_editing.set_value(Some(card));
+                                orig_content.set(text);
+                                let mut sorted_tags = tags;
+                                sorted_tags.sort();
+                                orig_tags.set(sorted_tags);
+                                orig_due_date.set(selected_due);
+                                card_created.set(true);
+                                auto_save_status.set(AutoSaveStatus::Saved);
+                                state.selected_card.set(Some(new_id));
+                                sync_query_params(&state);
+                                let reset_cb = Closure::once(move || {
+                                    if auto_save_status.get_untracked() == AutoSaveStatus::Saved
+                                    {
+                                        auto_save_status.set(AutoSaveStatus::Idle);
+                                    }
+                                    saved_timeout_handle.set(0);
+                                });
+                                let func = reset_cb.into_js_value();
+                                let h = set_timeout_js(func.unchecked_ref(), 2000);
+                                saved_timeout_handle.set(h);
                             });
                         }
                     }
@@ -378,7 +382,7 @@ pub fn CardEditor(
                                 .collect();
                             items.push(PushItem::Cards(vec![card.clone()]));
                             if let Err(e) = client.push_batch(items).await {
-                                log::warn!("Batch push failed, queuing: {e}");
+                                tracing::warn!(%e, "Batch push failed, queuing");
                                 push_card_or_queue(&state, card).await;
                             }
                         } else {
@@ -514,6 +518,9 @@ pub fn CardEditor(
                                                 tags.push(tag_id);
                                             }
                                         });
+                                        if state.clear_tag_search.get_untracked() {
+                                            tag_search.set(String::new());
+                                        }
                                     };
                                     let item_class = move || if is_selected() { "editor-tag-item active" } else { "editor-tag-item" };
                                     let border_style = color

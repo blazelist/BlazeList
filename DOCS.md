@@ -117,6 +117,13 @@ These override default values for WASM client settings. Served via the `/config`
 | `BLAZELIST_DEFAULT_UI_SCALE` | UI scale percentage | `100` |
 | `BLAZELIST_DEFAULT_UI_DENSITY` | UI density mode (`compact` or `cozy`) | `compact` |
 | `BLAZELIST_DEFAULT_TOUCH_SWIPE` | Enable touch swipe gestures on cards | `false` |
+| `BLAZELIST_DEFAULT_SWIPE_THRESHOLD_RIGHT` | Swipe right trigger distance in px | `100` |
+| `BLAZELIST_DEFAULT_SWIPE_THRESHOLD_LEFT` | Swipe left trigger distance in px | `90` |
+| `BLAZELIST_DEFAULT_CLEAR_TAG_SEARCH` | Clear tag search input after selecting a tag | `true` |
+| `BLAZELIST_DEFAULT_OVERRIDE_SIDEBAR_WIDTH` | Enable sidebar width override | `false` |
+| `BLAZELIST_DEFAULT_SIDEBAR_WIDTH` | Default sidebar width in px (when override enabled) | `180` |
+| `BLAZELIST_DEFAULT_OVERRIDE_DETAIL_WIDTH` | Enable detail panel width override | `false` |
+| `BLAZELIST_DEFAULT_DETAIL_WIDTH` | Default detail panel width in px (when override enabled) | `0` |
 
 Boolean values are compared against `"true"` (case-sensitive). Numeric values must be valid unsigned integers.
 
@@ -140,6 +147,7 @@ services:
 | `BLAZELIST_SQLITE_MMAP_SIZE` | Memory-mapped I/O limit in bytes | `8589934592` (8 GiB) |
 | `BLAZELIST_SQLITE_TEMP_STORE` | Temp table/index storage | `MEMORY` |
 | `BLAZELIST_SQLITE_BUSY_TIMEOUT` | Lock wait timeout in milliseconds | `5000` |
+| `BLAZELIST_SQLITE_CHECKPOINT_INTERVAL` | WAL checkpoint interval in seconds (0 to disable) | `60` |
 
 > [!NOTE]
 > Values are validated to contain only `[a-zA-Z0-9_-]` before being used in PRAGMA statements.

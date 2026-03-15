@@ -14,7 +14,11 @@ mod transport;
 #[cfg(target_arch = "wasm32")]
 fn main() {
     console_error_panic_hook::set_once();
-    _ = console_log::init_with_level(log::Level::Debug);
+    tracing_wasm::set_as_global_default_with_config(
+        tracing_wasm::WASMLayerConfigBuilder::default()
+            .set_max_level(tracing::Level::DEBUG)
+            .build(),
+    );
     // Remove the static loading indicator before mounting the reactive app.
     if let Some(el) = web_sys::window()
         .and_then(|w| w.document())

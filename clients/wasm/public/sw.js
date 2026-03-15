@@ -1,48 +1,79 @@
-const CACHE_NAME = 'blazelist-v1';
+// ── Precache manifest (replaced by inject-precache.sh after trunk build) ─────
+const CACHE_NAME = 'blazelist-dev';
+const PRECACHE_URLS = ['/', '/index.html'];
 
-// Cache static assets on install.
+// ── Install: precache all assets ─────────────────────────────────────────────
 self.addEventListener('install', (event) => {
     event.waitUntil(
-        caches.open(CACHE_NAME).then((cache) => {
-            return cache.addAll([
-                '/',
-                '/index.html',
-            ]);
-        })
+        caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE_URLS))
     );
     self.skipWaiting();
 });
 
-// Clean up old caches on activate.
+// ── Activate: purge stale caches ─────────────────────────────────────────────
 self.addEventListener('activate', (event) => {
     event.waitUntil(
-        caches.keys().then((names) => {
-            return Promise.all(
-                names.filter((name) => name !== CACHE_NAME)
-                    .map((name) => caches.delete(name))
-            );
-        })
+        caches.keys().then((names) =>
+            Promise.all(
+                names.filter((n) => n !== CACHE_NAME).map((n) => caches.delete(n))
+            )
+        )
     );
     self.clients.claim();
 });
 
-// Network-first strategy for all requests.
+// ── Fetch: cache-first for hashed assets, network-first for everything else ──
 self.addEventListener('fetch', (event) => {
+    // Navigation requests: network-first, fall back to cached /index.html.
+    if (event.request.mode === 'navigate') {
+        event.respondWith(
+            fetch(event.request)
+                .then((response) => {
+                    if (response.ok) {
+                        const clone = response.clone();
+                        caches.open(CACHE_NAME).then((c) => c.put(event.request, clone));
+                    }
+                    return response;
+                })
+                .catch(() => caches.match('/index.html'))
+        );
+        return;
+    }
+
+    // Hashed static assets: cache-first (content-hashed filenames are immutable).
+    if (isHashedAsset(new URL(event.request.url).pathname)) {
+        event.respondWith(
+            caches.match(event.request).then((cached) => {
+                if (cached) return cached;
+                return fetch(event.request).then((response) => {
+                    if (response.ok) {
+                        const clone = response.clone();
+                        caches.open(CACHE_NAME).then((c) => c.put(event.request, clone));
+                    }
+                    return response;
+                });
+            })
+        );
+        return;
+    }
+
+    // Everything else: network-first, fall back to cache.
     event.respondWith(
         fetch(event.request)
             .then((response) => {
-                // Cache successful responses for static assets.
                 if (response.ok && event.request.method === 'GET') {
                     const clone = response.clone();
-                    caches.open(CACHE_NAME).then((cache) => {
-                        cache.put(event.request, clone);
-                    });
+                    caches.open(CACHE_NAME).then((c) => c.put(event.request, clone));
                 }
                 return response;
             })
-            .catch(() => {
-                // Fall back to cache.
-                return caches.match(event.request);
-            })
+            .catch(() => caches.match(event.request))
     );
 });
+
+// Trunk produces content-hashed filenames like base-56da8f4eda224f5.css or
+// blazelist-wasm-741409e8f90909ac_bg.wasm. These are immutable by definition.
+function isHashedAsset(pathname) {
+    if (pathname.startsWith('/snippets/')) return true;
+    return /^\/[^/]+-[0-9a-f]{7,}[._]\w+$/.test(pathname);
+}

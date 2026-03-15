@@ -16,7 +16,8 @@ COPY clients clients
 RUN cargo build --release -p blazelist-server
 
 # Build the WASM client in release mode.
-RUN trunk build --release --config clients/wasm/Trunk.toml
+RUN trunk build --release --config clients/wasm/Trunk.toml \
+    && sh clients/wasm/inject-precache.sh clients/wasm/dist
 
 # ── Stage 2: Lightweight runtime ─────────────────────────────────────────────
 FROM debian:bookworm-slim

@@ -188,7 +188,7 @@ pub(crate) fn apply_move_placement(
                     items.push(PushItem::Cards(vec![updated.clone()]));
                     match client.push_batch(items).await {
                         Ok(_) => return,
-                        Err(e) => log::warn!("Batch push failed, queuing moved card: {e}"),
+                        Err(e) => tracing::warn!(%e, "Batch push failed, queuing moved card"),
                     }
                 }
                 push_card_or_queue(&state, updated).await;
@@ -505,11 +505,11 @@ pub fn CardDetail() -> impl IntoView {
                     // Delete requires a live connection (not queued offline).
                     if let Some(client) = get_client() {
                         if let Err(e) = client.delete_card(card_id).await {
-                            log::error!("Failed to delete card: {e}");
+                            tracing::error!(%e, "Failed to delete card");
                             return;
                         }
                     } else {
-                        log::warn!("Cannot delete card while offline");
+                        tracing::warn!("Cannot delete card while offline");
                         return;
                     }
                     state.cards.update(|cards| cards.retain(|c| c.id() != card_id));
@@ -1035,7 +1035,7 @@ fn NewTagForm(
             if let Some(client) = get_client() {
                 let tag = Tag::first(Uuid::new_v4(), title, color, Utc::now());
                 if let Err(e) = client.push_tag(tag.clone()).await {
-                    log::error!("Failed to create tag: {e}");
+                    tracing::error!(%e, "Failed to create tag");
                     return;
                 }
                 let tag_id = tag.id();

@@ -125,7 +125,7 @@ pub fn TagDetail() -> impl IntoView {
         leptos::task::spawn_local(async move {
             if let Some(client) = get_client() {
                 if let Err(e) = client.push_tag(updated.clone()).await {
-                    log::error!("Failed to rename tag: {e}");
+                    tracing::error!(%e, "Failed to rename tag");
                     return;
                 }
                 state.tags.update(|tags| {
@@ -186,7 +186,7 @@ pub fn TagDetail() -> impl IntoView {
             items.push(PushItem::DeleteTag { id: tag_id });
 
             if let Err(e) = client.push_batch(items).await {
-                log::error!("Failed to delete tag: {e}");
+                tracing::error!(%e, "Failed to delete tag");
                 error_msg.set(Some(format!("Delete failed: {e}")));
                 confirm_delete.set(0);
                 deleting.set(false);
@@ -331,7 +331,7 @@ pub fn TagDetail() -> impl IntoView {
                 leptos::task::spawn_local(async move {
                     if let Some(client) = get_client() {
                         if let Err(e) = client.push_tag(updated.clone()).await {
-                            log::error!("Failed to set tag color: {e}");
+                            tracing::error!(%e, "Failed to set tag color");
                             return;
                         }
                         state.tags.update(|tags| {
@@ -356,7 +356,7 @@ pub fn TagDetail() -> impl IntoView {
                 leptos::task::spawn_local(async move {
                     if let Some(client) = get_client() {
                         if let Err(e) = client.push_tag(updated.clone()).await {
-                            log::error!("Failed to clear tag color: {e}");
+                            tracing::error!(%e, "Failed to clear tag color");
                             return;
                         }
                         state.tags.update(|tags| {

@@ -85,7 +85,7 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
                         version.due_date(),
                     );
                     if let Err(e) = client.push_card(restored.clone()).await {
-                        log::error!("Failed to restore card version: {e}");
+                        tracing::error!(%e, "Failed to restore card version");
                         return;
                     }
                     state.upsert_card(restored);
@@ -114,7 +114,7 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
                         );
                         let new_id = card.id();
                         if let Err(e) = client.push_card(card.clone()).await {
-                            log::error!("Failed to create card from version: {e}");
+                            tracing::error!(%e, "Failed to create card from version");
                             return;
                         }
                         state.upsert_card(card);
@@ -139,7 +139,7 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
                         items.push(PushItem::Cards(vec![card.clone()]));
                         let new_id = card.id();
                         if let Err(e) = client.push_batch(items).await {
-                            log::error!("Failed to create card from version (rebalanced): {e}");
+                            tracing::error!(%e, "Failed to create card from version (rebalanced)");
                             return;
                         }
                         state.upsert_card(card);

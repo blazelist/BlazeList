@@ -54,6 +54,13 @@ pub fn build_client_config_json() -> String {
     let ui_scale = std::env::var("BLAZELIST_DEFAULT_UI_SCALE").ok();
     let ui_density = std::env::var("BLAZELIST_DEFAULT_UI_DENSITY").ok();
     let touch_swipe = std::env::var("BLAZELIST_DEFAULT_TOUCH_SWIPE").ok();
+    let swipe_threshold_right = std::env::var("BLAZELIST_DEFAULT_SWIPE_THRESHOLD_RIGHT").ok();
+    let swipe_threshold_left = std::env::var("BLAZELIST_DEFAULT_SWIPE_THRESHOLD_LEFT").ok();
+    let clear_tag_search = std::env::var("BLAZELIST_DEFAULT_CLEAR_TAG_SEARCH").ok();
+    let default_sidebar_width = std::env::var("BLAZELIST_DEFAULT_SIDEBAR_WIDTH").ok();
+    let default_detail_width = std::env::var("BLAZELIST_DEFAULT_DETAIL_WIDTH").ok();
+    let override_sidebar_width = std::env::var("BLAZELIST_DEFAULT_OVERRIDE_SIDEBAR_WIDTH").ok();
+    let override_detail_width = std::env::var("BLAZELIST_DEFAULT_OVERRIDE_DETAIL_WIDTH").ok();
 
     // Only include env vars that are explicitly set.
     let mut pairs = Vec::new();
@@ -100,6 +107,35 @@ pub fn build_client_config_json() -> String {
     }
     if let Some(v) = touch_swipe {
         pairs.push(format!(r#""touch_swipe":{}"#, v == "true"));
+    }
+    if let Some(v) = swipe_threshold_right {
+        if let Ok(n) = v.parse::<u32>() {
+            pairs.push(format!(r#""swipe_threshold_right":{n}"#));
+        }
+    }
+    if let Some(v) = swipe_threshold_left {
+        if let Ok(n) = v.parse::<u32>() {
+            pairs.push(format!(r#""swipe_threshold_left":{n}"#));
+        }
+    }
+    if let Some(v) = clear_tag_search {
+        pairs.push(format!(r#""clear_tag_search":{}"#, v == "true"));
+    }
+    if let Some(v) = default_sidebar_width {
+        if let Ok(n) = v.parse::<u32>() {
+            pairs.push(format!(r#""default_sidebar_width":{n}"#));
+        }
+    }
+    if let Some(v) = default_detail_width {
+        if let Ok(n) = v.parse::<u32>() {
+            pairs.push(format!(r#""default_detail_width":{n}"#));
+        }
+    }
+    if let Some(v) = override_sidebar_width {
+        pairs.push(format!(r#""override_sidebar_width":{}"#, v == "true"));
+    }
+    if let Some(v) = override_detail_width {
+        pairs.push(format!(r#""override_detail_width":{}"#, v == "true"));
     }
 
     format!("{{{}}}", pairs.join(","))
