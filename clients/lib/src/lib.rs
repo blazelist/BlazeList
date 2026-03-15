@@ -11,6 +11,9 @@
 //! - **Color utilities** — Tag color formatting and styling ([`color`]).
 //! - **Due date utilities** — Status computation and presets ([`due_date`]).
 
+/// Crate version, derived from `Cargo.toml` at compile time.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub mod client;
 pub mod color;
 pub mod display;
@@ -22,7 +25,6 @@ pub mod sync;
 
 #[cfg(test)]
 pub(crate) mod test_helpers {
-    use blazelist_protocol::NonNegativeI64;
     use chrono::{DateTime, Utc};
     use uuid::Uuid;
 
@@ -30,8 +32,8 @@ pub(crate) mod test_helpers {
         DateTime::from_timestamp_millis(1_700_000_000_000).unwrap()
     }
 
-    pub fn priority(v: i64) -> NonNegativeI64 {
-        NonNegativeI64::try_from(v).unwrap()
+    pub fn priority(v: i64) -> i64 {
+        v
     }
 
     pub fn fixed_uuid(n: u8) -> Uuid {

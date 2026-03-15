@@ -23,7 +23,11 @@ pub fn parse_due_date_filter_from_params(params: &web_sys::UrlSearchParams) -> D
     match params.get("f.due").as_deref() {
         Some("overdue") => DueDateFilter::Overdue,
         Some("today") => DueDateFilter::Today,
+        Some("today-upcoming") => DueDateFilter::TodayAndUpcoming,
         Some("upcoming") => DueDateFilter::Upcoming,
+        Some("upcoming-tomorrow") => DueDateFilter::UpcomingTomorrow,
+        Some("upcoming-week") => DueDateFilter::UpcomingWeek,
+        Some("upcoming-2weeks") => DueDateFilter::UpcomingTwoWeeks,
         _ => DueDateFilter::All,
     }
 }
@@ -33,7 +37,11 @@ fn due_date_filter_to_str(f: DueDateFilter) -> &'static str {
         DueDateFilter::All => "all",
         DueDateFilter::Overdue => "overdue",
         DueDateFilter::Today => "today",
+        DueDateFilter::TodayAndUpcoming => "today-upcoming",
         DueDateFilter::Upcoming => "upcoming",
+        DueDateFilter::UpcomingTomorrow => "upcoming-tomorrow",
+        DueDateFilter::UpcomingWeek => "upcoming-week",
+        DueDateFilter::UpcomingTwoWeeks => "upcoming-2weeks",
     }
 }
 
@@ -93,14 +101,10 @@ fn filter_to_str(f: CardFilter) -> &'static str {
     }
 }
 
-/// Push current filter state to the URL query string without reloading.
-pub fn sync_query_params(state: &AppState) {
+/// Build the URL query string from current filter state.
+fn build_query_string(state: &AppState) -> String {
     use leptos::prelude::*;
 
-    let window = match web_sys::window() {
-        Some(w) => w,
-        None => return,
-    };
     let params = web_sys::UrlSearchParams::new().unwrap();
 
     let filter = state.filter.get_untracked();
@@ -111,6 +115,10 @@ pub fn sync_query_params(state: &AppState) {
     let due = state.due_date_filter.get_untracked();
     if due != DueDateFilter::All {
         params.set("f.due", due_date_filter_to_str(due));
+    }
+
+    if state.include_overdue.get_untracked() {
+        params.set("f.inc_overdue", "1");
     }
 
     let sort = state.sort_order.get_untracked();
@@ -141,7 +149,18 @@ pub fn sync_query_params(state: &AppState) {
         params.append("f.linked", &link_id.to_string());
     }
 
-    let qs = params.to_string().as_string().unwrap_or_default();
+    params.to_string().as_string().unwrap_or_default()
+}
+
+/// Push current filter state to the URL query string without reloading.
+/// Uses `pushState` so the browser back/forward buttons work.
+pub fn sync_query_params(state: &AppState) {
+    let window = match web_sys::window() {
+        Some(w) => w,
+        None => return,
+    };
+
+    let qs = build_query_string(state);
     let new_url = if qs.is_empty() {
         window.location().pathname().unwrap_or_default()
     } else {
@@ -152,9 +171,51 @@ pub fn sync_query_params(state: &AppState) {
         )
     };
 
-    let _ = window.history().unwrap().replace_state_with_url(
+    // Only push a new history entry if the URL actually changed.
+    let current_url = window
+        .location()
+        .href()
+        .ok()
+        .and_then(|href| web_sys::Url::new(&href).ok())
+        .map(|u| {
+            let s = u.search();
+            if s.is_empty() {
+                u.pathname()
+            } else {
+                format!("{}{}", u.pathname(), s)
+            }
+        })
+        .unwrap_or_default();
+
+    if new_url == current_url {
+        return;
+    }
+
+    let _ = window.history().unwrap().push_state_with_url(
         &wasm_bindgen::JsValue::NULL,
         "",
         Some(&new_url),
     );
+}
+
+/// Restore app state from the current URL query parameters.
+/// Called on `popstate` events (browser back/forward).
+pub fn restore_from_query_params(state: &AppState) {
+    use leptos::prelude::*;
+
+    let params = get_query_params();
+
+    state.filter.set(parse_filter_from_params(&params));
+    state.due_date_filter.set(parse_due_date_filter_from_params(&params));
+    state.include_overdue.set(params.get("f.inc_overdue").as_deref() == Some("1"));
+    state.sort_order.set(parse_sort_from_params(&params));
+    state.tag_filter_mode.set(parse_tag_mode_from_params(&params));
+    state.no_tags_filter.set(parse_no_tags_from_params(&params));
+    state.tag_filter.set(parse_tags_from_params(&params));
+    state.selected_card.set(parse_selected_card_from_params(&params));
+    state.linked_card_filter.set(parse_linked_cards_from_params(&params));
+    state.creating_new.set(false);
+    state.creating_new_tag.set(false);
+    state.editing.set(false);
+    state.settings_open.set(false);
 }

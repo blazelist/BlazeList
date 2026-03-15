@@ -1,0 +1,445 @@
+/* Filter bar */
+.filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    margin-bottom: 0.75rem;
+    padding: 0 0.625rem;
+    flex-wrap: wrap;
+}
+
+.blaze-filter {
+    display: flex;
+}
+
+.filter-btn {
+    padding: 0.3rem 0.7rem;
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    font-size: 0.72rem;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    transition: all 0.15s;
+}
+
+.filter-btn:first-child {
+    border-radius: 4px 0 0 4px;
+}
+
+.filter-btn:last-child {
+    border-radius: 0 4px 4px 0;
+}
+
+.filter-btn:not(:first-child) {
+    border-left: none;
+}
+
+.filter-btn:hover {
+    color: var(--text-secondary);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.filter-btn.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+}
+
+.filter-btn.active + .filter-btn {
+    border-left: none;
+}
+
+.search-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.search-input {
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 0.75rem;
+    width: 160px;
+    transition: border-color 0.15s;
+}
+
+.search-input::placeholder {
+    color: var(--text-muted);
+}
+
+.search-input.search-active {
+    border-color: var(--accent);
+    color: #fff;
+    background: var(--accent);
+}
+
+.search-input:focus {
+    outline: none;
+    border-color: var(--border-hover);
+}
+
+.tag-filter-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.2rem;
+    flex-basis: 100%;
+}
+
+.mode-btn {
+    padding: 0.2rem 0.4rem;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    transition: all 0.15s;
+}
+
+.mode-btn:hover {
+    color: var(--text-secondary);
+    border-color: var(--border-hover);
+}
+
+.tag-chips {
+    display: flex;
+    align-items: center;
+    gap: 0.2rem;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.tag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    padding: 0.15rem 0.45rem;
+    background: var(--accent-subtle);
+    color: var(--accent-hover);
+    border: 1px solid transparent;
+    border-radius: 10px;
+    font-size: 0.68rem;
+    font-weight: 500;
+}
+
+.chip-remove {
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font-size: 0.72rem;
+    padding: 0;
+    opacity: 0.7;
+    transition: opacity 0.1s;
+}
+
+.chip-remove:hover {
+    opacity: 1;
+}
+
+/* Linked card filter (filter bar) — simple one-per-line list */
+.linked-filter-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    flex-basis: 100%;
+    padding: 0.2rem 0;
+}
+
+.linked-filter-row {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.15rem 0.4rem;
+    background: var(--bg-tertiary);
+    border-radius: 4px;
+    font-size: 0.68rem;
+    overflow: hidden;
+    min-width: 0;
+}
+
+.linked-filter-id {
+    font-family: monospace;
+    font-size: 0.62rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.linked-filter-preview {
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    flex: 1;
+}
+
+.linked-filter-clear {
+    align-self: flex-start;
+    margin-top: 0.1rem;
+}
+
+/* Sort controls */
+.sort-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.sort-select {
+    padding: 0.3rem 1.4rem 0.3rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-input) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23888890'/%3E%3C/svg%3E") no-repeat right 0.45rem center;
+    color: var(--text-primary);
+    font-size: 0.72rem;
+    cursor: pointer;
+    transition: border-color 0.15s;
+    appearance: none;
+    -webkit-appearance: none;
+}
+
+.sort-select.sort-active {
+    border-color: var(--accent);
+    color: #fff;
+    background-color: var(--accent);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23ffffff'/%3E%3C/svg%3E");
+}
+
+.sort-select option {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+.sort-select:focus {
+    outline: none;
+    border-color: var(--border-hover);
+}
+
+/* Universal small "x" clear button (sort reset, tag clear, search clear) */
+.btn-clear-x {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.3rem;
+    height: 1.3rem;
+    padding: 0;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.68rem;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: all 0.15s;
+}
+
+.btn-clear-x:hover {
+    color: var(--text-secondary);
+    border-color: var(--border-hover);
+}
+
+
+/* Due date filter dropdown */
+.due-filter {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.due-select {
+    padding: 0.3rem 1.4rem 0.3rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-input) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23888890'/%3E%3C/svg%3E") no-repeat right 0.45rem center;
+    color: var(--text-primary);
+    font-size: 0.72rem;
+    cursor: pointer;
+    transition: border-color 0.15s;
+    appearance: none;
+    -webkit-appearance: none;
+}
+
+.due-select.due-active {
+    border-color: var(--accent);
+    color: #fff;
+    background-color: var(--accent);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23ffffff'/%3E%3C/svg%3E");
+}
+
+.due-select option {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+.due-select:focus {
+    outline: none;
+    border-color: var(--border-hover);
+}
+
+
+/* Due date "include overdue" toggle */
+.due-overdue-toggle {
+    padding: 0.2rem 0.45rem;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    transition: all 0.15s;
+}
+
+.due-overdue-toggle:hover {
+    color: var(--text-secondary);
+    border-color: var(--border-hover);
+}
+
+.due-overdue-toggle.active {
+    color: var(--due-overdue);
+    border-color: var(--due-overdue);
+    background: var(--due-overdue-subtle);
+}
+
+/* Due date controls in editor/detail */
+.due-date-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    flex-wrap: wrap;
+}
+
+.due-date-current {
+    font-size: 0.72rem;
+    font-weight: 500;
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+}
+
+.due-date-current.due-overdue {
+    color: var(--due-overdue);
+    background: var(--due-overdue-subtle);
+}
+
+.due-date-current.due-today {
+    color: var(--due-today);
+    background: var(--due-today-subtle);
+}
+
+.due-date-current.due-upcoming {
+    color: var(--due-upcoming);
+    background: var(--due-upcoming-subtle);
+}
+
+.due-not-set {
+    font-style: italic;
+    color: var(--text-muted);
+}
+
+.due-date-quick-btn {
+    padding: 0.2rem 0.45rem;
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.68rem;
+    transition: all 0.15s;
+}
+
+.due-date-quick-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--border-hover);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.due-date-quick-btn.active {
+    color: var(--accent-hover);
+    border-color: var(--accent);
+    background: var(--accent-subtle);
+}
+
+.due-date-clear-btn {
+    padding: 0.15rem 0.35rem;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.62rem;
+    transition: all 0.15s;
+}
+
+.due-date-clear-btn:hover {
+    color: var(--danger);
+    border-color: var(--danger);
+}
+
+/* Due date split-button dropdown */
+.due-date-dropdown-group {
+    display: inline-flex;
+    position: relative;
+}
+
+.due-date-dropdown-group .due-date-quick-btn {
+    border-radius: 4px 0 0 4px;
+}
+
+.due-date-dropdown-toggle {
+    padding: 0.2rem 0.3rem;
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-left: 1px solid var(--border);
+    border-radius: 0 4px 4px 0;
+    cursor: pointer;
+    font-size: 0.5rem;
+    transition: all 0.15s;
+    line-height: 1;
+}
+
+.due-date-dropdown-toggle:hover {
+    color: var(--text-primary);
+    border-color: var(--border-hover);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.due-date-dropdown-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 2px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    z-index: 20;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.due-date-picker {
+    padding: 0.15rem 0.35rem;
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 0.68rem;
+    cursor: pointer;
+    transition: border-color 0.15s;
+    color-scheme: dark;
+}
+
+.due-date-picker:focus {
+    outline: none;
+    border-color: var(--border-hover);
+}

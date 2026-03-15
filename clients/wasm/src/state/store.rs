@@ -3,6 +3,7 @@ use crate::state::query_params::{
     parse_linked_cards_from_params, parse_no_tags_from_params, parse_selected_card_from_params,
     parse_sort_from_params, parse_tag_mode_from_params, parse_tags_from_params,
 };
+use crate::state::settings;
 use crate::transport::client::Client;
 use blazelist_client_lib::filter;
 pub use blazelist_client_lib::filter::DueDateFilter;
@@ -18,7 +19,7 @@ use uuid::Uuid;
 use wasm_bindgen::prelude::*;
 
 // Re-export moved utilities so existing imports keep working.
-pub use crate::state::query_params::sync_query_params;
+pub use crate::state::query_params::{restore_from_query_params, sync_query_params};
 pub use blazelist_client_lib::color::tag_chip_style;
 pub use blazelist_client_lib::display::format_relative_time;
 pub use blazelist_client_lib::due_date::{
@@ -84,12 +85,32 @@ pub fn get_client() -> Option<Rc<Client>> {
     CLIENT.with(|c| c.borrow().clone())
 }
 
+/// Auto-save status indicator state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoSaveStatus {
+    Idle,
+    Countdown(u32),
+    Saving,
+    Saved,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionStatus {
     Disconnected,
     Connecting,
     Connected,
     Syncing,
+}
+
+/// Where a newly created card should be placed in the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewCardPosition {
+    Top,
+    Bottom,
+    /// Insert above the card with this UUID.
+    Above(Uuid),
+    /// Insert below the card with this UUID.
+    Below(Uuid),
 }
 
 /// Global application state, provided via Leptos context.
@@ -100,6 +121,7 @@ pub struct AppState {
     pub root: RwSignal<Option<RootState>>,
     pub filter: RwSignal<CardFilter>,
     pub due_date_filter: RwSignal<DueDateFilter>,
+    pub include_overdue: RwSignal<bool>,
     pub sort_order: RwSignal<SortOrder>,
     pub tag_filter: RwSignal<Vec<Uuid>>,
     pub tag_filter_mode: RwSignal<TagFilterMode>,
@@ -112,14 +134,56 @@ pub struct AppState {
     pub connection_status: RwSignal<ConnectionStatus>,
     pub server_url: RwSignal<String>,
     pub creating_new: RwSignal<bool>,
+    pub creating_new_tag: RwSignal<bool>,
     pub editing: RwSignal<bool>,
     pub has_unsaved_changes: RwSignal<bool>,
     pub last_synced: RwSignal<Option<DateTime<Utc>>>,
+    /// Number of operations in the last sync (cards + tags + deletes).
+    pub last_sync_ops: RwSignal<usize>,
     pub deleted_count: RwSignal<usize>,
     pub tick: RwSignal<u64>,
+    /// Seconds remaining until the next automatic reconnection attempt.
+    /// `0` means no countdown is active.
+    pub reconnect_countdown: RwSignal<u32>,
+    /// Duration of the last sync in milliseconds.
+    pub last_sync_duration_ms: RwSignal<Option<u32>>,
     /// When set, the filtered view shows only cards whose UUIDs are in this list.
     /// Used for "show linked cards" — contains the source card + its linked UUIDs.
     pub linked_card_filter: RwSignal<Vec<Uuid>>,
+    /// Device-local setting: allow drag-and-drop reordering of cards.
+    pub drag_drop_reorder: RwSignal<bool>,
+    /// Device-local setting: show markdown preview by default when editing.
+    pub show_preview: RwSignal<bool>,
+    /// Device-local setting: whether push debounce is enabled.
+    pub debounce_enabled: RwSignal<bool>,
+    /// Device-local setting: push debounce delay in seconds.
+    pub debounce_delay_secs: RwSignal<u32>,
+    /// Device-local setting: auto-save cards while editing.
+    pub auto_save_enabled: RwSignal<bool>,
+    /// Device-local setting: seconds to wait before auto-saving.
+    pub auto_save_delay_secs: RwSignal<u32>,
+    /// Auto-save status, visible globally in the header.
+    pub auto_save_status: RwSignal<AutoSaveStatus>,
+    /// Whether the settings panel is open (shown in the detail panel area).
+    pub settings_open: RwSignal<bool>,
+    /// Device-local setting: periodically sync with server.
+    pub auto_sync_enabled: RwSignal<bool>,
+    /// Device-local setting: seconds between auto-syncs.
+    pub auto_sync_interval_secs: RwSignal<u32>,
+    /// Countdown to next auto-sync (0 = inactive/just synced).
+    pub auto_sync_countdown: RwSignal<u32>,
+    /// Countdown to next debounced push (0 = idle).
+    pub push_debounce_countdown: RwSignal<u32>,
+    /// Device-local setting: enable keyboard shortcuts.
+    pub keyboard_shortcuts_enabled: RwSignal<bool>,
+    /// Pending card versions queued for debounced push.
+    pub pending_versions: RwSignal<Vec<Card>>,
+    /// ID of the card currently being debounced.
+    pub pending_card_id: RwSignal<Option<Uuid>>,
+    /// JS setTimeout handle for the active debounce timer.
+    pub debounce_timeout_handle: RwSignal<i32>,
+    /// Where the next new card should be placed.
+    pub new_card_position: RwSignal<NewCardPosition>,
 }
 
 /// Reset all filter/view state to defaults and clear query params.
@@ -130,6 +194,7 @@ pub fn clear_all_state(state: &AppState) -> bool {
     }
     state.filter.set(CardFilter::Extinguished);
     state.due_date_filter.set(DueDateFilter::All);
+    state.include_overdue.set(false);
     state.sort_order.set(SortOrder::default());
     state.tag_filter.set(Vec::new());
     state.tag_filter_mode.set(TagFilterMode::Or);
@@ -137,9 +202,11 @@ pub fn clear_all_state(state: &AppState) -> bool {
     state.search_query.set(String::new());
     state.selected_card.set(None);
     state.creating_new.set(false);
+    state.creating_new_tag.set(false);
     state.editing.set(false);
     state.has_unsaved_changes.set(false);
     state.linked_card_filter.set(Vec::new());
+    state.settings_open.set(false);
     sync_query_params(state);
     true
 }
@@ -164,6 +231,7 @@ impl AppState {
             root: RwSignal::new(None),
             filter: RwSignal::new(parse_filter_from_params(&params)),
             due_date_filter: RwSignal::new(parse_due_date_filter_from_params(&params)),
+            include_overdue: RwSignal::new(false),
             sort_order: RwSignal::new(parse_sort_from_params(&params)),
             tag_filter: RwSignal::new({
                 let tags = parse_tags_from_params(&params);
@@ -192,12 +260,33 @@ impl AppState {
             connection_status: RwSignal::new(ConnectionStatus::Disconnected),
             server_url: RwSignal::new(derive_wt_url()),
             creating_new: RwSignal::new(false),
+            creating_new_tag: RwSignal::new(false),
             editing: RwSignal::new(false),
             has_unsaved_changes: RwSignal::new(false),
             last_synced: RwSignal::new(None),
+            last_sync_ops: RwSignal::new(0),
             deleted_count: RwSignal::new(0),
             tick: RwSignal::new(0),
+            reconnect_countdown: RwSignal::new(0),
+            last_sync_duration_ms: RwSignal::new(None),
             linked_card_filter: RwSignal::new(parse_linked_cards_from_params(&params)),
+            drag_drop_reorder: RwSignal::new(settings::load_drag_drop_reorder()),
+            show_preview: RwSignal::new(settings::load_show_preview()),
+            debounce_enabled: RwSignal::new(settings::load_debounce_enabled()),
+            debounce_delay_secs: RwSignal::new(settings::load_debounce_delay()),
+            auto_save_enabled: RwSignal::new(settings::load_auto_save()),
+            auto_save_delay_secs: RwSignal::new(settings::load_auto_save_delay()),
+            auto_save_status: RwSignal::new(AutoSaveStatus::Idle),
+            settings_open: RwSignal::new(false),
+            auto_sync_enabled: RwSignal::new(settings::load_auto_sync()),
+            auto_sync_interval_secs: RwSignal::new(settings::load_auto_sync_interval()),
+            auto_sync_countdown: RwSignal::new(0),
+            push_debounce_countdown: RwSignal::new(0),
+            keyboard_shortcuts_enabled: RwSignal::new(settings::load_keyboard_shortcuts()),
+            pending_versions: RwSignal::new(Vec::new()),
+            pending_card_id: RwSignal::new(None),
+            debounce_timeout_handle: RwSignal::new(0),
+            new_card_position: RwSignal::new(NewCardPosition::Bottom),
         }
     }
 
@@ -216,6 +305,7 @@ impl AppState {
         let cards = self.cards;
         let blaze_filter = self.filter;
         let due_date_filter = self.due_date_filter;
+        let include_overdue = self.include_overdue;
         let tag_filter = self.tag_filter;
         let tag_filter_mode = self.tag_filter_mode;
         let no_tags_filter = self.no_tags_filter;
@@ -234,7 +324,7 @@ impl AppState {
                 tag_filter_mode.get(),
                 no_tags_filter.get(),
             );
-            filter::apply_due_date_filter(&mut result, due_date_filter.get());
+            filter::apply_due_date_filter(&mut result, due_date_filter.get(), include_overdue.get());
             filter::sort_cards(&mut result, sort_order.get());
             result
         })

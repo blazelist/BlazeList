@@ -1,6 +1,6 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 
-use blazelist_protocol::{Card, DateTime, DeletedEntity, NonNegativeI64, RootState, Utc};
+use blazelist_protocol::{Card, DateTime, DeletedEntity, RootState, Utc};
 use blazelist_protocol::{CardFilter, Request, Response};
 use uuid::Uuid;
 
@@ -16,15 +16,11 @@ fn ts(ms: i64) -> DateTime<Utc> {
     DateTime::from_timestamp_millis(ms).unwrap()
 }
 
-fn p(v: i64) -> NonNegativeI64 {
-    NonNegativeI64::try_from(v).unwrap()
-}
-
 fn sample_card() -> Card {
     Card::first(
         ID,
         "Buy groceries\n- Tofu\n- Lentils\n- Bread".into(),
-        p(5_000_000_000),
+        5_000_000_000,
         vec![TAG_ID],
         false,
         ts(1_000_000),
@@ -76,7 +72,7 @@ fn bench_response_cards_serialize(c: &mut Criterion) {
             Card::first(
                 Uuid::from_bytes([i; 16]),
                 format!("Card {i}\nContent for card {i}"),
-                p(i as i64 * 1000),
+                i as i64 * 1000,
                 vec![],
                 false,
                 ts(i as i64 * 1000),
@@ -96,7 +92,7 @@ fn bench_response_cards_deserialize(c: &mut Criterion) {
             Card::first(
                 Uuid::from_bytes([i; 16]),
                 format!("Card {i}\nContent for card {i}"),
-                p(i as i64 * 1000),
+                i as i64 * 1000,
                 vec![],
                 false,
                 ts(i as i64 * 1000),
@@ -150,7 +146,7 @@ fn bench_response_cards_scaling(c: &mut Criterion) {
                 Card::first(
                     Uuid::from_bytes(id_bytes),
                     format!("Card {i}\nContent for card {i}"),
-                    p(i as i64 * 1000),
+                    i as i64 * 1000,
                     vec![],
                     false,
                     ts(i as i64 * 1000),

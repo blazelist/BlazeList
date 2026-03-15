@@ -21,6 +21,7 @@ static UUID_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
 static HTML_TAG_RE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"<[^>]*>").expect("HTML tag regex is valid"));
 
+
 /// Render a Markdown string as plain text by removing all formatting.
 ///
 /// Uses `comrak` ([GitHub Flavored Markdown](https://github.github.com/gfm/))
@@ -262,6 +263,19 @@ pub fn compute_all_link_counts(cards: &[Card]) -> HashMap<Uuid, LinkCounts> {
 /// corrupting attributes. Each matched UUID is wrapped in a
 /// `<span class="card-uuid-link" data-card-id="UUID">` element.
 pub fn linkify_card_uuids(html: &str, card_ids: &HashSet<Uuid>) -> String {
+    linkify_card_uuids_with_previews(html, card_ids, &HashMap::new())
+}
+
+/// Post-process rendered HTML to wrap known card UUIDs in clickable spans and
+/// append inline previews for linked cards when available.
+///
+/// Works like [`linkify_card_uuids`] and, for IDs present in `card_previews`,
+/// appends ` <span class="card-uuid-link-preview">…</span>` inside the link span.
+pub fn linkify_card_uuids_with_previews(
+    html: &str,
+    card_ids: &HashSet<Uuid>,
+    card_previews: &HashMap<Uuid, String>,
+) -> String {
     if card_ids.is_empty() {
         return html.to_string();
     }
@@ -271,28 +285,50 @@ pub fn linkify_card_uuids(html: &str, card_ids: &HashSet<Uuid>) -> String {
 
     for tag_match in HTML_TAG_RE.find_iter(html) {
         // Process text before this tag — UUIDs here are safe to wrap.
-        linkify_segment(&html[last_end..tag_match.start()], card_ids, &mut result);
+        linkify_segment(
+            &html[last_end..tag_match.start()],
+            card_ids,
+            card_previews,
+            &mut result,
+        );
         // Append the tag as-is (don't touch attributes).
         result.push_str(tag_match.as_str());
         last_end = tag_match.end();
     }
     // Remaining text after the last tag.
-    linkify_segment(&html[last_end..], card_ids, &mut result);
+    linkify_segment(&html[last_end..], card_ids, card_previews, &mut result);
 
     result
 }
 
 /// Replace UUIDs in a text segment (outside HTML tags) with clickable spans.
-fn linkify_segment(text: &str, card_ids: &HashSet<Uuid>, out: &mut String) {
+fn linkify_segment(
+    text: &str,
+    card_ids: &HashSet<Uuid>,
+    card_previews: &HashMap<Uuid, String>,
+    out: &mut String,
+) {
     let mut last = 0;
     for m in UUID_RE.find_iter(text) {
         out.push_str(&text[last..m.start()]);
         if let Ok(uuid) = m.as_str().parse::<Uuid>() {
             if card_ids.contains(&uuid) {
+                let full_id = uuid.to_string();
+                let short_id = &full_id[..8];
                 out.push_str(r#"<span class="card-uuid-link" data-card-id=""#);
-                out.push_str(&uuid.to_string());
+                out.push_str(&full_id);
                 out.push_str(r#"">"#);
-                out.push_str(m.as_str());
+                out.push_str(r#"<span class="card-uuid-link-id">"#);
+                out.push_str(short_id);
+                if card_previews.contains_key(&uuid) {
+                    out.push_str("\u{2026}");
+                }
+                out.push_str("</span>");
+                if let Some(preview) = card_previews.get(&uuid) {
+                    out.push_str(r#" <span class="card-uuid-link-preview">"#);
+                    out.push_str(&escape_html_text(preview));
+                    out.push_str("</span>");
+                }
                 out.push_str("</span>");
             } else {
                 out.push_str(m.as_str());
@@ -305,22 +341,41 @@ fn linkify_segment(text: &str, card_ids: &HashSet<Uuid>, out: &mut String) {
     out.push_str(&text[last..]);
 }
 
+fn escape_html_text(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 /// Format a timestamp as a human-readable relative time string.
+///
+/// Uses millisecond precision for sub-second intervals, then seconds,
+/// minutes, hours, and days as appropriate.
 pub fn format_relative_time(ts: &DateTime<Utc>) -> String {
     let elapsed = Utc::now().signed_duration_since(ts);
-    let secs = elapsed.num_seconds();
-    if secs < 5 {
-        "just now".into()
-    } else if secs < 60 {
+    let ms = elapsed.num_milliseconds();
+    if ms < 1_000 {
+        format!("{ms}ms ago")
+    } else if ms < 60_000 {
+        let secs = ms / 1_000;
         format!("{secs}s ago")
-    } else if secs < 3600 {
-        let mins = secs / 60;
+    } else if ms < 3_600_000 {
+        let mins = ms / 60_000;
         format!("{mins}m ago")
-    } else if secs < 86400 {
-        let hours = secs / 3600;
+    } else if ms < 86_400_000 {
+        let hours = ms / 3_600_000;
         format!("{hours}h ago")
     } else {
-        let days = secs / 86400;
+        let days = ms / 86_400_000;
         format!("{days}d ago")
     }
 }
@@ -408,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn card_preview_strips_markdown() {
+    fn card_preview_clears_markdown() {
         assert_eq!(
             card_preview("**bold title**", 100),
             Some("bold title".to_string())
@@ -767,11 +822,11 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
     #[test]
     fn resolve_linked_cards_basic() {
-        use blazelist_protocol::NonNegativeI64;
+
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
-        let p = NonNegativeI64::try_from(1000i64).unwrap();
+        let p = 1000i64;
         let id_a = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
         let id_b = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
         let id_c = Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").unwrap();
@@ -790,11 +845,11 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
     #[test]
     fn resolve_linked_cards_empty_content() {
-        use blazelist_protocol::NonNegativeI64;
+
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
-        let p = NonNegativeI64::try_from(1000i64).unwrap();
+        let p = 1000i64;
         let id = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
 
         let cards = vec![Card::first(id, "".into(), p, vec![], false, t, None)];
@@ -811,11 +866,11 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
     #[test]
     fn resolve_linked_cards_truncates_preview() {
-        use blazelist_protocol::NonNegativeI64;
+
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
-        let p = NonNegativeI64::try_from(1000i64).unwrap();
+        let p = 1000i64;
         let id = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
 
         let cards = vec![Card::first(
@@ -834,11 +889,11 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
     #[test]
     fn extract_back_links_finds_referencing_cards() {
-        use blazelist_protocol::NonNegativeI64;
+
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
-        let p = NonNegativeI64::try_from(1000i64).unwrap();
+        let p = 1000i64;
         let id_a = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
         let id_b = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
         let id_c = Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").unwrap();
@@ -863,11 +918,11 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
     #[test]
     fn extract_back_links_excludes_self() {
-        use blazelist_protocol::NonNegativeI64;
+
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
-        let p = NonNegativeI64::try_from(1000i64).unwrap();
+        let p = 1000i64;
         let id = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
 
         // Card references its own UUID — should not appear as a back-link.
@@ -886,11 +941,11 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
     #[test]
     fn extract_back_links_empty_when_no_references() {
-        use blazelist_protocol::NonNegativeI64;
+
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
-        let p = NonNegativeI64::try_from(1000i64).unwrap();
+        let p = 1000i64;
         let id_a = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
         let id_b = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
 
@@ -907,11 +962,11 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
     #[test]
     fn compute_all_link_counts_basic() {
-        use blazelist_protocol::NonNegativeI64;
+
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
-        let p = NonNegativeI64::try_from(1000i64).unwrap();
+        let p = 1000i64;
         let id_a = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
         let id_b = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
         let id_c = Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").unwrap();
@@ -946,11 +1001,11 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
     #[test]
     fn compute_all_link_counts_self_ref_excluded() {
-        use blazelist_protocol::NonNegativeI64;
+
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
-        let p = NonNegativeI64::try_from(1000i64).unwrap();
+        let p = 1000i64;
         let id = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
 
         let cards = vec![Card::first(
@@ -970,11 +1025,11 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
     #[test]
     fn compute_all_link_counts_duplicate_uuid_counted_once() {
-        use blazelist_protocol::NonNegativeI64;
+
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
-        let p = NonNegativeI64::try_from(1000i64).unwrap();
+        let p = 1000i64;
         let id_a = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
         let id_b = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
 
@@ -999,11 +1054,11 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
     #[test]
     fn compute_all_link_counts_nonexistent_target_ignored() {
-        use blazelist_protocol::NonNegativeI64;
+
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
-        let p = NonNegativeI64::try_from(1000i64).unwrap();
+        let p = 1000i64;
         let id_a = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
         let ghost = Uuid::parse_str("dddddddd-dddd-dddd-dddd-dddddddddddd").unwrap();
 
@@ -1034,6 +1089,8 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
         assert!(result.contains("class=\"card-uuid-link\""));
         assert!(result.contains(&format!("data-card-id=\"{id}\"")));
+        assert!(result.contains("card-uuid-link-id"));
+        assert!(result.contains(">aaaaaaaa</span>"));
         // Original text preserved
         assert!(result.contains("See "));
         assert!(result.contains(" for details"));
@@ -1084,9 +1141,41 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
         let html = format!("<p>{id_a} and {id_b}</p>");
         let result = linkify_card_uuids(&html, &card_ids);
 
-        // Both should be wrapped
-        assert_eq!(result.matches("card-uuid-link").count(), 2);
+        // Both should be wrapped (each link has card-uuid-link + card-uuid-link-id)
+        assert_eq!(result.matches("data-card-id").count(), 2);
         assert!(result.contains(&format!("data-card-id=\"{id_a}\"")));
         assert!(result.contains(&format!("data-card-id=\"{id_b}\"")));
+    }
+
+    #[test]
+    fn linkify_card_uuids_with_previews_includes_inline_preview() {
+        let id = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let card_ids: std::collections::HashSet<Uuid> = [id].into_iter().collect();
+        let previews: std::collections::HashMap<Uuid, String> =
+            [(id, "Linked card preview".to_string())]
+                .into_iter()
+                .collect();
+
+        let html = format!("<p>{id}</p>");
+        let result = linkify_card_uuids_with_previews(&html, &card_ids, &previews);
+
+        assert!(result.contains("card-uuid-link-preview"));
+        assert!(result.contains("Linked card preview"));
+    }
+
+    #[test]
+    fn linkify_card_uuids_with_previews_escapes_preview_html() {
+        let id = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let card_ids: std::collections::HashSet<Uuid> = [id].into_iter().collect();
+        let previews: std::collections::HashMap<Uuid, String> =
+            [(id, r#"<script>alert("xss")</script>"#.to_string())]
+                .into_iter()
+                .collect();
+
+        let html = format!("<p>{id}</p>");
+        let result = linkify_card_uuids_with_previews(&html, &card_ids, &previews);
+
+        assert!(result.contains("&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;"));
+        assert!(!result.contains("<script>alert"));
     }
 }

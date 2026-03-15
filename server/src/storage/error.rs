@@ -41,6 +41,11 @@ pub enum StorageError {
     NotFound,
     /// Entity was already deleted.
     AlreadyDeleted,
+    /// A tag cannot be deleted while cards still reference it.
+    OrphanedTagReference {
+        tag_id: uuid::Uuid,
+        referencing_card_ids: Vec<uuid::Uuid>,
+    },
     /// Root hash mismatch during sync — client state is corrupted.
     RootHashMismatch {
         sequence: blazelist_protocol::NonNegativeI64,
@@ -49,12 +54,12 @@ pub enum StorageError {
     /// The on-disk schema was created by an incompatible major version.
     ///
     /// Set `BLAZELIST_ALLOW_IRREVERSIBLE_AUTOMATIC_UPGRADE_MIGRATION=true`
-    /// to allow (currently unimplemented) automatic migration.
+    /// to allow automatic migration.
     IncompatibleVersion {
         stored: blazelist_protocol::Version,
         current: blazelist_protocol::Version,
     },
-    /// Automatic migration was allowed but is not yet implemented.
+    /// Automatic migration was allowed but no major-to-major path exists.
     MigrationNotImplemented {
         stored: blazelist_protocol::Version,
         current: blazelist_protocol::Version,
@@ -67,6 +72,14 @@ impl std::fmt::Display for StorageError {
         match self {
             StorageError::NotFound => write!(f, "entity not found"),
             StorageError::AlreadyDeleted => write!(f, "entity already deleted"),
+            StorageError::OrphanedTagReference {
+                tag_id,
+                referencing_card_ids,
+            } => write!(
+                f,
+                "tag {tag_id} cannot be deleted: still referenced by {} card(s)",
+                referencing_card_ids.len()
+            ),
             StorageError::RootHashMismatch {
                 sequence,
                 expected_hash,
@@ -84,7 +97,7 @@ impl std::fmt::Display for StorageError {
             ),
             StorageError::MigrationNotImplemented { stored, current } => write!(
                 f,
-                "automatic migration from v{stored} to v{current} is not yet implemented"
+                "automatic migration path from v{stored} to v{current} is not available"
             ),
             StorageError::Internal(msg) => write!(f, "storage error: {msg}"),
         }
@@ -103,6 +116,13 @@ impl From<StorageError> for PushOpError {
     fn from(e: StorageError) -> Self {
         match e {
             StorageError::AlreadyDeleted => PushOpError::Domain(PushError::AlreadyDeleted),
+            StorageError::OrphanedTagReference {
+                tag_id,
+                referencing_card_ids,
+            } => PushOpError::Domain(PushError::OrphanedTagReference {
+                tag_id,
+                referencing_card_ids,
+            }),
             other => PushOpError::Internal(other.to_string()),
         }
     }

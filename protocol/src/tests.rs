@@ -20,7 +20,7 @@ fn p(v: i64) -> NonNegativeI64 {
 }
 
 fn test_card() -> Card {
-    Card::first(TEST_UUID_A, "C".into(), p(1), vec![], false, ts(0), None)
+    Card::first(TEST_UUID_A, "C".into(), 1, vec![], false, ts(0), None)
 }
 
 fn test_tag() -> Tag {
@@ -203,8 +203,21 @@ fn root_hash_mismatch_round_trip() {
 fn duplicate_priority_round_trip() {
     let resp = Response::Error(ProtocolError::PushFailed(PushError::DuplicatePriority {
         conflicting_id: TEST_UUID_D,
-        priority: p(500),
+        priority: 500,
     }));
+    let bytes = postcard::to_allocvec(&resp).unwrap();
+    let decoded: Response = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(resp, decoded);
+}
+
+#[test]
+fn orphaned_tag_reference_round_trip() {
+    let resp = Response::Error(ProtocolError::PushFailed(
+        PushError::OrphanedTagReference {
+            tag_id: TEST_UUID_A,
+            referencing_card_ids: vec![TEST_UUID_B, TEST_UUID_C],
+        },
+    ));
     let bytes = postcard::to_allocvec(&resp).unwrap();
     let decoded: Response = postcard::from_bytes(&bytes).unwrap();
     assert_eq!(resp, decoded);
@@ -595,7 +608,7 @@ fn response_discriminant_stability() {
         &discriminant(&Response::Card(Card::first(
             TEST_UUID_A,
             "".into(),
-            p(1),
+            1,
             vec![],
             false,
             ts(0),
@@ -667,12 +680,19 @@ fn push_error_discriminant_stability() {
         &discriminant(&PushError::TagAncestorMismatch(Box::new(test_tag()))).to_string(),
     );
     expect!["2"].assert_eq(&discriminant(&PushError::AlreadyDeleted).to_string());
-    expect!["3"].assert_eq(&discriminant(&PushError::HashVerificationFailed).to_string());
-    expect!["4"].assert_eq(&discriminant(&PushError::EmptyChain).to_string());
-    expect!["5"].assert_eq(
+    expect!["3"].assert_eq(
+        &discriminant(&PushError::OrphanedTagReference {
+            tag_id: Uuid::nil(),
+            referencing_card_ids: vec![],
+        })
+        .to_string(),
+    );
+    expect!["4"].assert_eq(&discriminant(&PushError::HashVerificationFailed).to_string());
+    expect!["5"].assert_eq(&discriminant(&PushError::EmptyChain).to_string());
+    expect!["6"].assert_eq(
         &discriminant(&PushError::DuplicatePriority {
             conflicting_id: Uuid::nil(),
-            priority: p(0),
+            priority: 0,
         })
         .to_string(),
     );

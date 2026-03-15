@@ -1,6 +1,7 @@
 use crate::components::hooks::use_click_outside_close;
 use crate::state::store::{
-    AppState, DueDatePreset, format_due_date_badge, get_client, tag_chip_style,
+    AppState, AutoSaveStatus, DueDatePreset, NewCardPosition, format_due_date_badge, get_client,
+    tag_chip_style,
 };
 use blazelist_client_lib::client::Client as _;
 use blazelist_client_lib::priority::{
@@ -10,12 +11,18 @@ use blazelist_protocol::{Card, Entity, PushItem, Utc};
 use chrono::DateTime;
 use leptos::prelude::*;
 use uuid::Uuid;
+use wasm_bindgen::prelude::*;
 
-/// Where a newly created card should be placed in the list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SavePosition {
-    Bottom,
-    Top,
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_name = "setInterval")]
+    fn set_interval_js(handler: &js_sys::Function, timeout: i32) -> i32;
+    #[wasm_bindgen(js_name = "clearInterval")]
+    fn clear_interval_js(handle: i32);
+    #[wasm_bindgen(js_name = "setTimeout")]
+    fn set_timeout_js(handler: &js_sys::Function, timeout: i32) -> i32;
+    #[wasm_bindgen(js_name = "clearTimeout")]
+    fn clear_timeout_js(handle: i32);
 }
 
 #[component]
@@ -26,6 +33,15 @@ pub fn CardEditor(
 ) -> impl IntoView {
     let state = use_context::<AppState>().expect("AppState not provided");
     let is_editing = editing_card.is_some();
+    let textarea_ref = NodeRef::<leptos::html::Textarea>::new();
+
+    if !is_editing {
+        Effect::new(move |_| {
+            if let Some(el) = textarea_ref.get() {
+                let _ = el.focus();
+            }
+        });
+    }
 
     let initial_content = editing_card
         .as_ref()
@@ -42,24 +58,26 @@ pub fn CardEditor(
     let due_date: RwSignal<Option<DateTime<Utc>>> = RwSignal::new(initial_due_date);
     let due_preset = RwSignal::new(DueDatePreset::Today);
     let due_dropdown_open = RwSignal::new(false);
-    let show_preview = RwSignal::new(true);
-    let save_position = RwSignal::new(SavePosition::Bottom);
-    let dropdown_open = RwSignal::new(false);
+    let show_preview = RwSignal::new(state.show_preview.get_untracked());
+    let tag_search = RwSignal::new(String::new());
 
-    // Track dirty state — compare current content/tags/due_date to initial values
-    let orig_content = initial_content;
-    let orig_tags = {
+    // Track the "last saved" snapshot so dirty detection resets after auto-save.
+    let orig_content = RwSignal::new(initial_content);
+    let orig_tags = RwSignal::new({
         let mut t = initial_tags;
         t.sort();
         t
-    };
-    let orig_due_date = initial_due_date;
+    });
+    let orig_due_date = RwSignal::new(initial_due_date);
+
+    // Track dirty state
     Effect::new(move |_| {
         let cur = content.get();
         let mut cur_tags = selected_tags.get();
         cur_tags.sort();
         let cur_due = due_date.get();
-        let dirty = cur != orig_content || cur_tags != orig_tags || cur_due != orig_due_date;
+        let dirty =
+            cur != orig_content.get() || cur_tags != orig_tags.get() || cur_due != orig_due_date.get();
         state.has_unsaved_changes.set(dirty);
     });
     on_cleanup(move || {
@@ -67,16 +85,145 @@ pub fn CardEditor(
     });
 
     let stored_editing = StoredValue::new(editing_card.clone());
+
+    // --- Auto-save machinery (only for editing existing cards) ---
+    let auto_save_status = state.auto_save_status;
+    let interval_handle = RwSignal::new(0i32);
+    let saved_timeout_handle = RwSignal::new(0i32);
+
+    // Clear all auto-save timers.
+    let clear_auto_save_timers = move || {
+        let ih = interval_handle.get_untracked();
+        if ih != 0 {
+            clear_interval_js(ih);
+            interval_handle.set(0);
+        }
+        let sh = saved_timeout_handle.get_untracked();
+        if sh != 0 {
+            clear_timeout_js(sh);
+            saved_timeout_handle.set(0);
+        }
+    };
+
+    if is_editing {
+        // Watch for dirty changes and manage countdown.
+        Effect::new(move |_| {
+            let dirty = state.has_unsaved_changes.get();
+            let auto_save = state.auto_save_enabled.get();
+            let delay = state.auto_save_delay_secs.get();
+
+            if !dirty || !auto_save {
+                clear_auto_save_timers();
+                if !dirty {
+                    // Don't overwrite Saved status
+                    if auto_save_status.get_untracked() != AutoSaveStatus::Saved {
+                        auto_save_status.set(AutoSaveStatus::Idle);
+                    }
+                }
+                return;
+            }
+
+            // Dirty and auto-save enabled: start countdown.
+            clear_auto_save_timers();
+            auto_save_status.set(AutoSaveStatus::Countdown(delay));
+
+            let cb = Closure::<dyn Fn()>::new(move || {
+                let current = auto_save_status.get_untracked();
+                match current {
+                    AutoSaveStatus::Countdown(1) => {
+                        // Time's up — trigger auto-save.
+                        let ih = interval_handle.get_untracked();
+                        if ih != 0 {
+                            clear_interval_js(ih);
+                            interval_handle.set(0);
+                        }
+                        auto_save_status.set(AutoSaveStatus::Saving);
+
+                        let text = content.get_untracked();
+                        let tags = selected_tags.get_untracked();
+                        let selected_due = due_date.get_untracked();
+                        let editing = stored_editing.get_value();
+
+                        if text.trim().is_empty() {
+                            auto_save_status.set(AutoSaveStatus::Idle);
+                            return;
+                        }
+
+                        if let Some(existing) = editing {
+                            let card = existing.next(
+                                text.clone(),
+                                existing.priority(),
+                                tags.clone(),
+                                existing.blazed(),
+                                Utc::now(),
+                                selected_due,
+                            );
+
+                            let card_for_update = card.clone();
+                            leptos::task::spawn_local(async move {
+                                if let Some(client) = get_client() {
+                                    if let Err(e) = client.push_card(card.clone()).await {
+                                        log::error!("Auto-save failed: {e}");
+                                        auto_save_status.set(AutoSaveStatus::Idle);
+                                        return;
+                                    }
+                                    state.upsert_card(card.clone());
+                                    // Update base snapshot so dirty resets.
+                                    stored_editing.set_value(Some(card));
+                                    orig_content.set(text);
+                                    let mut sorted_tags = tags;
+                                    sorted_tags.sort();
+                                    orig_tags.set(sorted_tags);
+                                    orig_due_date.set(selected_due);
+
+                                    auto_save_status.set(AutoSaveStatus::Saved);
+                                    // Clear "Saved" after 2s.
+                                    let reset_cb = Closure::once(move || {
+                                        if auto_save_status.get_untracked() == AutoSaveStatus::Saved
+                                        {
+                                            auto_save_status.set(AutoSaveStatus::Idle);
+                                        }
+                                        saved_timeout_handle.set(0);
+                                    });
+                                    let func = reset_cb.into_js_value();
+                                    let h = set_timeout_js(func.unchecked_ref(), 2000);
+                                    saved_timeout_handle.set(h);
+                                }
+                            });
+                            // Optimistic local update while push is in flight.
+                            state.upsert_card(card_for_update);
+                        }
+                    }
+                    AutoSaveStatus::Countdown(n) if n > 1 => {
+                        auto_save_status.set(AutoSaveStatus::Countdown(n - 1));
+                    }
+                    _ => {}
+                }
+            });
+            let func = cb.into_js_value();
+            let h = set_interval_js(func.unchecked_ref(), 1000);
+            interval_handle.set(h);
+        });
+    }
+
+    on_cleanup(move || {
+        clear_auto_save_timers();
+    });
+
+    // --- Save handler (manual save / new card) ---
     let on_submit = move |_| {
         let state = state.clone();
         let on_save = on_save.clone();
         let text = content.get_untracked();
         let tags = selected_tags.get_untracked();
-        let position = save_position.get_untracked();
         let selected_due = due_date.get_untracked();
         if text.trim().is_empty() {
             return;
         }
+        // Stop any in-flight auto-save countdown.
+        clear_auto_save_timers();
+        auto_save_status.set(AutoSaveStatus::Idle);
+
         let editing = stored_editing.get_value();
         leptos::task::spawn_local(async move {
             if let Some(client) = get_client() {
@@ -92,9 +239,22 @@ pub fn CardEditor(
                 } else {
                     let mut cards = state.cards.get_untracked();
                     blazelist_client_lib::filter::sort_by_priority(&mut cards);
+                    let position = state.new_card_position.get_untracked();
                     let insert_pos = match position {
-                        SavePosition::Top => InsertPosition::Top,
-                        SavePosition::Bottom => InsertPosition::Bottom,
+                        NewCardPosition::Top => InsertPosition::Top,
+                        NewCardPosition::Bottom => InsertPosition::Bottom,
+                        NewCardPosition::Above(ref_id) => {
+                            match cards.iter().position(|c| c.id() == ref_id) {
+                                Some(idx) => InsertPosition::At(idx),
+                                None => InsertPosition::Bottom,
+                            }
+                        }
+                        NewCardPosition::Below(ref_id) => {
+                            match cards.iter().position(|c| c.id() == ref_id) {
+                                Some(idx) => InsertPosition::At(idx + 1),
+                                None => InsertPosition::Bottom,
+                            }
+                        }
                     };
                     let placement = place_card(&cards, insert_pos);
                     match placement {
@@ -127,7 +287,9 @@ pub fn CardEditor(
                                 log::error!("Failed to push rebalanced card: {e}");
                                 return;
                             }
+                            let new_id = card.id();
                             state.upsert_card(card);
+                            state.selected_card.set(Some(new_id));
                             on_save.run(());
                             return;
                         }
@@ -137,19 +299,15 @@ pub fn CardEditor(
                     log::error!("Failed to save card: {e}");
                     return;
                 }
+                let new_id = card.id();
                 state.upsert_card(card);
+                if !is_editing {
+                    state.selected_card.set(Some(new_id));
+                }
                 on_save.run(());
             }
         });
     };
-
-    let on_toggle_dropdown = move |ev: web_sys::MouseEvent| {
-        ev.stop_propagation();
-        dropdown_open.update(|v| *v = !*v);
-    };
-
-    let group_ref = NodeRef::<leptos::html::Div>::new();
-    use_click_outside_close(dropdown_open, group_ref);
 
     let due_group_ref = NodeRef::<leptos::html::Div>::new();
     use_click_outside_close(due_dropdown_open, due_group_ref);
@@ -159,22 +317,7 @@ pub fn CardEditor(
         comrak::markdown_to_html(&text, &blazelist_client_lib::display::markdown_options())
     };
 
-    let save_label = move || match save_position.get() {
-        SavePosition::Bottom => {
-            if is_editing {
-                "Update"
-            } else {
-                "Save"
-            }
-        }
-        SavePosition::Top => {
-            if is_editing {
-                "Update"
-            } else {
-                "Save (top)"
-            }
-        }
-    };
+    let save_label = if is_editing { "Update" } else { "Save" };
 
     let editor_body_class = move || {
         if show_preview.get() {
@@ -184,122 +327,206 @@ pub fn CardEditor(
         }
     };
 
+    let main_row_class = move || {
+        if show_preview.get() {
+            "editor-main-row preview-active"
+        } else {
+            "editor-main-row"
+        }
+    };
+
+    let card_editor_class = move || {
+        if show_preview.get() {
+            "card-editor"
+        } else {
+            "card-editor side-by-side"
+        }
+    };
+
+    let auto_save_indicator = move || {
+        if !is_editing || !state.auto_save_enabled.get() {
+            return String::new();
+        }
+        match auto_save_status.get() {
+            AutoSaveStatus::Idle => String::new(),
+            AutoSaveStatus::Countdown(n) => format!("Auto-saving in {n}s\u{2026}"),
+            AutoSaveStatus::Saving => "Saving\u{2026}".to_string(),
+            AutoSaveStatus::Saved => "Saved".to_string(),
+        }
+    };
+
+    let auto_save_class = move || match auto_save_status.get() {
+        AutoSaveStatus::Saved => "auto-save-status auto-save-saved",
+        AutoSaveStatus::Saving => "auto-save-status auto-save-saving",
+        AutoSaveStatus::Countdown(_) => "auto-save-status auto-save-countdown",
+        AutoSaveStatus::Idle => "auto-save-status",
+    };
+
     let on_cancel_clone = on_cancel.clone();
 
     view! {
-        <div class="card-editor">
-            <div class="editor-toolbar">
-                <label class="preview-toggle">
-                    <input
-                        type="checkbox"
-                        prop:checked=move || show_preview.get()
-                        on:change=move |_| show_preview.update(|v| *v = !*v)
-                    />
-                    "Preview"
-                </label>
-            </div>
-            <div class=editor_body_class>
-                <textarea
-                    class="editor-input"
-                    placeholder="Write markdown content..."
-                    prop:value=move || content.get()
-                    on:input=move |ev| content.set(event_target_value(&ev))
-                />
-                {move || show_preview.get().then(|| view! {
-                    <div class="editor-preview" inner_html=preview_html></div>
-                })}
-            </div>
-            <div class="editor-tags">
-                {move || {
-                    let mut tags = state.tags.get();
-                    tags.sort_by(|a, b| a.title().to_lowercase().cmp(&b.title().to_lowercase()));
-                    tags.into_iter().map(|tag| {
-                        let tag_id = tag.id();
-                        let title = tag.title().to_string();
-                        let color = tag.color();
-                        let selected = move || selected_tags.get().contains(&tag_id);
-                        let toggle = move |_| {
-                            selected_tags.update(|tags| {
-                                if tags.contains(&tag_id) {
-                                    tags.retain(|t| *t != tag_id);
-                                } else {
-                                    tags.push(tag_id);
+        <div class=card_editor_class>
+            <div class=main_row_class>
+                <div class="editor-left">
+                    <div class="editor-toolbar">
+                        <label class="preview-toggle">
+                            "Preview"
+                            <input
+                                type="checkbox"
+                                class="toggle-checkbox"
+                                prop:checked=move || show_preview.get()
+                                on:change=move |_| show_preview.update(|v| *v = !*v)
+                            />
+                        </label>
+                        <span class=auto_save_class>{auto_save_indicator}</span>
+                    </div>
+                    <div class="editor-body-row">
+                        <div class=editor_body_class>
+                            <textarea
+                                class="editor-input"
+                                placeholder="Write markdown content..."
+                                prop:value=move || content.get()
+                                on:input=move |ev| content.set(event_target_value(&ev))
+                                node_ref=textarea_ref
+                            />
+                            {move || show_preview.get().then(|| view! {
+                                <div class="editor-preview" inner_html=preview_html></div>
+                            })}
+                        </div>
+                        <div class="editor-tags">
+                            <span class="meta-label">"Tags"</span>
+                            <input
+                                class="tag-search-input"
+                                type="text"
+                                placeholder="Search tags\u{2026}"
+                                prop:value=move || tag_search.get()
+                                on:input=move |ev| tag_search.set(event_target_value(&ev))
+                            />
+                            <ul class="editor-tag-list">
+                            {move || {
+                                let q = tag_search.get().to_lowercase();
+                                let mut tags = state.tags.get();
+                                tags.sort_by(|a, b| a.title().to_lowercase().cmp(&b.title().to_lowercase()));
+                                if !q.is_empty() {
+                                    tags.retain(|t| t.title().to_lowercase().contains(&q));
                                 }
-                            });
-                        };
-                        let style = tag_chip_style(&color);
-                        view! {
-                            <span
-                                class="tag-chip editor-tag-chip"
-                                class:editor-tag-selected=selected
-                                style=style.clone()
-                                on:click=toggle
-                            >
-                                {title}
-                            </span>
-                        }
-                    }).collect::<Vec<_>>()
-                }}
-            </div>
-            <div class="detail-tags">
-                <span class="meta-label">"Due date"</span>
-                <div class="due-date-controls">
+                                tags.into_iter().map(|tag| {
+                                    let tag_id = tag.id();
+                                    let title = tag.title().to_string();
+                                    let color = tag.color().map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b));
+                                    let is_selected = move || selected_tags.get().contains(&tag_id);
+                                    let toggle = move |_| {
+                                        selected_tags.update(|tags| {
+                                            if tags.contains(&tag_id) {
+                                                tags.retain(|t| *t != tag_id);
+                                            } else {
+                                                tags.push(tag_id);
+                                            }
+                                        });
+                                    };
+                                    let item_class = move || if is_selected() { "editor-tag-item active" } else { "editor-tag-item" };
+                                    let border_style = color
+                                        .map(|c| format!("border-left: 3px solid {c};"))
+                                        .unwrap_or_else(|| "border-left: 3px solid transparent;".to_string());
+                                    view! {
+                                        <li class=item_class style=border_style on:click=toggle>
+                                            <span class="editor-tag-name">{title}</span>
+                                        </li>
+                                    }
+                                }).collect::<Vec<_>>()
+                            }}
+                            </ul>
+                        </div>
+                    </div>
+                    // Selected tags shown below editor
                     {move || {
-                        due_date.get().map(|d| {
-                            let (badge_text, badge_class) = format_due_date_badge(&d);
-                            let cls = format!("due-date-current {badge_class}");
-                            let date_str = d.format("%Y-%m-%d").to_string();
-                            view! {
-                                <span class=cls>{format!("{date_str} ({badge_text})")}</span>
-                            }
+                        let sel = selected_tags.get();
+                        let all_tags = state.tags.get();
+                        if sel.is_empty() {
+                            return None;
+                        }
+                        let chips: Vec<_> = sel.iter().filter_map(|id| {
+                            let tag = all_tags.iter().find(|t| t.id() == *id)?;
+                            let tag_id = *id;
+                            let title = tag.title().to_string();
+                            let color = tag.color();
+                            let style = tag_chip_style(&color);
+                            let remove = move |ev: web_sys::MouseEvent| {
+                                ev.stop_propagation();
+                                selected_tags.update(|tags| tags.retain(|t| *t != tag_id));
+                            };
+                            Some(view! {
+                                <span class="tag-chip" style=style>
+                                    {title}
+                                    <button class="chip-remove" on:click=remove>"x"</button>
+                                </span>
+                            })
+                        }).collect();
+                        Some(view! {
+                            <div class="editor-selected-tags">{chips}</div>
                         })
                     }}
-                    <div class="due-date-dropdown-group" node_ref=due_group_ref>
-                        <button class="due-date-quick-btn" on:click=move |_| {
-                            due_date.set(Some(due_preset.get_untracked().resolve()));
-                        }>{move || due_preset.get().label()}</button>
-                        <button class="due-date-dropdown-toggle" on:click=move |ev: web_sys::MouseEvent| {
-                            ev.stop_propagation();
-                            due_dropdown_open.update(|v| *v = !*v);
-                        }>
-                            {move || if due_dropdown_open.get() { "\u{25B4}" } else { "\u{25BE}" }}
-                        </button>
-                        {move || due_dropdown_open.get().then(|| view! {
-                            <div class="due-date-dropdown-menu">
-                                {DueDatePreset::ALL.into_iter().map(|p| {
+                    <div class="detail-tags">
+                        <span class="meta-label">"Due date"</span>
+                        <div class="due-date-controls">
+                            {move || {
+                                due_date.get().map(|d| {
+                                    let (badge_text, badge_class) = format_due_date_badge(&d);
+                                    let cls = format!("due-date-current {badge_class}");
+                                    let date_str = d.format("%Y-%m-%d").to_string();
                                     view! {
-                                        <button
-                                            class="save-dropdown-item"
-                                            class:active=move || due_preset.get() == p
-                                            on:click=move |_| {
-                                                due_preset.set(p);
-                                                due_date.set(Some(p.resolve()));
-                                                due_dropdown_open.set(false);
-                                            }
-                                        >
-                                            {p.label()}
-                                        </button>
+                                        <span class=cls>{format!("{date_str} ({badge_text})")}</span>
                                     }
-                                }).collect::<Vec<_>>()}
+                                })
+                            }}
+                            <div class="due-date-dropdown-group" node_ref=due_group_ref>
+                                <button class="due-date-quick-btn" on:click=move |_| {
+                                    due_date.set(Some(due_preset.get_untracked().resolve()));
+                                }>{move || due_preset.get().label()}</button>
+                                <button class="due-date-dropdown-toggle" on:click=move |ev: web_sys::MouseEvent| {
+                                    ev.stop_propagation();
+                                    due_dropdown_open.update(|v| *v = !*v);
+                                }>
+                                    {move || if due_dropdown_open.get() { "\u{25B4}" } else { "\u{25BE}" }}
+                                </button>
+                                {move || due_dropdown_open.get().then(|| view! {
+                                    <div class="due-date-dropdown-menu">
+                                        {DueDatePreset::ALL.into_iter().map(|p| {
+                                            view! {
+                                                <button
+                                                    class="save-dropdown-item"
+                                                    class:active=move || due_preset.get() == p
+                                                    on:click=move |_| {
+                                                        due_preset.set(p);
+                                                        due_date.set(Some(p.resolve()));
+                                                        due_dropdown_open.set(false);
+                                                    }
+                                                >
+                                                    {p.label()}
+                                                </button>
+                                            }
+                                        }).collect::<Vec<_>>()}
+                                    </div>
+                                })}
                             </div>
-                        })}
+                            <input
+                                class="due-date-picker"
+                                type="date"
+                                prop:value=move || due_date.get().map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()
+                                on:change=move |ev| {
+                                    let val = event_target_value(&ev);
+                                    if val.is_empty() {
+                                        due_date.set(None);
+                                    } else if let Ok(date) = chrono::NaiveDate::parse_from_str(&val, "%Y-%m-%d") {
+                                        due_date.set(Some(date.and_hms_opt(0, 0, 0).unwrap().and_utc()));
+                                    }
+                                }
+                            />
+                            {move || due_date.get().map(|_| view! {
+                                <button class="due-date-clear-btn" on:click=move |_| due_date.set(None)>"Clear"</button>
+                            })}
+                        </div>
                     </div>
-                    <input
-                        class="due-date-picker"
-                        type="date"
-                        prop:value=move || due_date.get().map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()
-                        on:change=move |ev| {
-                            let val = event_target_value(&ev);
-                            if val.is_empty() {
-                                due_date.set(None);
-                            } else if let Ok(date) = chrono::NaiveDate::parse_from_str(&val, "%Y-%m-%d") {
-                                due_date.set(Some(date.and_hms_opt(0, 0, 0).unwrap().and_utc()));
-                            }
-                        }
-                    />
-                    {move || due_date.get().map(|_| view! {
-                        <button class="due-date-clear-btn" on:click=move |_| due_date.set(None)>"Clear"</button>
-                    })}
                 </div>
             </div>
             <div class="editor-actions">
@@ -308,44 +535,7 @@ pub fn CardEditor(
                         <button class="btn-cancel" on:click=move |_| cb.run(())>"Cancel"</button>
                     }
                 })}
-                {if is_editing {
-                    view! {
-                        <button class="btn-save" on:click=on_submit>"Update"</button>
-                    }.into_any()
-                } else {
-                    view! {
-                        <div class="btn-save-group" node_ref=group_ref>
-                            <button class="btn-save" on:click=on_submit>{save_label}</button>
-                            <button class="btn-save-dropdown" on:click=on_toggle_dropdown>
-                                {move || if dropdown_open.get() { "\u{25B4}" } else { "\u{25BE}" }}
-                            </button>
-                            {move || dropdown_open.get().then(|| view! {
-                                <div class="save-dropdown-menu">
-                                    <button
-                                        class="save-dropdown-item"
-                                        class:active=move || save_position.get() == SavePosition::Top
-                                        on:click=move |_| {
-                                            save_position.set(SavePosition::Top);
-                                            dropdown_open.set(false);
-                                        }
-                                    >
-                                        "Add to top"
-                                    </button>
-                                    <button
-                                        class="save-dropdown-item"
-                                        class:active=move || save_position.get() == SavePosition::Bottom
-                                        on:click=move |_| {
-                                            save_position.set(SavePosition::Bottom);
-                                            dropdown_open.set(false);
-                                        }
-                                    >
-                                        "Add to bottom"
-                                    </button>
-                                </div>
-                            })}
-                        </div>
-                    }.into_any()
-                }}
+                <button class="btn-save" on:click=on_submit>{save_label}</button>
             </div>
         </div>
     }

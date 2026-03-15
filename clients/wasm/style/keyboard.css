@@ -1,0 +1,81 @@
+/* Keyboard shortcuts help overlay */
+.help-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.55);
+}
+
+.help-dialog {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    max-width: 420px;
+    width: 90vw;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.help-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+}
+
+.help-header h2 {
+    margin: 0;
+    font-size: 1.1rem;
+    color: var(--text-primary);
+}
+
+.help-close {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.25rem;
+    cursor: pointer;
+    padding: 0 0.25rem;
+    line-height: 1;
+}
+
+.help-close:hover {
+    color: var(--text-primary);
+}
+
+.help-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.help-table th {
+    text-align: left;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+    padding: 0.25rem 0.5rem;
+}
+
+.help-table td {
+    padding: 0.35rem 0.5rem;
+    font-size: 0.85rem;
+    color: var(--text-primary);
+}
+
+.help-table tbody tr:hover {
+    background: var(--bg-hover);
+}
+
+.help-table kbd {
+    display: inline-block;
+    padding: 0.1rem 0.4rem;
+    font-family: monospace;
+    font-size: 0.8rem;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text-primary);
+}

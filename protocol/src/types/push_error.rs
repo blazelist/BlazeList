@@ -1,4 +1,4 @@
-use crate::{Card, NonNegativeI64, Tag};
+use crate::{Card, Tag};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -15,6 +15,11 @@ pub enum PushError {
     TagAncestorMismatch(Box<Tag>),
     /// The entity has been deleted.
     AlreadyDeleted,
+    /// A tag cannot be deleted while cards still reference it.
+    OrphanedTagReference {
+        tag_id: Uuid,
+        referencing_card_ids: Vec<Uuid>,
+    },
     /// A pushed version failed hash verification.
     HashVerificationFailed,
     /// The version chain was empty.
@@ -23,7 +28,7 @@ pub enum PushError {
     /// UUID and priority are returned so the client can resolve the collision.
     DuplicatePriority {
         conflicting_id: Uuid,
-        priority: NonNegativeI64,
+        priority: i64,
     },
 }
 
@@ -33,6 +38,14 @@ impl std::fmt::Display for PushError {
             PushError::CardAncestorMismatch(_) => write!(f, "card ancestor hash mismatch"),
             PushError::TagAncestorMismatch(_) => write!(f, "tag ancestor hash mismatch"),
             PushError::AlreadyDeleted => write!(f, "entity already deleted"),
+            PushError::OrphanedTagReference {
+                tag_id,
+                referencing_card_ids,
+            } => write!(
+                f,
+                "tag {tag_id} cannot be deleted: still referenced by {} card(s)",
+                referencing_card_ids.len()
+            ),
             PushError::HashVerificationFailed => write!(f, "hash verification failed"),
             PushError::EmptyChain => write!(f, "empty version chain"),
             PushError::DuplicatePriority {

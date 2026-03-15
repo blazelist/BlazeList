@@ -1,0 +1,397 @@
+@media (min-width: 600px) {
+    .card-actions {
+        flex-direction: row;
+        flex-wrap: wrap;
+        justify-content: space-between;
+    }
+}
+
+
+/* Mobile responsive */
+@media (max-width: 768px) {
+    .sidebar-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.6);
+        z-index: 99;
+    }
+
+    .sidebar-overlay.visible {
+        display: block;
+    }
+
+    .tag-sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        z-index: 100;
+        width: 240px !important;
+        min-width: 0 !important;
+        transform: translateX(-100%);
+        transition: transform 0.2s ease;
+    }
+
+    .tag-sidebar:not(.sidebar-hidden) {
+        transform: translateX(0);
+    }
+
+    .resize-handle {
+        display: none;
+    }
+
+    .detail-panel {
+        position: fixed;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        width: 100% !important;
+        min-width: 0 !important;
+        z-index: 50;
+    }
+
+    .content {
+        width: 100%;
+    }
+
+    body:has(.detail-panel) {
+        overflow: hidden;
+    }
+
+    .detail-panel {
+        overscroll-behavior: contain;
+    }
+
+    .search-controls {
+        flex: 1;
+    }
+
+    .search-input {
+        width: 100%;
+        flex: 1;
+    }
+}
+
+/* Phone-specific optimizations */
+@media (max-width: 480px) {
+    /* Header: slightly larger touch targets */
+    .app-header {
+        padding: 0.5rem 0.75rem;
+    }
+
+    .sidebar-toggle-btn {
+        font-size: 1.1rem;
+        padding: 0.45rem 0.6rem;
+    }
+
+    .app-title {
+        font-size: 1.05rem;
+    }
+
+    .sync-indicator {
+        font-size: 0.78rem;
+    }
+
+    .sync-time {
+        font-size: 0.74rem;
+    }
+
+    .sync-btn {
+        font-size: 0.88rem;
+    }
+
+    /* Filter bar: stack controls for better use of space */
+    .filter-bar {
+        gap: 0.5rem;
+        padding: 0 0.75rem;
+        margin-bottom: 0.625rem;
+    }
+
+    .filter-btn {
+        padding: 0.5rem 0.8rem;
+        font-size: 0.85rem;
+    }
+
+    .blaze-filter {
+        flex: 1 1 auto;
+    }
+
+    .blaze-filter .filter-btn {
+        flex: 1;
+        text-align: center;
+    }
+
+    .sort-controls {
+        flex: 1 1 auto;
+    }
+
+    .sort-select {
+        font-size: 0.85rem;
+        padding: 0.5rem 1.5rem 0.5rem 0.6rem;
+        flex: 1;
+    }
+
+    .due-select {
+        font-size: 0.85rem;
+        padding: 0.5rem 1.5rem 0.5rem 0.6rem;
+    }
+
+    .search-controls {
+        flex-basis: 100%;
+    }
+
+    .search-input {
+        font-size: 0.9rem;
+        padding: 0.55rem 0.7rem;
+    }
+
+    .btn-clear-x {
+        width: 1.8rem;
+        height: 1.8rem;
+        font-size: 0.82rem;
+    }
+
+    .mode-btn {
+        padding: 0.4rem 0.6rem;
+        font-size: 0.76rem;
+    }
+
+    .tag-chip {
+        padding: 0.3rem 0.55rem;
+        font-size: 0.8rem;
+    }
+
+    .chip-remove {
+        font-size: 0.8rem;
+    }
+
+    /* Card list: larger touch targets and readable text */
+    .btn-new-card-group {
+        margin: 0 0.75rem 0.75rem;
+    }
+
+    .btn-new-card {
+        font-size: 0.9rem;
+        padding: 0.6rem 0.85rem;
+    }
+
+    .btn-new-card-dropdown {
+        font-size: 0.75rem;
+        padding: 0.6rem 0.5rem;
+    }
+
+    .card-item {
+        padding: 0.5rem 0.75rem;
+        gap: 0.5rem;
+    }
+
+    .card-number {
+        font-size: 0.74rem;
+    }
+
+    .card-preview {
+        font-size: 0.88rem;
+        line-height: 1.35;
+    }
+
+    .card-tasks {
+        font-size: 0.7rem;
+    }
+
+    .card-time {
+        font-size: 0.7rem;
+    }
+
+    .card-due {
+        font-size: 0.68rem;
+        padding: 0.15rem 0.4rem;
+    }
+
+    /* Detail panel: more comfortable reading/tapping */
+    .card-detail {
+        padding: 1rem 0.875rem;
+        gap: 0.875rem;
+    }
+
+    .detail-status {
+        font-size: 0.72rem;
+    }
+
+    .detail-close {
+        font-size: 1rem;
+        padding: 0.4rem 0.55rem;
+    }
+
+    .card-detail .card-content {
+        font-size: 0.92rem;
+    }
+
+    .btn-edit,
+    .btn-blaze,
+    .btn-extinguish,
+    .btn-delete,
+    .btn-move,
+    .btn-go {
+        padding: 0.5rem 0.85rem;
+        font-size: 0.88rem;
+    }
+
+    .move-to-input {
+        width: 52px;
+        padding: 0.35rem 0.35rem;
+        font-size: 0.82rem;
+    }
+
+    .move-to-total {
+        font-size: 0.78rem;
+    }
+
+    .meta-row {
+        font-size: 0.76rem;
+    }
+
+    .meta-value {
+        font-size: 0.7rem;
+    }
+
+    .detail-tags {
+        font-size: 0.82rem;
+    }
+
+    .detail-task-progress {
+        font-size: 0.82rem;
+    }
+
+    /* Editor: comfortable editing on phone */
+    .editor-input {
+        font-size: 0.88rem;
+        padding: 0.625rem;
+        min-height: 180px;
+    }
+
+    .editor-preview {
+        font-size: 0.92rem;
+    }
+
+    .editor-toolbar {
+        font-size: 0.82rem;
+    }
+
+    .btn-save,
+    .btn-cancel {
+        padding: 0.55rem 1.1rem;
+        font-size: 0.92rem;
+    }
+
+    .editor-tag-item {
+        font-size: 0.82rem;
+    }
+
+    /* Due date controls: bigger touch targets */
+    .due-date-quick-btn {
+        padding: 0.4rem 0.65rem;
+        font-size: 0.82rem;
+    }
+
+    .due-date-clear-btn {
+        padding: 0.35rem 0.55rem;
+        font-size: 0.76rem;
+    }
+
+    .due-date-current {
+        font-size: 0.8rem;
+    }
+
+    .due-date-picker {
+        font-size: 0.76rem;
+    }
+
+    /* Confirm delete: larger for safe tapping */
+    .confirm-text {
+        font-size: 0.85rem;
+    }
+
+    .btn-confirm-yes,
+    .btn-confirm-no {
+        padding: 0.4rem 0.7rem;
+        font-size: 0.82rem;
+    }
+
+    /* Dropdown buttons & items: bigger touch targets */
+    .btn-save-dropdown {
+        padding: 0.5rem 0.55rem;
+        font-size: 0.7rem;
+    }
+
+    .save-dropdown-item {
+        padding: 0.5rem 0.85rem;
+        font-size: 0.82rem;
+    }
+
+    .due-date-dropdown-toggle {
+        padding: 0.35rem 0.45rem;
+        font-size: 0.6rem;
+    }
+
+    .due-date-dropdown-menu .save-dropdown-item {
+        padding: 0.5rem 0.85rem;
+        font-size: 0.82rem;
+    }
+
+    /* Version/sequence history */
+    .version-row {
+        padding: 0.5rem 0.75rem;
+    }
+
+    .version-number {
+        font-size: 0.74rem;
+    }
+
+    .version-time {
+        font-size: 0.68rem;
+    }
+
+    .version-preview-text {
+        font-size: 0.88rem;
+    }
+
+    .seq-entry-row {
+        padding: 0.4rem 0.75rem;
+    }
+
+    /* Tag sidebar: slightly larger items when open */
+    .tag-sidebar h3 {
+        font-size: 0.7rem;
+    }
+
+    .tag-item {
+        padding: 0.4rem 0.625rem 0.4rem 0.5rem;
+        font-size: 0.88rem;
+    }
+
+    .tag-search-input {
+        font-size: 0.88rem;
+        padding: 0.5rem 0.6rem;
+    }
+
+    .tag-input input {
+        font-size: 0.88rem;
+        padding: 0.5rem 0.6rem;
+    }
+
+    .tag-input button {
+        font-size: 0.88rem;
+        padding: 0.5rem 0.7rem;
+    }
+
+    /* Tag detail */
+    .tag-detail-title {
+        font-size: 1.05rem;
+    }
+
+    .tag-rename-input {
+        font-size: 0.92rem;
+    }
+}

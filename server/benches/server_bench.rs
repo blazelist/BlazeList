@@ -14,17 +14,13 @@ fn ts(ms: i64) -> DateTime<Utc> {
     DateTime::from_timestamp_millis(ms).unwrap()
 }
 
-fn p(v: i64) -> NonNegativeI64 {
-    NonNegativeI64::try_from(v).unwrap()
-}
-
 fn make_card(i: u32) -> Card {
     let mut id_bytes = [0u8; 16];
     id_bytes[..4].copy_from_slice(&i.to_le_bytes());
     Card::first(
         Uuid::from_bytes(id_bytes),
         format!("Content for card {i}"),
-        p(i as i64 * 1000),
+        i as i64 * 1000,
         vec![],
         false,
         ts(i as i64 * 1000),
@@ -91,7 +87,7 @@ fn bench_push_card_version(c: &mut Criterion) {
                     .unwrap();
                 let next = card.next(
                     "Updated content".into(),
-                    p(2000),
+                    2000,
                     vec![],
                     false,
                     ts(2000),
@@ -160,7 +156,7 @@ fn bench_list_cards_filtered(c: &mut Criterion) {
         let card = Card::first(
             Uuid::from_bytes(id_bytes),
             format!("Content {i}"),
-            p(i as i64 * 1000),
+            i as i64 * 1000,
             vec![],
             i % 2 == 0, // half blazed, half extinguished
             ts(i as i64 * 1000),
@@ -227,7 +223,7 @@ fn bench_card_history(c: &mut Criterion) {
         for i in 1..versions {
             let next = card.next(
                 format!("Content v{i}"),
-                p(i as i64 * 1000),
+                i as i64 * 1000,
                 vec![],
                 false,
                 ts(i as i64 * 1000),
@@ -313,7 +309,7 @@ fn bench_get_changes_since_scaling(c: &mut Criterion) {
         };
 
         // For incremental sync, we need to get the hash at that sequence
-        // Since we're just benchmarking and not validating state, we'll use a dummy hash
+        // Since we're just benchmarking and not validating state, we'll use a placeholder hash
         // In a real scenario, the client would have the actual hash from their last sync
         group.bench_function(format!("incremental_10pct_{count}_cards"), |b| {
             b.iter(|| {

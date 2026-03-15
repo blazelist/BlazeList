@@ -1,5 +1,4 @@
 use super::card::Card;
-use crate::NonNegativeI64;
 use crate::hash::Entity;
 use chrono::{DateTime, Utc};
 use expect_test::expect;
@@ -15,15 +14,11 @@ fn ts(ms: i64) -> DateTime<Utc> {
     DateTime::from_timestamp_millis(ms).unwrap()
 }
 
-fn p(v: i64) -> NonNegativeI64 {
-    NonNegativeI64::try_from(v).unwrap()
-}
-
 fn sample_card() -> Card {
     Card::first(
         ID,
         "Some markdown content".into(),
-        p(100),
+        100,
         vec![],
         false,
         ts(1000),
@@ -49,7 +44,7 @@ fn next_chains_correctly() {
     let c1 = sample_card();
     let c2 = c1.next(
         "Updated content".into(),
-        p(100),
+        100,
         vec![],
         false,
         ts(2000),
@@ -71,7 +66,7 @@ fn different_content_produces_different_hash() {
     let c1 = Card::first(
         ID,
         "Content A".into(),
-        p(100),
+        100,
         vec![],
         false,
         ts(1000),
@@ -80,7 +75,7 @@ fn different_content_produces_different_hash() {
     let c2 = Card::first(
         ID,
         "Content B".into(),
-        p(100),
+        100,
         vec![],
         false,
         ts(1000),
@@ -91,8 +86,8 @@ fn different_content_produces_different_hash() {
 
 #[test]
 fn different_ids_produce_different_hashes() {
-    let c1 = Card::first(ID, "C".into(), p(100), vec![], false, ts(1000), None);
-    let c2 = Card::first(ID_B, "C".into(), p(100), vec![], false, ts(1000), None);
+    let c1 = Card::first(ID, "C".into(), 100, vec![], false, ts(1000), None);
+    let c2 = Card::first(ID_B, "C".into(), 100, vec![], false, ts(1000), None);
     assert_ne!(c1.hash(), c2.hash());
 }
 
@@ -118,8 +113,8 @@ fn tampered_card_fails_verification() {
 
 #[test]
 fn hash_is_deterministic() {
-    let c1 = Card::first(ID, "C".into(), p(100), vec![], false, ts(1000), None);
-    let c2 = Card::first(ID, "C".into(), p(100), vec![], false, ts(1000), None);
+    let c1 = Card::first(ID, "C".into(), 100, vec![], false, ts(1000), None);
+    let c2 = Card::first(ID, "C".into(), 100, vec![], false, ts(1000), None);
     expect!["68e2d3eb485be81518b8f22169fd34c0e863dcef45247b66bec0f3172fd9821b"]
         .assert_eq(&c1.hash().to_string());
     expect!["68e2d3eb485be81518b8f22169fd34c0e863dcef45247b66bec0f3172fd9821b"]
@@ -128,25 +123,25 @@ fn hash_is_deterministic() {
 
 #[test]
 fn tags_affect_hash() {
-    let c1 = Card::first(ID, "C".into(), p(100), vec![], false, ts(1000), None);
-    let c2 = Card::first(ID, "C".into(), p(100), vec![TAG_ID], false, ts(1000), None);
+    let c1 = Card::first(ID, "C".into(), 100, vec![], false, ts(1000), None);
+    let c2 = Card::first(ID, "C".into(), 100, vec![TAG_ID], false, ts(1000), None);
     assert_ne!(c1.hash(), c2.hash());
 }
 
 #[test]
 fn count_affects_hash() {
-    let c1 = Card::first(ID, "C".into(), p(1), vec![], false, ts(0), None);
-    let c2 = Card::first(ID, "C".into(), p(1), vec![], false, ts(0), None);
+    let c1 = Card::first(ID, "C".into(), 1, vec![], false, ts(0), None);
+    let c2 = Card::first(ID, "C".into(), 1, vec![], false, ts(0), None);
     // c1 and c2 are identical first versions, so same hash
     // The original test mutated a private field; instead verify that
     // chaining (which increments count) produces a different hash.
-    let c3 = c2.next("C".into(), p(1), vec![], false, ts(1), None);
+    let c3 = c2.next("C".into(), 1, vec![], false, ts(1), None);
     assert_ne!(c1.hash(), c3.hash());
 }
 
 #[test]
 fn from_parts_with_valid_hash_succeeds() {
-    let card = Card::first(ID, "Content".into(), p(100), vec![], false, ts(1000), None);
+    let card = Card::first(ID, "Content".into(), 100, vec![], false, ts(1000), None);
     let result = Card::from_parts(
         card.id(),
         card.content().into(),
@@ -166,7 +161,7 @@ fn from_parts_with_valid_hash_succeeds() {
 
 #[test]
 fn from_parts_with_tampered_hash_fails() {
-    let card = Card::first(ID, "Content".into(), p(100), vec![], false, ts(1000), None);
+    let card = Card::first(ID, "Content".into(), 100, vec![], false, ts(1000), None);
     let result = Card::from_parts(
         card.id(),
         "TAMPERED".into(),
@@ -185,11 +180,11 @@ fn from_parts_with_tampered_hash_fails() {
 
 #[test]
 fn due_date_affects_hash() {
-    let c1 = Card::first(ID, "C".into(), p(100), vec![], false, ts(1000), None);
+    let c1 = Card::first(ID, "C".into(), 100, vec![], false, ts(1000), None);
     let c2 = Card::first(
         ID,
         "C".into(),
-        p(100),
+        100,
         vec![],
         false,
         ts(1000),

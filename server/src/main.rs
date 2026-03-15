@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use blazelist_protocol::RootState;
 use blazelist_server::SqliteStorage;
-use blazelist_server::https::{hex_encode, run_cert_hash_server, run_https_server, tls_acceptor};
+use blazelist_server::https::{
+    build_client_config_json, hex_encode, run_cert_hash_server, run_https_server, tls_acceptor,
+};
 use blazelist_server::quic::{run_server, self_signed_server_config};
 use blazelist_server::webtransport::{run_webtransport_server, webtransport_server_config};
 use clap::Parser;
@@ -92,9 +94,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- HTTP cert-hash endpoint ---
     // Serves the certificate SHA-256 hash as hex so WASM clients can
     // auto-fetch it for `serverCertificateHashes`.
+    let client_config = build_client_config_json();
     let cert_hash_hex = hex_encode(&wt.cert_hash);
+    let config_for_http = client_config.clone();
     let http_handle = tokio::spawn(async move {
-        run_cert_hash_server(http_addr, cert_hash_hex).await;
+        run_cert_hash_server(http_addr, cert_hash_hex, config_for_http).await;
     });
     println!("Cert-hash HTTP endpoint on http://{http_addr}/cert-hash");
 
@@ -103,6 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let https_addr: SocketAddr = format!("{}:{}", cli.bind, cli.https_port).parse()?;
         let acceptor = tls_acceptor(&cert_material.cert_der, &cert_material.key_der)?;
         let cert_hash_for_https = hex_encode(&wt.cert_hash);
+        let config_for_https = client_config.clone();
         let dir = static_dir.clone();
 
         println!(
@@ -110,7 +115,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             dir.display()
         );
         Some(tokio::spawn(async move {
-            run_https_server(https_addr, dir, cert_hash_for_https, acceptor).await;
+            run_https_server(https_addr, dir, cert_hash_for_https, config_for_https, acceptor)
+                .await;
         }))
     } else {
         None

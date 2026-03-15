@@ -6,7 +6,7 @@
 
 use blazelist_protocol::ChangeSet;
 use blazelist_protocol::{Card, Entity, Tag};
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use uuid::Uuid;
 
 /// Apply a [`ChangeSet`] to a local card collection.
@@ -19,22 +19,19 @@ use uuid::Uuid;
 ///
 /// Returns the merged card list, sorted by priority (highest first).
 pub fn apply_card_changeset(current_cards: Vec<Card>, changes: &ChangeSet) -> Vec<Card> {
-    let mut cards: HashMap<Uuid, Card> = current_cards.into_iter().map(|c| (c.id(), c)).collect();
+    let mut cards: IndexMap<Uuid, Card> = current_cards.into_iter().map(|c| (c.id(), c)).collect();
 
     // Remove deleted entities
     for deleted in &changes.deleted {
-        cards.remove(&deleted.id());
+        cards.swap_remove(&deleted.id());
     }
-
-    // Upsert changed cards
     for card in &changes.cards {
         cards.insert(card.id(), card.clone());
     }
 
-    // Convert back to sorted vec
-    let mut result: Vec<Card> = cards.into_values().collect();
-    result.sort_by_key(|c| std::cmp::Reverse(c.priority()));
-    result
+    // Sort in-place by priority descending (keys ignored, values compared), then collect
+    cards.sort_unstable_by(|_, a, _, b| b.priority().cmp(&a.priority()));
+    cards.into_values().collect()
 }
 
 /// Apply a [`ChangeSet`] to a local tag collection.
@@ -43,11 +40,11 @@ pub fn apply_card_changeset(current_cards: Vec<Card>, changes: &ChangeSet) -> Ve
 /// 1. Remove deleted entities
 /// 2. Upsert changed/new tags
 pub fn apply_tag_changeset(current_tags: Vec<Tag>, changes: &ChangeSet) -> Vec<Tag> {
-    let mut tags: HashMap<Uuid, Tag> = current_tags.into_iter().map(|t| (t.id(), t)).collect();
+    let mut tags: IndexMap<Uuid, Tag> = current_tags.into_iter().map(|t| (t.id(), t)).collect();
 
     // Remove deleted entities
     for deleted in &changes.deleted {
-        tags.remove(&deleted.id());
+        tags.swap_remove(&deleted.id());
     }
 
     // Upsert changed tags
@@ -77,7 +74,7 @@ mod tests {
     use crate::test_helpers::{fixed_time, fixed_uuid, priority};
     use blazelist_protocol::{DeletedEntity, NonNegativeI64, RootState};
 
-    fn dummy_root() -> RootState {
+    fn stub_root() -> RootState {
         RootState {
             sequence: NonNegativeI64::try_from(1i64).unwrap(),
             hash: blake3::hash(b"test"),
@@ -139,7 +136,7 @@ mod tests {
             cards: vec![updated],
             tags: vec![],
             deleted: vec![],
-            root: dummy_root(),
+            root: stub_root(),
         };
 
         let result = apply_card_changeset(cards, &changes);
@@ -155,7 +152,7 @@ mod tests {
             cards: vec![],
             tags: vec![],
             deleted: vec![DeletedEntity::new(fixed_uuid(2))],
-            root: dummy_root(),
+            root: stub_root(),
         };
 
         let result = apply_card_changeset(cards, &changes);
@@ -179,7 +176,7 @@ mod tests {
             cards: vec![new_card],
             tags: vec![],
             deleted: vec![],
-            root: dummy_root(),
+            root: stub_root(),
         };
 
         let result = apply_card_changeset(cards, &changes);
@@ -195,7 +192,7 @@ mod tests {
             cards: vec![],
             tags: vec![],
             deleted: vec![],
-            root: dummy_root(),
+            root: stub_root(),
         };
 
         let result = apply_card_changeset(cards, &changes);
@@ -210,7 +207,7 @@ mod tests {
             cards: vec![],
             tags: vec![],
             deleted: vec![],
-            root: dummy_root(),
+            root: stub_root(),
         };
 
         let result = apply_card_changeset(vec![], &changes);
@@ -225,7 +222,7 @@ mod tests {
             cards: vec![],
             tags: vec![updated],
             deleted: vec![],
-            root: dummy_root(),
+            root: stub_root(),
         };
 
         let result = apply_tag_changeset(tags, &changes);
@@ -241,7 +238,7 @@ mod tests {
             cards: vec![],
             tags: vec![],
             deleted: vec![DeletedEntity::new(fixed_uuid(11))],
-            root: dummy_root(),
+            root: stub_root(),
         };
 
         let result = apply_tag_changeset(tags, &changes);
@@ -268,5 +265,142 @@ mod tests {
     fn trim_content_empty() {
         assert_eq!(trim_content(""), "");
         assert_eq!(trim_content("   "), "");
+    }
+
+    // --- Tests for changeset merge behavior during reconnection ---
+    // When the connection drops and reconnects, an incremental sync merges
+    // server changes into the local state via apply_card/tag_changeset.
+    // These tests verify that the merge preserves unrelated local data.
+
+    #[test]
+    fn apply_card_changeset_preserves_unrelated_cards() {
+        let cards = sample_cards();
+        // Server only updates card 2 — cards 1 and 3 must survive unchanged
+        let updated = Card::first(
+            fixed_uuid(2),
+            "Server updated".into(),
+            priority(2000),
+            vec![],
+            false,
+            fixed_time(),
+            None,
+        );
+        let changes = ChangeSet {
+            cards: vec![updated],
+            tags: vec![],
+            deleted: vec![],
+            root: stub_root(),
+        };
+
+        let result = apply_card_changeset(cards, &changes);
+        assert_eq!(result.len(), 3);
+        assert!(result.iter().any(|c| c.content() == "First"));
+        assert!(result.iter().any(|c| c.content() == "Third"));
+        assert!(result.iter().any(|c| c.content() == "Server updated"));
+    }
+
+    #[test]
+    fn apply_card_changeset_simultaneous_add_and_delete() {
+        let cards = sample_cards();
+        let new_card = Card::first(
+            fixed_uuid(5),
+            "Added by server".into(),
+            priority(500),
+            vec![],
+            false,
+            fixed_time(),
+            None,
+        );
+        let changes = ChangeSet {
+            cards: vec![new_card],
+            tags: vec![],
+            deleted: vec![DeletedEntity::new(fixed_uuid(1))],
+            root: stub_root(),
+        };
+
+        let result = apply_card_changeset(cards, &changes);
+        assert_eq!(result.len(), 3);
+        assert!(result.iter().all(|c| c.id() != fixed_uuid(1)));
+        assert!(result.iter().any(|c| c.content() == "Added by server"));
+    }
+
+    #[test]
+    fn apply_tag_changeset_add_new() {
+        let tags = sample_tags();
+        let new_tag = Tag::first(fixed_uuid(12), "urgent".into(), None, fixed_time());
+        let changes = ChangeSet {
+            cards: vec![],
+            tags: vec![new_tag],
+            deleted: vec![],
+            root: stub_root(),
+        };
+
+        let result = apply_tag_changeset(tags, &changes);
+        assert_eq!(result.len(), 3);
+        assert!(result.iter().any(|t| t.title() == "urgent"));
+    }
+
+    #[test]
+    fn apply_tag_changeset_preserves_unrelated_tags() {
+        let tags = sample_tags();
+        // Server updates tag 10 — tag 11 must survive
+        let updated = Tag::first(fixed_uuid(10), "engineering".into(), None, fixed_time());
+        let changes = ChangeSet {
+            cards: vec![],
+            tags: vec![updated],
+            deleted: vec![],
+            root: stub_root(),
+        };
+
+        let result = apply_tag_changeset(tags, &changes);
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|t| t.title() == "personal"));
+        assert!(result.iter().any(|t| t.title() == "engineering"));
+    }
+
+    #[test]
+    fn apply_tag_changeset_simultaneous_add_and_delete() {
+        let tags = sample_tags();
+        let new_tag = Tag::first(fixed_uuid(13), "new-tag".into(), None, fixed_time());
+        let changes = ChangeSet {
+            cards: vec![],
+            tags: vec![new_tag],
+            deleted: vec![DeletedEntity::new(fixed_uuid(10))],
+            root: stub_root(),
+        };
+
+        let result = apply_tag_changeset(tags, &changes);
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().all(|t| t.id() != fixed_uuid(10)));
+        assert!(result.iter().any(|t| t.title() == "personal"));
+        assert!(result.iter().any(|t| t.title() == "new-tag"));
+    }
+
+    #[test]
+    fn apply_card_changeset_delete_nonexistent_is_no_op() {
+        let cards = sample_cards();
+        let changes = ChangeSet {
+            cards: vec![],
+            tags: vec![],
+            deleted: vec![DeletedEntity::new(fixed_uuid(99))],
+            root: stub_root(),
+        };
+
+        let result = apply_card_changeset(cards, &changes);
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn apply_tag_changeset_delete_nonexistent_is_no_op() {
+        let tags = sample_tags();
+        let changes = ChangeSet {
+            cards: vec![],
+            tags: vec![],
+            deleted: vec![DeletedEntity::new(fixed_uuid(99))],
+            root: stub_root(),
+        };
+
+        let result = apply_tag_changeset(tags, &changes);
+        assert_eq!(result.len(), 2);
     }
 }

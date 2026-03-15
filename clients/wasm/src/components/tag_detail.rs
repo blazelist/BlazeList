@@ -1,7 +1,10 @@
 use crate::components::hooks::toggle_expanded;
-use crate::state::store::{AppState, format_relative_time, get_client, sync_query_params};
+use crate::state::store::{
+    AppState, confirm_discard_changes, format_relative_time, get_client, sync_query_params,
+};
+use crate::storage;
 use blazelist_client_lib::client::Client as _;
-use blazelist_protocol::{Entity, Tag, Utc};
+use blazelist_protocol::{Card, Entity, PushItem, Tag, Utc};
 use leptos::prelude::*;
 use rgb::RGB8;
 
@@ -17,9 +20,9 @@ pub fn TagDetail() -> impl IntoView {
     let editing_title = RwSignal::new(false);
     let title_input = RwSignal::new(String::new());
     let color_input = RwSignal::new(String::from("#808080"));
-    let confirm_delete = RwSignal::new(false);
+    let confirm_delete = RwSignal::new(0u8);
 
-    // Fetch tag history on mount / when selected_card changes
+    // Fetch tag history on mount — show cached data first, then refresh from server.
     Effect::new(move |_| {
         let tag_id = match state.selected_card.get() {
             Some(id) => id,
@@ -29,11 +32,10 @@ pub fn TagDetail() -> impl IntoView {
         if !state.tags.get_untracked().iter().any(|t| t.id() == tag_id) {
             return;
         }
-        loading.set(true);
         error_msg.set(None);
         expanded.set(None);
         editing_title.set(false);
-        confirm_delete.set(false);
+        confirm_delete.set(0);
         // Initialize color picker with the current tag's color
         if let Some(tag) = state.tags.get_untracked().iter().find(|t| t.id() == tag_id) {
             color_input.set(
@@ -42,15 +44,30 @@ pub fn TagDetail() -> impl IntoView {
                     .unwrap_or_else(|| "#808080".to_string()),
             );
         }
+
+        // Load from cache immediately
+        let cached = storage::get_cached_tag_history(tag_id);
+        if !cached.is_empty() {
+            versions.set(cached);
+            loading.set(false);
+        } else {
+            loading.set(true);
+        }
+
+        // Fetch fresh data from server in background
         leptos::task::spawn_local(async move {
             if let Some(client) = get_client() {
                 match client.get_tag_history(tag_id).await {
                     Ok(mut history) => {
                         history.sort_by(|a, b| b.count().cmp(&a.count()));
-                        versions.set(history);
+                        versions.set(history.clone());
+                        storage::update_cached_tag_history(tag_id, history);
+                        storage::save_history_cache().await;
                     }
                     Err(e) => {
-                        error_msg.set(Some(format!("Failed to load history: {e}")));
+                        if versions.get_untracked().is_empty() {
+                            error_msg.set(Some(format!("Failed to load history: {e}")));
+                        }
                     }
                 }
             }
@@ -59,12 +76,18 @@ pub fn TagDetail() -> impl IntoView {
     });
 
     let on_close = move |_| {
+        if !confirm_discard_changes(&state) {
+            return;
+        }
         state.selected_card.set(None);
         state.editing.set(false);
         sync_query_params(&state);
     };
 
     let on_start_edit = move |_| {
+        if !confirm_discard_changes(&state) {
+            return;
+        }
         let tag_id = state.selected_card.get_untracked().unwrap();
         if let Some(tag) = state
             .tags
@@ -116,23 +139,71 @@ pub fn TagDetail() -> impl IntoView {
         });
     };
 
+    let deleting = RwSignal::new(false);
+
     let on_delete = move |_| {
-        let tag_id = state.selected_card.get_untracked().unwrap();
-        confirm_delete.set(false);
+        let tag_id = match state.selected_card.get_untracked() {
+            Some(id) => id,
+            None => return,
+        };
+        deleting.set(true);
+        error_msg.set(None);
         let state = state;
         leptos::task::spawn_local(async move {
-            if let Some(client) = get_client() {
-                if let Err(e) = client.delete_tag(tag_id).await {
-                    log::error!("Failed to delete tag: {e}");
+            let client = match get_client() {
+                Some(c) => c,
+                None => {
+                    error_msg.set(Some("Not connected to server".to_string()));
+                    deleting.set(false);
                     return;
                 }
-                state.tags.update(|tags| tags.retain(|t| t.id() != tag_id));
-                state
-                    .tag_filter
-                    .update(|tags| tags.retain(|t| *t != tag_id));
-                state.selected_card.set(None);
-                sync_query_params(&state);
+            };
+
+            // Collect all cards referencing this tag and build cleanup versions
+            let cards = state.cards.get_untracked();
+            let affected: Vec<Card> = cards
+                .iter()
+                .filter(|c| c.tags().contains(&tag_id))
+                .map(|c| {
+                    let new_tags: Vec<uuid::Uuid> =
+                        c.tags().iter().copied().filter(|t| *t != tag_id).collect();
+                    c.next(
+                        c.content().to_string(),
+                        c.priority(),
+                        new_tags,
+                        c.blazed(),
+                        Utc::now(),
+                        c.due_date(),
+                    )
+                })
+                .collect();
+
+            // Build batch: card updates first, then delete tag
+            let mut items: Vec<PushItem> = affected
+                .iter()
+                .map(|c| PushItem::Cards(vec![c.clone()]))
+                .collect();
+            items.push(PushItem::DeleteTag { id: tag_id });
+
+            if let Err(e) = client.push_batch(items).await {
+                log::error!("Failed to delete tag: {e}");
+                error_msg.set(Some(format!("Delete failed: {e}")));
+                confirm_delete.set(0);
+                deleting.set(false);
+                return;
             }
+
+            // Update local state for affected cards
+            for card in &affected {
+                state.upsert_card(card.clone());
+            }
+            state.tags.update(|tags| tags.retain(|t| t.id() != tag_id));
+            state
+                .tag_filter
+                .update(|tags| tags.retain(|t| *t != tag_id));
+            state.selected_card.set(None);
+            deleting.set(false);
+            sync_query_params(&state);
         });
     };
 
@@ -180,21 +251,50 @@ pub fn TagDetail() -> impl IntoView {
             }
         }}
 
+        // Error message
+        {move || error_msg.get().map(|msg| view! {
+            <div class="error">{msg}</div>
+        })}
+
         // Actions
         <div class="card-actions">
             <div class="action-row cmd-row">
-                {move || if confirm_delete.get() {
-                    view! {
-                        <div class="confirm-delete">
-                            <span class="confirm-text">"Delete tag?"</span>
-                            <button class="btn-confirm-yes" on:click=on_delete>"Y"</button>
-                            <button class="btn-confirm-no" on:click=move |_| confirm_delete.set(false)>"N"</button>
-                        </div>
-                    }.into_any()
-                } else {
-                    view! {
-                        <button class="btn-delete" on:click=move |_| confirm_delete.set(true)>"Delete"</button>
-                    }.into_any()
+                {move || {
+                    if deleting.get() {
+                        return view! {
+                            <span class="confirm-text">"Deleting\u{2026}"</span>
+                        }.into_any();
+                    }
+                    let step = confirm_delete.get();
+                    if step == 2 {
+                        let tag_id = state.selected_card.get();
+                        let tag_title = tag_id
+                            .and_then(|id| state.tags.get().into_iter().find(|t| t.id() == id))
+                            .map(|t| t.title().to_string())
+                            .unwrap_or_else(|| "Unknown".to_string());
+                        view! {
+                            <div class="confirm-delete-permanent">
+                                <span class="confirm-text-permanent">"This action is permanent and cannot be undone."</span>
+                                <span class="confirm-entity-info">{format!("Tag: {tag_title}")}</span>
+                                <div class="confirm-permanent-buttons">
+                                    <button class="btn-confirm-permanent" on:click=on_delete>"Delete permanently"</button>
+                                    <button class="btn-confirm-no" on:click=move |_| confirm_delete.set(0)>"Cancel"</button>
+                                </div>
+                            </div>
+                        }.into_any()
+                    } else if step == 1 {
+                        view! {
+                            <div class="confirm-delete">
+                                <span class="confirm-text">"Delete tag?"</span>
+                                <button class="btn-confirm-yes" on:click=move |_| confirm_delete.set(2)>"Yes"</button>
+                                <button class="btn-confirm-no" on:click=move |_| confirm_delete.set(0)>"No"</button>
+                            </div>
+                        }.into_any()
+                    } else {
+                        view! {
+                            <button class="btn-delete" on:click=move |_| confirm_delete.set(1)>"Delete"</button>
+                        }.into_any()
+                    }
                 }}
             </div>
         </div>

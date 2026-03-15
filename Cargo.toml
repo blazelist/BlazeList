@@ -24,9 +24,10 @@ blazelist-protocol = { path = "protocol" }
 blake3 = { version = "1", features = ["serde"] }
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock", "std"] }
 clap = { version = "4", features = ["derive"] }
-comrak = { version = "0.50", default-features = false }
+comrak = { version = "0.51", default-features = false }
 criterion = { version = "0.8", features = ["html_reports"] }
 expect-test = "1"
+indexmap = "2"
 postcard = { version = "1", features = ["alloc"] }
 quinn = "0.11"
 rand = "0.10"

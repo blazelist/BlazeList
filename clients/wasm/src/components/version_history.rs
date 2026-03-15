@@ -2,6 +2,7 @@ use crate::components::hooks::toggle_expanded;
 use crate::state::store::{
     AppState, format_relative_time, get_client, sync_query_params, tag_chip_style,
 };
+use crate::storage;
 use blazelist_client_lib::client::Client as _;
 use blazelist_client_lib::display::card_preview;
 use blazelist_client_lib::priority::{
@@ -25,22 +26,35 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
     let error_msg: RwSignal<Option<String>> = RwSignal::new(None);
     let expanded: RwSignal<Option<i64>> = RwSignal::new(None);
 
-    // Fetch history on mount
+    // Fetch history on mount — show cached data first, then refresh from server.
     Effect::new(move |_| {
         let _ = state.selected_card.get(); // re-trigger on card change
-        loading.set(true);
         error_msg.set(None);
         expanded.set(None);
+
+        // Load from cache immediately
+        let cached = storage::get_cached_card_history(card_id);
+        if !cached.is_empty() {
+            versions.set(cached);
+            loading.set(false);
+        } else {
+            loading.set(true);
+        }
+
+        // Fetch fresh data from server in background
         leptos::task::spawn_local(async move {
             if let Some(client) = get_client() {
                 match client.get_card_history(card_id).await {
                     Ok(mut history) => {
-                        // Sort newest first (highest count first)
                         history.sort_by(|a, b| b.count().cmp(&a.count()));
-                        versions.set(history);
+                        versions.set(history.clone());
+                        storage::update_cached_card_history(card_id, history);
+                        storage::save_history_cache().await;
                     }
                     Err(e) => {
-                        error_msg.set(Some(format!("Failed to load history: {e}")));
+                        if versions.get_untracked().is_empty() {
+                            error_msg.set(Some(format!("Failed to load history: {e}")));
+                        }
                     }
                 }
             }
@@ -86,7 +100,7 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
             if let Some(client) = get_client() {
                 let mut cards = state.cards.get_untracked();
                 cards.sort_by(|a, b| b.priority().cmp(&a.priority()));
-                let placement = place_card(&cards, InsertPosition::Top);
+                let placement = place_card(&cards, InsertPosition::Bottom);
                 match placement {
                     Placement::Simple(priority) => {
                         let card = Card::first(
@@ -193,7 +207,7 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
                                 let modified = v.modified_at().format("%Y-%m-%d %H:%M:%S UTC").to_string();
                                 let is_blazed = v.blazed();
                                 let priority = v.priority();
-                                let priority_pct = priority.percentage();
+                                let priority_pct = blazelist_protocol::priority_percentage(priority);
 
                                 let all_tags = state.tags.get_untracked();
                                 let mut tag_entries: Vec<(String, Option<rgb::RGB8>)> = v.tags().iter().filter_map(|tid| {

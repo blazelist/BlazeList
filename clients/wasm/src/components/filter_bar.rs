@@ -13,22 +13,55 @@ pub fn FilterBar() -> impl IntoView {
         sync_query_params(&state);
     };
 
-    let set_due_filter = move |f: DueDateFilter| {
-        // Toggle: clicking the active filter resets to All
-        let current = state.due_date_filter.get_untracked();
-        if current == f {
-            state.due_date_filter.set(DueDateFilter::All);
-        } else {
-            state.due_date_filter.set(f);
+    let on_due_change = move |ev: web_sys::Event| {
+        let val = event_target_value(&ev);
+        let filter = match val.as_str() {
+            "overdue" => DueDateFilter::Overdue,
+            "today" => DueDateFilter::Today,
+            "today-upcoming" => DueDateFilter::TodayAndUpcoming,
+            "upcoming" => DueDateFilter::Upcoming,
+            "upcoming-tomorrow" => DueDateFilter::UpcomingTomorrow,
+            "upcoming-week" => DueDateFilter::UpcomingWeek,
+            "upcoming-2weeks" => DueDateFilter::UpcomingTwoWeeks,
+            _ => DueDateFilter::All,
+        };
+        state.due_date_filter.set(filter);
+        if matches!(filter, DueDateFilter::All | DueDateFilter::Overdue) {
+            state.include_overdue.set(false);
         }
         sync_query_params(&state);
     };
 
-    let due_class = move |f: DueDateFilter| {
-        if state.due_date_filter.get() == f {
-            "filter-btn active"
-        } else {
-            "filter-btn"
+    let reset_due = move |_| {
+        state.due_date_filter.set(DueDateFilter::All);
+        state.include_overdue.set(false);
+        sync_query_params(&state);
+    };
+
+    let toggle_overdue = move |_| {
+        let new_val = !state.include_overdue.get_untracked();
+        state.include_overdue.set(new_val);
+        sync_query_params(&state);
+    };
+
+    let due_is_active = move || state.due_date_filter.get() != DueDateFilter::All;
+
+    let show_overdue_toggle = move || {
+        let f = state.due_date_filter.get();
+        !matches!(f, DueDateFilter::All | DueDateFilter::Overdue)
+    };
+
+    let due_select_value = move || {
+        let f = state.due_date_filter.get();
+        match f {
+            DueDateFilter::Overdue => "overdue".to_string(),
+            DueDateFilter::Today => "today".to_string(),
+            DueDateFilter::TodayAndUpcoming => "today-upcoming".to_string(),
+            DueDateFilter::Upcoming => "upcoming".to_string(),
+            DueDateFilter::UpcomingTomorrow => "upcoming-tomorrow".to_string(),
+            DueDateFilter::UpcomingWeek => "upcoming-week".to_string(),
+            DueDateFilter::UpcomingTwoWeeks => "upcoming-2weeks".to_string(),
+            DueDateFilter::All => String::new(),
         }
     };
 
@@ -100,13 +133,39 @@ pub fn FilterBar() -> impl IntoView {
                 <button class=move || active_class(CardFilter::Blazed) on:click=move |_| set_filter(CardFilter::Blazed)>"Blazed"</button>
             </div>
             <div class="due-filter">
-                <button class=move || due_class(DueDateFilter::Overdue) on:click=move |_| set_due_filter(DueDateFilter::Overdue)>"Overdue"</button>
-                <button class=move || due_class(DueDateFilter::Today) on:click=move |_| set_due_filter(DueDateFilter::Today)>"Today"</button>
-                <button class=move || due_class(DueDateFilter::Upcoming) on:click=move |_| set_due_filter(DueDateFilter::Upcoming)>"Upcoming"</button>
+                <select
+                    class=move || if due_is_active() { "due-select due-active" } else { "due-select" }
+                    on:change=on_due_change
+                    prop:value=due_select_value
+                >
+                    <option value="">"Filter by due date"</option>
+                    <option value="overdue">{DueDateFilter::Overdue.label()}</option>
+                    <option value="today">{DueDateFilter::Today.label()}</option>
+                    <option value="today-upcoming">{DueDateFilter::TodayAndUpcoming.label()}</option>
+                    <option value="upcoming-tomorrow">{DueDateFilter::UpcomingTomorrow.label()}</option>
+                    <option value="upcoming-week">{DueDateFilter::UpcomingWeek.label()}</option>
+                    <option value="upcoming-2weeks">{DueDateFilter::UpcomingTwoWeeks.label()}</option>
+                    <option value="upcoming">{DueDateFilter::Upcoming.label()}</option>
+                </select>
+                {move || show_overdue_toggle().then(|| {
+                    let cls = if state.include_overdue.get() {
+                        "due-overdue-toggle active"
+                    } else {
+                        "due-overdue-toggle"
+                    };
+                    view! {
+                        <button class=cls on:click=toggle_overdue title="Include overdue cards">
+                            "+overdue"
+                        </button>
+                    }
+                })}
+                {move || due_is_active().then(|| view! {
+                    <button class="btn-clear-x" on:click=reset_due title="Clear due date filter">"x"</button>
+                })}
             </div>
             <div class="sort-controls">
                 <select
-                    class="sort-select"
+                    class=move || if sort_is_non_default() { "sort-select sort-active" } else { "sort-select" }
                     on:change=on_sort_change
                     prop:value=move || state.sort_order.get().url_value().unwrap_or("priority").to_string()
                 >
@@ -121,7 +180,7 @@ pub fn FilterBar() -> impl IntoView {
             </div>
             <div class="search-controls">
                 <input
-                    class="search-input"
+                    class=move || if has_search() { "search-input search-active" } else { "search-input" }
                     type="text"
                     placeholder="Search..."
                     prop:value=move || state.search_query.get()

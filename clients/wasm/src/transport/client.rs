@@ -44,11 +44,11 @@ impl Client {
     /// `url` is the WebTransport URL (e.g. `https://localhost:47400`).
     /// `cert_hash` is the SHA-256 digest of the server's self-signed certificate.
     pub async fn connect(url: &str, cert_hash: &[u8]) -> Result<Self, ClientError> {
-        log::info!("connecting to {url}");
+        log::info!("Connecting to {url}");
         let connection = WtConnection::connect(url, cert_hash)
             .await
             .map_err(|_| ClientError::ConnectionLost)?;
-        log::info!("WebTransport connected, opening bi-stream for handshake");
+        log::info!("WebTransport connected, opening bidirectional stream for handshake");
 
         // Perform the version handshake on the first bidirectional stream.
         let (writer, reader) = connection
@@ -56,18 +56,18 @@ impl Client {
             .await
             .map_err(|_| ClientError::ConnectionLost)?;
         let mut reader = BufReader::new(reader);
-        log::info!("bi-stream open, sending VersionCheck");
+        log::info!("Bidirectional stream open, sending version check");
         let check = VersionCheck {
             version: CLIENT_VERSION.clone(),
         };
         wire::write_message(&writer, &check)
             .await
             .map_err(|_| ClientError::ConnectionLost)?;
-        log::info!("VersionCheck sent, reading response");
+        log::info!("Version check sent, reading response");
         let result: VersionResult = wire::read_message(&mut reader)
             .await
             .map_err(|_| ClientError::ConnectionLost)?;
-        log::info!("handshake response received");
+        log::info!("Handshake response received");
 
         match result {
             VersionResult::Ok => {}

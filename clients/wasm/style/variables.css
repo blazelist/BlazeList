@@ -1,0 +1,59 @@
+:root {
+    /* Backgrounds */
+    --bg-primary: #0a0a0d;
+    --bg-secondary: #0f0f13;
+    --bg-card: #151519;
+    --bg-card-hover: #1a1a20;
+    --bg-input: #0c0c0f;
+
+    /* Text */
+    --text-primary: #d0d0d4;
+    --text-secondary: #888890;
+    --text-muted: #505058;
+
+    /* Borders */
+    --border: #1c1c24;
+    --border-hover: #2a2a34;
+
+    /* Toggle / Filter accent (amber) — Active/All/Blazed, tag chips, active tags */
+    --accent: #c07830;
+    --accent-hover: #d88838;
+    --accent-subtle: rgba(192, 120, 48, 0.14);
+
+    /* Action (green) — Save, Edit, positive actions */
+    --action: #3c9858;
+    --action-hover: #48b068;
+    --action-dim: #183824;
+    --action-subtle: rgba(60, 152, 88, 0.12);
+
+    /* Danger (red) — Delete, destructive */
+    --danger: #c04040;
+    --danger-subtle: rgba(192, 64, 64, 0.12);
+
+    /* Navigate (amber) — Move, Go */
+    --nav: #c07830;
+    --nav-subtle: rgba(192, 120, 48, 0.12);
+
+    /* Blaze */
+    --blaze-bg: #120a0c;
+    --blaze-border: #381616;
+
+    /* Status */
+    --status-connected: #48a85a;
+    --status-syncing: #d49028;
+    --status-disconnected: #c04040;
+    --status-connecting: #3c8cc4;
+
+    /* Due date */
+    --due-overdue: #d08040;
+    --due-overdue-subtle: rgba(208, 128, 64, 0.14);
+    --due-today: #c8a030;
+    --due-today-subtle: rgba(200, 160, 48, 0.14);
+    --due-upcoming: #606068;
+    --due-upcoming-subtle: rgba(96, 96, 104, 0.14);
+
+    /* Link direction colors */
+    --link-forward: #5c9ed6;
+    --link-back: #d4a04c;
+    --link-mutual: #5cb88c;
+}

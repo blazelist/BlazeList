@@ -5,6 +5,7 @@ use crate::components::card_detail::CardDetail;
 use crate::components::card_list::CardList;
 use crate::components::filter_bar::FilterBar;
 use crate::components::header::Header;
+use crate::components::settings_panel::SettingsPanel;
 use crate::components::tag_sidebar::TagSidebar;
 use crate::state::store::AppState;
 
@@ -75,7 +76,7 @@ fn start_resize(
 pub fn Home() -> impl IntoView {
     let state = use_context::<AppState>().expect("AppState not provided");
 
-    let detail_open = move || state.selected_card.get().is_some() || state.creating_new.get();
+    let detail_open = move || state.selected_card.get().is_some() || state.creating_new.get() || state.creating_new_tag.get() || state.settings_open.get();
     let sidebar_visible = move || state.sidebar_visible.get();
 
     let sidebar_style = move || {
@@ -142,7 +143,11 @@ pub fn Home() -> impl IntoView {
                         }
                     />
                     <aside class="detail-panel" style=detail_style>
-                        <CardDetail />
+                        {move || if state.settings_open.get() {
+                            view! { <SettingsPanel /> }.into_any()
+                        } else {
+                            view! { <CardDetail /> }.into_any()
+                        }}
                     </aside>
                 })}
             </div>

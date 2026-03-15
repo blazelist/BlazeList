@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::NonNegativeI64;
 use crate::hash::{Entity, HashVerificationError, ZERO_HASH, canonical_card_hash};
 
-/// A card in the Blaze List.
+/// A card in the Blaze List — a GFM document with no separate title field.
 ///
 /// Every card carries its full state plus hash chain fields (`count`,
 /// `ancestor_hash`, `hash`). Each stored instance is a snapshot at a
@@ -15,8 +15,10 @@ use crate::hash::{Entity, HashVerificationError, ZERO_HASH, canonical_card_hash}
 pub struct Card {
     id: Uuid,
     content: String,
-    priority: NonNegativeI64,
+    priority: i64,
     tags: Vec<Uuid>,
+    /// Whether this card is blazed (archived/done). **Blaze** (🔥) marks a
+    /// card as done; **Extinguish** (🚀) restores it to active status.
     blazed: bool,
     #[serde(with = "chrono::serde::ts_milliseconds")]
     created_at: DateTime<Utc>,
@@ -58,7 +60,7 @@ impl Entity for Card {
         canonical_card_hash(
             &self.id,
             &self.content,
-            i64::from(self.priority),
+            self.priority,
             &self.tags,
             self.blazed,
             self.created_at.timestamp_millis(),
@@ -75,7 +77,7 @@ impl Card {
         &self.content
     }
 
-    pub fn priority(&self) -> NonNegativeI64 {
+    pub fn priority(&self) -> i64 {
         self.priority
     }
 
@@ -98,7 +100,7 @@ impl Card {
     pub fn from_parts(
         id: Uuid,
         content: String,
-        priority: NonNegativeI64,
+        priority: i64,
         tags: Vec<Uuid>,
         blazed: bool,
         created_at: DateTime<Utc>,
@@ -132,7 +134,7 @@ impl Card {
     pub fn first(
         id: Uuid,
         content: String,
-        priority: NonNegativeI64,
+        priority: i64,
         mut tags: Vec<Uuid>,
         blazed: bool,
         created_at: DateTime<Utc>,
@@ -160,7 +162,7 @@ impl Card {
     pub fn next(
         &self,
         content: String,
-        priority: NonNegativeI64,
+        priority: i64,
         mut tags: Vec<Uuid>,
         blazed: bool,
         modified_at: DateTime<Utc>,

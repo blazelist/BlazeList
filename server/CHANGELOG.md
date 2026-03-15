@@ -5,7 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.0.0] - 2026-03-15
+
+### Added
+
+- Atomic major-to-major SQLite schema migration with startup gating —
+  upgrades are executed sequentially (e.g., 0 -> 1 -> 2) in a single
+  transaction with full rollback on failure
+- `/config` HTTP and HTTPS endpoint serving client default settings as JSON
+- `BLAZELIST_DEFAULT_*` environment variables for overriding client defaults:
+  `AUTO_SAVE`, `AUTO_SAVE_DELAY`, `SHOW_PREVIEW`, `DRAG_DROP`, `AUTO_SYNC`,
+  `AUTO_SYNC_INTERVAL`, `DEBOUNCE_ENABLED`, `DEBOUNCE_DELAY`
+- `BLAZELIST_DEFAULT_KEYBOARD_SHORTCUTS` environment variable for overriding client keyboard shortcuts default
+
+### Changed
+
+- Server now rejects `DeleteTag` when cards still reference the tag, returning
+  `OrphanedTagReference` error. Clients must remove the tag from all referencing
+  cards before deleting it (use `PushBatch` for atomicity).
 
 ## [1.0.0] - 2026-03-07
 

@@ -5,7 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.0.0] - 2026-03-15
+
+### Changed
+
+- Dev seeder now removes doomed tags from cards before deleting them, matching
+  new server referential integrity enforcement.
 
 ## [1.0.0] - 2026-03-07
 
@@ -27,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Internal card linking: ~50 % of cards contain UUID references to other
   cards, including deduplication and self-reference edge cases
 - Deleted entity generation (~75 % of a separate doomed card set, 3–5
-  doomed tags) to exercise sync tombstones
+  doomed tags) to exercise sync of deleted entities
 - Three-phase push strategy: batch create, batch delete doomed entities,
   then 120 individual extra operations for rich sequence history
 - QUIC client with insecure certificate verification for development use

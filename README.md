@@ -42,15 +42,21 @@ docker compose up
 # Web UI at https://localhost:47800
 ```
 
-The container can run as any UID/GID — see `docker-compose.yml` for details.
+The container can run as any UID/GID — see [DOCS.md](DOCS.md) for details.
 
 ## Documentation
 
 | Document | Description |
 |---|---|
-| **[SPEC.md](SPEC.md)** | Technical specification — architecture, data model, integrity, sync protocol, and design rationale |
 | **[DOCS.md](DOCS.md)** | User guide — deployment, configuration, environment variables |
 | **[DEV.md](DEV.md)** | Developer guide — local development workflow, building, testing |
+
+## Release Signing
+
+Release commits are signed with the following PGP key:
+
+- **Fingerprint:** `9EA6 C866 165A 3A86 08BE  3568 EA2D C27E 87A4 94F2`
+- **Public key:** [`release-signing-key.asc`](release-signing-key.asc)
 
 ## Licensing
 

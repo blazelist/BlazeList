@@ -102,7 +102,7 @@ mod tests {
         }
 
         // Create a card.
-        let card = Card::first(ID_A, "body".into(), p(42), vec![], false, ts(1000), None);
+        let card = Card::first(ID_A, "body".into(), 42, vec![], false, ts(1000), None);
         assert!(matches!(
             env.request(&Request::PushCardVersions(vec![card.clone()]))
                 .await,
@@ -172,7 +172,7 @@ mod tests {
             let card = Card::first(
                 id,
                 String::new(),
-                p(i64::from(i) + 1),
+                i64::from(i + 1),
                 vec![],
                 false,
                 ts(0),
@@ -241,7 +241,7 @@ mod tests {
         assert!(matches!(sub_resp, Response::Ok));
 
         // Push a card -- subscriber should get notified.
-        let card = Card::first(ID_A, String::new(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, String::new(), 1, vec![], false, ts(0), None);
         assert!(matches!(
             env.request(&Request::PushCardVersions(vec![card])).await,
             Response::Root(_)
@@ -266,7 +266,7 @@ mod tests {
 
         // Push another card -- should get a second notification.
         let id_c = Uuid::from_bytes([0xcc; 16]);
-        let card2 = Card::first(id_c, String::new(), p(2), vec![], false, ts(0), None);
+        let card2 = Card::first(id_c, String::new(), 2, vec![], false, ts(0), None);
         assert!(matches!(
             env.request(&Request::PushCardVersions(vec![card2])).await,
             Response::Root(_)
@@ -329,7 +329,7 @@ mod tests {
         let env = TestEnv::start().await;
 
         // Batch: card + tag.
-        let card = Card::first(ID_A, "body".into(), p(10), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "body".into(), 10, vec![], false, ts(0), None);
         let tag = Tag::first(TAG_ID, "Batch tag".into(), None, ts(0));
         assert!(matches!(
             env.request(&Request::PushBatch(vec![
@@ -384,7 +384,7 @@ mod tests {
         let storage = SqliteStorage::open_in_memory().unwrap();
 
         // Create card.
-        let card = Card::first(ID_A, "Body".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "Body".into(), 1, vec![], false, ts(0), None);
         let resp = handle_request(&storage, Request::PushCardVersions(vec![card.clone()]));
         assert!(matches!(resp, Response::Root(_)));
 
@@ -452,7 +452,7 @@ mod tests {
     fn handle_request_push_batch_card_and_tag() {
         use blazelist_protocol::PushItem;
         let storage = SqliteStorage::open_in_memory().unwrap();
-        let card = Card::first(ID_A, "".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "".into(), 1, vec![], false, ts(0), None);
         let tag = Tag::first(TAG_ID, "T".into(), None, ts(0));
         let resp = handle_request(
             &storage,
@@ -479,12 +479,12 @@ mod tests {
         use blazelist_protocol::PushItem;
         let storage = SqliteStorage::open_in_memory().unwrap();
         // Pre-create a card.
-        let card = Card::first(ID_A, "".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "".into(), 1, vec![], false, ts(0), None);
         handle_request(&storage, Request::PushCardVersions(vec![card.clone()]));
 
         // Batch: tag + stale card push.
         let tag = Tag::first(TAG_ID, "T".into(), None, ts(0));
-        let stale = Card::first(ID_A, "".into(), p(1), vec![], false, ts(100), None);
+        let stale = Card::first(ID_A, "".into(), 1, vec![], false, ts(100), None);
         let resp = handle_request(
             &storage,
             Request::PushBatch(vec![
@@ -511,14 +511,54 @@ mod tests {
     #[test]
     fn handle_request_already_deleted() {
         let storage = SqliteStorage::open_in_memory().unwrap();
-        let card = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         handle_request(&storage, Request::PushCardVersions(vec![card]));
         handle_request(&storage, Request::DeleteCard { id: ID_A });
-        let new_card = Card::first(ID_A, "C2".into(), p(1), vec![], false, ts(1000), None);
+        let new_card = Card::first(ID_A, "C2".into(), 1, vec![], false, ts(1000), None);
         let resp = handle_request(&storage, Request::PushCardVersions(vec![new_card]));
         assert!(matches!(
             resp,
             Response::Error(ProtocolError::PushFailed(PushError::AlreadyDeleted))
         ));
+    }
+
+    #[test]
+    fn handle_request_delete_tag_rejected_when_card_references_it() {
+        use blazelist_protocol::PushItem;
+        let storage = SqliteStorage::open_in_memory().unwrap();
+
+        // Create a tag and a card referencing it
+        let tag = Tag::first(TAG_ID, "T".into(), None, ts(0));
+        handle_request(&storage, Request::PushTagVersions(vec![tag]));
+        let card = Card::first(ID_A, "C".into(), 1, vec![TAG_ID], false, ts(0), None);
+        handle_request(&storage, Request::PushCardVersions(vec![card.clone()]));
+
+        // Direct delete should fail
+        let resp = handle_request(&storage, Request::DeleteTag { id: TAG_ID });
+        match resp {
+            Response::Error(ProtocolError::PushFailed(PushError::OrphanedTagReference {
+                tag_id,
+                referencing_card_ids,
+            })) => {
+                assert_eq!(tag_id, TAG_ID);
+                assert_eq!(referencing_card_ids, vec![ID_A]);
+            }
+            other => panic!("expected OrphanedTagReference, got {other:?}"),
+        }
+
+        // Batch with cleanup should succeed
+        let updated = card.next("C".into(), 1, vec![], false, ts(1), None);
+        let resp = handle_request(
+            &storage,
+            Request::PushBatch(vec![
+                PushItem::Cards(vec![updated]),
+                PushItem::DeleteTag { id: TAG_ID },
+            ]),
+        );
+        assert!(matches!(resp, Response::Root(_)));
+
+        // Tag should no longer exist
+        let resp = handle_request(&storage, Request::GetTag { id: TAG_ID });
+        assert!(matches!(resp, Response::Error(ProtocolError::NotFound)));
     }
 }

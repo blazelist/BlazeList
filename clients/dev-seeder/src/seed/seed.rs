@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use blazelist_protocol::{Card, Entity, NonNegativeI64, PushItem, Tag};
+use blazelist_protocol::{Card, Entity, PushItem, Tag};
 use chrono::{DateTime, Duration, Utc};
 use fake::Fake;
 use fake::faker::lorem::en::*;
@@ -243,9 +243,9 @@ fn generate_cards(
     base_time: DateTime<Utc>,
     used_priorities: &mut BTreeSet<i64>,
 ) -> Vec<Vec<Card>> {
-    // Space priorities evenly across the NonNegativeI64 range.
+    // Space priorities evenly across the i64 range.
     // Leave room at both ends so insertion around them is possible.
-    let max_val = i64::from(NonNegativeI64::MAX);
+    let max_val = i64::MAX;
     let step = max_val / (num_cards as i64 + 1);
 
     (0..num_cards)
@@ -255,7 +255,7 @@ fn generate_cards(
             let raw_priority = max_val - step * (i as i64 + 1);
             let resolved = resolve_priority(raw_priority, used_priorities);
             used_priorities.insert(resolved);
-            let priority = NonNegativeI64::try_from(resolved).unwrap();
+            let priority = resolved;
 
             // Tag assignment distribution:
             //   ~20% of cards: no tags
@@ -366,12 +366,12 @@ fn generate_card_history(
                 CardEdit::Priority => {
                     // Small shift (±500K) — negligible vs the inter-card step.
                     let shift = (rng.next_u64() % 1_000_000) as i64 - 500_000;
-                    let raw = i64::from(priority).saturating_add(shift).max(0);
+                    let raw = priority.saturating_add(shift);
                     // Remove the old priority and resolve the new one.
-                    used_priorities.remove(&i64::from(priority));
+                    used_priorities.remove(&priority);
                     let resolved = resolve_priority(raw, used_priorities);
                     used_priorities.insert(resolved);
-                    priority = NonNegativeI64::try_from(resolved).unwrap();
+                    priority = resolved;
                 }
                 CardEdit::Tags => {
                     if !tag_ids.is_empty() {
@@ -592,7 +592,7 @@ fn generate_deleted_cards(
             let raw = (rng.next_u64() % i64::MAX as u64) as i64;
             let resolved = resolve_priority(raw, used_priorities);
             used_priorities.insert(resolved);
-            let priority = NonNegativeI64::try_from(resolved).unwrap();
+            let priority = resolved;
 
             let tags = if tag_ids.is_empty() || rng.next_u32().is_multiple_of(4) {
                 vec![]
@@ -624,7 +624,7 @@ fn make_fresh_card(
     let raw = (rng.next_u64() % i64::MAX as u64) as i64;
     let resolved = resolve_priority(raw, used_priorities);
     used_priorities.insert(resolved);
-    let priority = NonNegativeI64::try_from(resolved).unwrap();
+    let priority = resolved;
     let tags = if tag_ids.is_empty() || rng.next_u32().is_multiple_of(4) {
         vec![]
     } else {
@@ -661,11 +661,11 @@ fn make_card_update(
             }
             CardEdit::Priority => {
                 let shift = (rng.next_u64() % 1_000_000) as i64 - 500_000;
-                let raw = i64::from(priority).saturating_add(shift).max(0);
-                used_priorities.remove(&i64::from(priority));
+                let raw = priority.saturating_add(shift);
+                used_priorities.remove(&priority);
                 let resolved = resolve_priority(raw, used_priorities);
                 used_priorities.insert(resolved);
-                priority = NonNegativeI64::try_from(resolved).unwrap();
+                priority = resolved;
             }
             CardEdit::Tags => {
                 if !tag_ids.is_empty() {
@@ -844,7 +844,26 @@ fn generate_extra_ops(
         ops.push(vec![PushItem::DeleteCard { id: *id }]);
     }
     for id in &doomed_tag_ids {
-        ops.push(vec![PushItem::DeleteTag { id: *id }]);
+        // Remove the doomed tag from any live cards that reference it
+        let mut batch: Vec<PushItem> = Vec::new();
+        for head in card_heads.iter_mut() {
+            if head.tags().contains(id) {
+                let new_tags: Vec<Uuid> =
+                    head.tags().iter().copied().filter(|t| t != id).collect();
+                let updated = head.next(
+                    head.content().to_string(),
+                    head.priority(),
+                    new_tags,
+                    head.blazed(),
+                    base_time,
+                    head.due_date(),
+                );
+                *head = updated.clone();
+                batch.push(PushItem::Cards(vec![updated]));
+            }
+        }
+        batch.push(PushItem::DeleteTag { id: *id });
+        ops.push(batch);
     }
 
     // ── Phase E: Post-deletion activity (10 ops) ──

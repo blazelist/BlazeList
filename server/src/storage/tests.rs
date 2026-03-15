@@ -23,7 +23,7 @@ mod tests {
     #[test]
     fn delete_already_deleted_card_returns_already_deleted() {
         let s = store();
-        let card = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(&[card]).unwrap();
         s.delete_card(ID_A).unwrap();
         match s.delete_card(ID_A) {
@@ -109,6 +109,73 @@ mod tests {
         SqliteStorage::open_in_memory().unwrap()
     }
 
+    fn create_v0_db_with_schema_version(db_path: &std::path::Path) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE cards (
+                id                  BLOB PRIMARY KEY,
+                content             TEXT    NOT NULL,
+                priority            INTEGER NOT NULL,
+                tags                BLOB    NOT NULL,
+                blazed              INTEGER NOT NULL,
+                created_at          INTEGER NOT NULL,
+                modified_at         INTEGER NOT NULL,
+                due_date            INTEGER,
+                count               INTEGER NOT NULL,
+                ancestor_hash       BLOB    NOT NULL,
+                hash                BLOB    NOT NULL
+            );
+            CREATE TABLE card_versions (
+                card_id         BLOB    NOT NULL,
+                count           INTEGER NOT NULL,
+                content         TEXT    NOT NULL,
+                priority        INTEGER NOT NULL,
+                tags            BLOB    NOT NULL,
+                blazed          INTEGER NOT NULL,
+                created_at      INTEGER NOT NULL,
+                modified_at     INTEGER NOT NULL,
+                due_date        INTEGER,
+                ancestor_hash   BLOB    NOT NULL,
+                hash            BLOB    NOT NULL,
+                PRIMARY KEY (card_id, count)
+            );
+            CREATE TABLE tags (
+                id                  BLOB PRIMARY KEY,
+                title               TEXT    NOT NULL,
+                color               BLOB,
+                created_at          INTEGER NOT NULL,
+                modified_at         INTEGER NOT NULL,
+                count               INTEGER NOT NULL,
+                ancestor_hash       BLOB    NOT NULL,
+                hash                BLOB    NOT NULL
+            );
+            CREATE TABLE tag_versions (
+                tag_id          BLOB    NOT NULL,
+                count           INTEGER NOT NULL,
+                title           TEXT    NOT NULL,
+                color           BLOB,
+                created_at      INTEGER NOT NULL,
+                modified_at     INTEGER NOT NULL,
+                ancestor_hash   BLOB    NOT NULL,
+                hash            BLOB    NOT NULL,
+                PRIMARY KEY (tag_id, count)
+            );
+            CREATE TABLE deleted_entities (
+                id      BLOB PRIMARY KEY,
+                hash    BLOB NOT NULL
+            );
+            CREATE TABLE schema_version (
+                id      INTEGER PRIMARY KEY CHECK (id = 1),
+                major   INTEGER NOT NULL,
+                minor   INTEGER NOT NULL,
+                patch   INTEGER NOT NULL
+            );
+            INSERT INTO schema_version (id, major, minor, patch) VALUES (1, 0, 9, 9);",
+        )
+        .unwrap();
+        conn
+    }
+
     // -- Root ----------------------------------------------------------------
 
     #[test]
@@ -128,7 +195,7 @@ mod tests {
         let card = Card::first(
             ID_A,
             "- Tofu\n- Lentils".into(),
-            p(5000),
+            5000,
             vec![],
             false,
             ts(1000),
@@ -150,7 +217,7 @@ mod tests {
     #[test]
     fn push_updates_root() {
         let s = store();
-        let card = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(&[card]).unwrap();
 
         let root = s.get_root().unwrap();
@@ -162,11 +229,11 @@ mod tests {
     #[test]
     fn push_chain_of_versions() {
         let s = store();
-        let v1 = Card::first(ID_A, "C1".into(), p(1), vec![], false, ts(0), None);
+        let v1 = Card::first(ID_A, "C1".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&v1)).unwrap();
 
-        let v2 = v1.next("C2".into(), p(1), vec![], false, ts(1000), None);
-        let v3 = v2.next("C3".into(), p(1), vec![], false, ts(2000), None);
+        let v2 = v1.next("C2".into(), 1, vec![], false, ts(1000), None);
+        let v3 = v2.next("C3".into(), 1, vec![], false, ts(2000), None);
         s.push_card_versions(&[v2, v3.clone()]).unwrap();
 
         let latest = s.get_card(ID_A).unwrap().unwrap();
@@ -177,15 +244,15 @@ mod tests {
     #[test]
     fn push_rejects_ancestor_mismatch() {
         let s = store();
-        let v1 = Card::first(ID_A, "C1".into(), p(1), vec![], false, ts(0), None);
+        let v1 = Card::first(ID_A, "C1".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&v1)).unwrap();
 
         // Push from stale base (pretend another client pushed v2).
-        let v2_a = v1.next("C2a".into(), p(1), vec![], false, ts(1000), None);
+        let v2_a = v1.next("C2a".into(), 1, vec![], false, ts(1000), None);
         s.push_card_versions(&[v2_a]).unwrap();
 
         // Now try pushing v2_b from the same v1 base.
-        let v2_b = v1.next("C2b".into(), p(1), vec![], false, ts(1500), None);
+        let v2_b = v1.next("C2b".into(), 1, vec![], false, ts(1500), None);
         let err = s.push_card_versions(&[v2_b]).unwrap_err();
         assert!(matches!(
             err,
@@ -198,7 +265,7 @@ mod tests {
 
     #[test]
     fn from_parts_rejects_tampered_card() {
-        let card = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         // Tamper with content without updating hash.
         let result = Card::from_parts(
             card.id(),
@@ -219,8 +286,8 @@ mod tests {
     #[test]
     fn list_cards_all() {
         let s = store();
-        let c1 = Card::first(ID_A, "".into(), p(100), vec![], false, ts(0), None);
-        let c2 = Card::first(ID_B, "".into(), p(200), vec![], true, ts(0), None);
+        let c1 = Card::first(ID_A, "".into(), 100, vec![], false, ts(0), None);
+        let c2 = Card::first(ID_B, "".into(), 200, vec![], true, ts(0), None);
         s.push_card_versions(&[c1]).unwrap();
         s.push_card_versions(&[c2]).unwrap();
 
@@ -231,8 +298,8 @@ mod tests {
     #[test]
     fn list_cards_filtered() {
         let s = store();
-        let c1 = Card::first(ID_A, "".into(), p(100), vec![], false, ts(0), None);
-        let c2 = Card::first(ID_B, "".into(), p(200), vec![], true, ts(0), None);
+        let c1 = Card::first(ID_A, "".into(), 100, vec![], false, ts(0), None);
+        let c2 = Card::first(ID_B, "".into(), 200, vec![], true, ts(0), None);
         s.push_card_versions(&[c1]).unwrap();
         s.push_card_versions(&[c2]).unwrap();
 
@@ -246,10 +313,10 @@ mod tests {
     #[test]
     fn card_history() {
         let s = store();
-        let v1 = Card::first(ID_A, "C1".into(), p(1), vec![], false, ts(0), None);
+        let v1 = Card::first(ID_A, "C1".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&v1)).unwrap();
 
-        let v2 = v1.next("C2".into(), p(1), vec![], false, ts(1000), None);
+        let v2 = v1.next("C2".into(), 1, vec![], false, ts(1000), None);
         s.push_card_versions(&[v2]).unwrap();
 
         let history = s.get_card_history(ID_A, None).unwrap();
@@ -263,7 +330,7 @@ mod tests {
     #[test]
     fn delete_card() {
         let s = store();
-        let card = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(&[card]).unwrap();
 
         let deleted = s.delete_card(ID_A).unwrap();
@@ -274,7 +341,7 @@ mod tests {
         // History is gone.
         assert!(s.get_card_history(ID_A, None).unwrap().is_empty());
         // Cannot push to deleted card.
-        let new = Card::first(ID_A, "C2".into(), p(1), vec![], false, ts(1000), None);
+        let new = Card::first(ID_A, "C2".into(), 1, vec![], false, ts(1000), None);
         assert!(matches!(
             s.push_card_versions(&[new]).unwrap_err(),
             PushOpError::Domain(PushError::AlreadyDeleted)
@@ -284,7 +351,7 @@ mod tests {
     #[test]
     fn delete_updates_root() {
         let s = store();
-        let card = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(&[card]).unwrap();
         let root_before = s.get_root().unwrap();
 
@@ -383,7 +450,7 @@ mod tests {
         let card = Card::first(
             ID_A,
             "content".into(),
-            p(100),
+            100,
             vec![TAG_ID, ID_B],
             false,
             ts(1000),
@@ -403,8 +470,8 @@ mod tests {
         let s1 = store();
         let s2 = store();
 
-        let c1 = Card::first(ID_A, "".into(), p(1), vec![], false, ts(0), None);
-        let c2 = Card::first(ID_B, "".into(), p(2), vec![], false, ts(0), None);
+        let c1 = Card::first(ID_A, "".into(), 1, vec![], false, ts(0), None);
+        let c2 = Card::first(ID_B, "".into(), 2, vec![], false, ts(0), None);
 
         // Insert in different order.
         s1.push_card_versions(std::slice::from_ref(&c1)).unwrap();
@@ -480,7 +547,7 @@ mod tests {
     #[test]
     fn card_large_priority_round_trips() {
         let s = store();
-        let big_priority = NonNegativeI64::try_from(i64::MAX / 2).unwrap();
+        let big_priority = i64::MAX / 2;
         let card = Card::first(
             ID_A,
             "content".into(),
@@ -502,7 +569,7 @@ mod tests {
         let card = Card::first(
             ID_A,
             "content".into(),
-            NonNegativeI64::MAX,
+            i64::MAX,
             vec![],
             false,
             ts(1000),
@@ -511,7 +578,7 @@ mod tests {
         s.push_card_versions(std::slice::from_ref(&card)).unwrap();
         let fetched = s.get_card(ID_A).unwrap().unwrap();
         assert_eq!(card, fetched);
-        assert_eq!(fetched.priority(), NonNegativeI64::MAX);
+        assert_eq!(fetched.priority(), i64::MAX);
     }
 
     // -- Duplicate priority ---------------------------------------------------
@@ -519,17 +586,17 @@ mod tests {
     #[test]
     fn duplicate_priority_returns_conflicting_card_info() {
         let s = store();
-        let c1 = Card::first(ID_A, "".into(), p(100), vec![], false, ts(0), None);
+        let c1 = Card::first(ID_A, "".into(), 100, vec![], false, ts(0), None);
         s.push_card_versions(&[c1]).unwrap();
 
-        let c2 = Card::first(ID_B, "".into(), p(100), vec![], false, ts(0), None);
+        let c2 = Card::first(ID_B, "".into(), 100, vec![], false, ts(0), None);
         match s.push_card_versions(&[c2]).unwrap_err() {
             PushOpError::Domain(PushError::DuplicatePriority {
                 conflicting_id,
                 priority,
             }) => {
                 assert_eq!(conflicting_id, ID_A);
-                assert_eq!(priority, p(100));
+                assert_eq!(priority, 100);
             }
             other => panic!("expected DuplicatePriority, got {other:?}"),
         }
@@ -540,11 +607,11 @@ mod tests {
     #[test]
     fn push_rejects_broken_internal_chain() {
         let s = store();
-        let v1 = Card::first(ID_A, "C1".into(), p(1), vec![], false, ts(0), None);
+        let v1 = Card::first(ID_A, "C1".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&v1)).unwrap();
-        let v2 = v1.next("C2".into(), p(1), vec![], false, ts(1000), None);
+        let v2 = v1.next("C2".into(), 1, vec![], false, ts(1000), None);
         // Create v3 that chains from v1 instead of v2 (broken internal chain).
-        let v3_bad = v1.next("C3".into(), p(1), vec![], false, ts(2000), None);
+        let v3_bad = v1.next("C3".into(), 1, vec![], false, ts(2000), None);
         let err = s.push_card_versions(&[v2, v3_bad]).unwrap_err();
         assert!(matches!(
             err,
@@ -555,9 +622,9 @@ mod tests {
     #[test]
     fn push_same_version_twice_fails() {
         let s = store();
-        let v1 = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let v1 = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&v1)).unwrap();
-        let v2 = v1.next("C2".into(), p(1), vec![], false, ts(1000), None);
+        let v2 = v1.next("C2".into(), 1, vec![], false, ts(1000), None);
         s.push_card_versions(std::slice::from_ref(&v2)).unwrap();
         // Try pushing v2 again — ancestor is v1's hash but server's latest is now v2's hash.
         let err = s.push_card_versions(&[v2]).unwrap_err();
@@ -566,9 +633,9 @@ mod tests {
             PushOpError::Domain(PushError::CardAncestorMismatch(_))
         ));
         let s = store();
-        let v1 = Card::first(ID_A, "C1".into(), p(1), vec![], false, ts(0), None);
-        let v2 = v1.next("C2".into(), p(1), vec![], false, ts(1000), None);
-        let v3 = v2.next("C3".into(), p(1), vec![], false, ts(2000), None);
+        let v1 = Card::first(ID_A, "C1".into(), 1, vec![], false, ts(0), None);
+        let v2 = v1.next("C2".into(), 1, vec![], false, ts(1000), None);
+        let v3 = v2.next("C3".into(), 1, vec![], false, ts(2000), None);
         s.push_card_versions(&[v1]).unwrap();
         s.push_card_versions(&[v2]).unwrap();
         s.push_card_versions(&[v3]).unwrap();
@@ -584,7 +651,7 @@ mod tests {
     #[test]
     fn root_hash_includes_cards_and_tags() {
         let s = store();
-        let card = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(&[card]).unwrap();
         let root_cards_only = s.get_root().unwrap();
 
@@ -603,8 +670,8 @@ mod tests {
         let s1 = store();
         let s2 = store();
 
-        let c1 = Card::first(ID_A, "".into(), p(1), vec![], false, ts(0), None);
-        let c2 = Card::first(ID_B, "".into(), p(2), vec![], false, ts(0), None);
+        let c1 = Card::first(ID_A, "".into(), 1, vec![], false, ts(0), None);
+        let c2 = Card::first(ID_B, "".into(), 2, vec![], false, ts(0), None);
 
         // Store 1: create both then delete in order A, B.
         s1.push_card_versions(std::slice::from_ref(&c1)).unwrap();
@@ -627,7 +694,7 @@ mod tests {
     #[test]
     fn root_hash_includes_deleted_entity_hash() {
         let s = store();
-        let card = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(&[card]).unwrap();
         s.delete_card(ID_A).unwrap();
 
@@ -642,13 +709,13 @@ mod tests {
     #[test]
     fn root_hash_canonical_ordering_with_cards_tags_deleted() {
         let s = store();
-        let card = Card::first(ID_A, "".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "".into(), 1, vec![], false, ts(0), None);
         let tag = Tag::first(TAG_ID, "T".into(), None, ts(0));
         s.push_card_versions(std::slice::from_ref(&card)).unwrap();
         s.push_tag_versions(std::slice::from_ref(&tag)).unwrap();
 
         // Create and delete ID_B so it becomes a deleted entity.
-        let card_b = Card::first(ID_B, "".into(), p(2), vec![], false, ts(0), None);
+        let card_b = Card::first(ID_B, "".into(), 2, vec![], false, ts(0), None);
         s.push_card_versions(&[card_b]).unwrap();
         s.delete_card(ID_B).unwrap();
 
@@ -684,11 +751,11 @@ mod tests {
         // Two cards in bucket 1, verify the root hash is computed correctly
         // by combining both card hashes within the same bucket.
         let s = store();
-        let c1 = Card::first(ID_A, "Card A".into(), p(1), vec![], false, ts(0), None);
+        let c1 = Card::first(ID_A, "Card A".into(), 1, vec![], false, ts(0), None);
         let c2 = Card::first(
             SAME_BUCKET_1,
             "Card SB1".into(),
-            p(2),
+            2,
             vec![],
             false,
             ts(0),
@@ -708,11 +775,11 @@ mod tests {
     fn same_bucket_three_cards_correct_hash() {
         // Three cards in bucket 1.
         let s = store();
-        let c1 = Card::first(ID_A, "A".into(), p(1), vec![], false, ts(0), None);
+        let c1 = Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None);
         let c2 = Card::first(
             SAME_BUCKET_1,
             "SB1".into(),
-            p(2),
+            2,
             vec![],
             false,
             ts(0),
@@ -721,7 +788,7 @@ mod tests {
         let c3 = Card::first(
             SAME_BUCKET_2,
             "SB2".into(),
-            p(3),
+            3,
             vec![],
             false,
             ts(0),
@@ -742,7 +809,7 @@ mod tests {
     fn same_bucket_card_and_tag_correct_hash() {
         // A card and a tag sharing bucket 1.
         let s = store();
-        let card = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         let tag = Tag::first(SAME_BUCKET_1, "T".into(), None, ts(0));
         s.push_card_versions(std::slice::from_ref(&card)).unwrap();
         s.push_tag_versions(std::slice::from_ref(&tag)).unwrap();
@@ -758,14 +825,14 @@ mod tests {
     fn same_bucket_card_and_deleted_correct_hash() {
         // A card and a deleted entity sharing bucket 1.
         let s = store();
-        let card = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&card)).unwrap();
 
         // Create and delete SAME_BUCKET_1 so it becomes a deleted entity in bucket 1.
         let doomed = Card::first(
             SAME_BUCKET_1,
             "doomed".into(),
-            p(2),
+            2,
             vec![],
             false,
             ts(0),
@@ -786,7 +853,7 @@ mod tests {
     fn same_bucket_all_three_entity_types() {
         // Card, tag, and deleted entity all in bucket 1.
         let s = store();
-        let card = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         let tag = Tag::first(SAME_BUCKET_1, "T".into(), None, ts(0));
         s.push_card_versions(std::slice::from_ref(&card)).unwrap();
         s.push_tag_versions(std::slice::from_ref(&tag)).unwrap();
@@ -795,7 +862,7 @@ mod tests {
         let doomed = Card::first(
             SAME_BUCKET_2,
             "doomed".into(),
-            p(2),
+            2,
             vec![],
             false,
             ts(0),
@@ -819,11 +886,11 @@ mod tests {
         let s1 = store();
         let s2 = store();
 
-        let c_a = Card::first(ID_A, "A".into(), p(1), vec![], false, ts(0), None);
+        let c_a = Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None);
         let c_sb1 = Card::first(
             SAME_BUCKET_1,
             "SB1".into(),
-            p(2),
+            2,
             vec![],
             false,
             ts(0),
@@ -844,11 +911,11 @@ mod tests {
         // Three cards in the same bucket — all 6 insertion orders produce
         // the same root hash.
         let cards = [
-            Card::first(ID_A, "A".into(), p(1), vec![], false, ts(0), None),
+            Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None),
             Card::first(
                 SAME_BUCKET_1,
                 "SB1".into(),
-                p(2),
+                2,
                 vec![],
                 false,
                 ts(0),
@@ -857,7 +924,7 @@ mod tests {
             Card::first(
                 SAME_BUCKET_2,
                 "SB2".into(),
-                p(3),
+                3,
                 vec![],
                 false,
                 ts(0),
@@ -893,7 +960,7 @@ mod tests {
         let s1 = store();
         let s2 = store();
 
-        let card = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         let tag = Tag::first(SAME_BUCKET_1, "T".into(), None, ts(0));
 
         s1.push_card_versions(std::slice::from_ref(&card)).unwrap();
@@ -912,7 +979,7 @@ mod tests {
         // Push v1, record root, push v2, verify root changes and matches
         // expected bucket hash with the new card hash.
         let s = store();
-        let v1 = Card::first(ID_A, "v1".into(), p(1), vec![], false, ts(0), None);
+        let v1 = Card::first(ID_A, "v1".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&v1)).unwrap();
 
         let root_v1 = s.get_root().unwrap();
@@ -920,7 +987,7 @@ mod tests {
         let expected_v1 = expected_root(&[(1, b1_v1)]);
         assert_eq!(root_v1.hash, expected_v1);
 
-        let v2 = v1.next("v2".into(), p(1), vec![], false, ts(1000), None);
+        let v2 = v1.next("v2".into(), 1, vec![], false, ts(1000), None);
         s.push_card_versions(std::slice::from_ref(&v2)).unwrap();
 
         let root_v2 = s.get_root().unwrap();
@@ -955,11 +1022,11 @@ mod tests {
         // Two cards in bucket 1. Update one — the other's contribution to
         // the bucket hash must remain unchanged.
         let s = store();
-        let c1 = Card::first(ID_A, "A".into(), p(1), vec![], false, ts(0), None);
+        let c1 = Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None);
         let c2 = Card::first(
             SAME_BUCKET_1,
             "SB1".into(),
-            p(2),
+            2,
             vec![],
             false,
             ts(0),
@@ -971,7 +1038,7 @@ mod tests {
         let root_before = s.get_root().unwrap();
 
         // Update only c1.
-        let c1_v2 = c1.next("A v2".into(), p(1), vec![], false, ts(1000), None);
+        let c1_v2 = c1.next("A v2".into(), 1, vec![], false, ts(1000), None);
         s.push_card_versions(std::slice::from_ref(&c1_v2)).unwrap();
 
         let root_after = s.get_root().unwrap();
@@ -989,7 +1056,7 @@ mod tests {
         // Card in bucket 1. Delete it — the bucket hash should change from
         // card hash to deleted entity hash.
         let s = store();
-        let card = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&card)).unwrap();
 
         let root_before = s.get_root().unwrap();
@@ -1010,11 +1077,11 @@ mod tests {
         // Two cards in bucket 1. Delete one — the bucket should contain
         // the remaining card hash and the deleted entity hash.
         let s = store();
-        let c1 = Card::first(ID_A, "A".into(), p(1), vec![], false, ts(0), None);
+        let c1 = Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None);
         let c2 = Card::first(
             SAME_BUCKET_1,
             "SB1".into(),
-            p(2),
+            2,
             vec![],
             false,
             ts(0),
@@ -1037,11 +1104,11 @@ mod tests {
         // Two cards in bucket 1. Delete both — bucket should contain only
         // the two deleted entity hashes.
         let s = store();
-        let c1 = Card::first(ID_A, "A".into(), p(1), vec![], false, ts(0), None);
+        let c1 = Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None);
         let c2 = Card::first(
             SAME_BUCKET_1,
             "SB1".into(),
-            p(2),
+            2,
             vec![],
             false,
             ts(0),
@@ -1067,17 +1134,17 @@ mod tests {
     fn mixed_same_and_different_buckets_correct_hash() {
         // Two cards in bucket 1 (ID_A, SAME_BUCKET_1) + one card in bucket 16 (ID_B).
         let s = store();
-        let c_a = Card::first(ID_A, "A".into(), p(1), vec![], false, ts(0), None);
+        let c_a = Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None);
         let c_sb1 = Card::first(
             SAME_BUCKET_1,
             "SB1".into(),
-            p(2),
+            2,
             vec![],
             false,
             ts(0),
             None,
         );
-        let c_b = Card::first(ID_B, "B".into(), p(3), vec![], false, ts(0), None);
+        let c_b = Card::first(ID_B, "B".into(), 3, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&c_a)).unwrap();
         s.push_card_versions(std::slice::from_ref(&c_sb1)).unwrap();
         s.push_card_versions(std::slice::from_ref(&c_b)).unwrap();
@@ -1093,17 +1160,17 @@ mod tests {
         // Set up bucket 1 with two cards, bucket 16 with one card.
         // Mutate bucket 16 — bucket 1's hash contribution must stay the same.
         let s = store();
-        let c_a = Card::first(ID_A, "A".into(), p(1), vec![], false, ts(0), None);
+        let c_a = Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None);
         let c_sb1 = Card::first(
             SAME_BUCKET_1,
             "SB1".into(),
-            p(2),
+            2,
             vec![],
             false,
             ts(0),
             None,
         );
-        let c_b = Card::first(ID_B, "B".into(), p(3), vec![], false, ts(0), None);
+        let c_b = Card::first(ID_B, "B".into(), 3, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&c_a)).unwrap();
         s.push_card_versions(std::slice::from_ref(&c_sb1)).unwrap();
         s.push_card_versions(std::slice::from_ref(&c_b)).unwrap();
@@ -1111,7 +1178,7 @@ mod tests {
         let root_before = s.get_root().unwrap();
 
         // Update card in bucket 16.
-        let c_b_v2 = c_b.next("B v2".into(), p(3), vec![], false, ts(1000), None);
+        let c_b_v2 = c_b.next("B v2".into(), 3, vec![], false, ts(1000), None);
         s.push_card_versions(std::slice::from_ref(&c_b_v2)).unwrap();
 
         let root_after = s.get_root().unwrap();
@@ -1131,7 +1198,7 @@ mod tests {
     fn batch_same_bucket_entities_correct_hash() {
         // Batch push of a card and tag in the same bucket.
         let s = store();
-        let card = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         let tag = Tag::first(SAME_BUCKET_1, "T".into(), None, ts(0));
 
         use blazelist_protocol::PushItem;
@@ -1150,13 +1217,13 @@ mod tests {
     fn batch_same_bucket_create_and_delete() {
         // Batch: create a card in bucket 1, delete another card already in bucket 1.
         let s = store();
-        let existing = Card::first(ID_A, "old".into(), p(1), vec![], false, ts(0), None);
+        let existing = Card::first(ID_A, "old".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(&[existing]).unwrap();
 
         let new_card = Card::first(
             SAME_BUCKET_1,
             "new".into(),
-            p(2),
+            2,
             vec![],
             false,
             ts(0),
@@ -1182,11 +1249,11 @@ mod tests {
     fn batch_mixed_buckets_correct_hash() {
         // Batch with entities spanning multiple buckets, some sharing a bucket.
         let s = store();
-        let c_a = Card::first(ID_A, "A".into(), p(1), vec![], false, ts(0), None);
+        let c_a = Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None);
         let c_sb1 = Card::first(
             SAME_BUCKET_1,
             "SB1".into(),
-            p(2),
+            2,
             vec![],
             false,
             ts(0),
@@ -1216,7 +1283,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
 
-        let card = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         let root_hash;
         {
             let s = SqliteStorage::open(&db_path, false).unwrap();
@@ -1236,7 +1303,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
 
-        let c1 = Card::first(ID_A, "A".into(), p(1), vec![], false, ts(0), None);
+        let c1 = Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None);
         {
             let s = SqliteStorage::open(&db_path, false).unwrap();
             s.push_card_versions(std::slice::from_ref(&c1)).unwrap();
@@ -1246,7 +1313,7 @@ mod tests {
             let c2 = Card::first(
                 SAME_BUCKET_1,
                 "SB1".into(),
-                p(2),
+                2,
                 vec![],
                 false,
                 ts(0),
@@ -1268,14 +1335,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
 
-        let c1 = Card::first(ID_A, "A".into(), p(1), vec![], false, ts(0), None);
+        let c1 = Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None);
         {
             let s = SqliteStorage::open(&db_path, false).unwrap();
             s.push_card_versions(std::slice::from_ref(&c1)).unwrap();
         }
         {
             let s = SqliteStorage::open(&db_path, false).unwrap();
-            let c2 = Card::first(ID_B, "B".into(), p(2), vec![], false, ts(0), None);
+            let c2 = Card::first(ID_B, "B".into(), 2, vec![], false, ts(0), None);
             s.push_card_versions(std::slice::from_ref(&c2)).unwrap();
 
             let root = s.get_root().unwrap();
@@ -1290,11 +1357,11 @@ mod tests {
     #[test]
     fn changes_since_returns_only_new_cards() {
         let s = store();
-        let c1 = Card::first(ID_A, "".into(), p(1), vec![], false, ts(0), None);
+        let c1 = Card::first(ID_A, "".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(&[c1]).unwrap();
         let root_after_a = s.get_root().unwrap();
 
-        let c2 = Card::first(ID_B, "".into(), p(2), vec![], false, ts(0), None);
+        let c2 = Card::first(ID_B, "".into(), 2, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&c2)).unwrap();
 
         let changes = s
@@ -1309,11 +1376,11 @@ mod tests {
     #[test]
     fn changes_since_returns_modified_card() {
         let s = store();
-        let v1 = Card::first(ID_A, "C1".into(), p(1), vec![], false, ts(0), None);
+        let v1 = Card::first(ID_A, "C1".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&v1)).unwrap();
         let root_after_v1 = s.get_root().unwrap();
 
-        let v2 = v1.next("C2".into(), p(1), vec![], false, ts(1000), None);
+        let v2 = v1.next("C2".into(), 1, vec![], false, ts(1000), None);
         s.push_card_versions(std::slice::from_ref(&v2)).unwrap();
 
         let changes = s
@@ -1326,7 +1393,7 @@ mod tests {
     #[test]
     fn changes_since_returns_deleted_entities() {
         let s = store();
-        let card = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(&[card]).unwrap();
         let root_before_delete = s.get_root().unwrap();
 
@@ -1342,7 +1409,7 @@ mod tests {
     #[test]
     fn changes_since_empty_when_up_to_date() {
         let s = store();
-        let card = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(&[card]).unwrap();
         let root = s.get_root().unwrap();
 
@@ -1369,7 +1436,7 @@ mod tests {
     #[test]
     fn changes_since_returns_current_root() {
         let s = store();
-        let card = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(&[card]).unwrap();
 
         let changes = s
@@ -1387,7 +1454,7 @@ mod tests {
     #[test]
     fn batch_card_and_tag_succeeds_atomically() {
         let s = store();
-        let card = Card::first(ID_A, "".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "".into(), 1, vec![], false, ts(0), None);
         let tag = Tag::first(TAG_ID, "T".into(), None, ts(0));
 
         use blazelist_protocol::PushItem;
@@ -1411,14 +1478,14 @@ mod tests {
     fn batch_rollback_on_second_item_failure() {
         let s = store();
         // Pre-create a card so the second item causes an ancestor mismatch.
-        let existing = Card::first(ID_A, "".into(), p(1), vec![], false, ts(0), None);
+        let existing = Card::first(ID_A, "".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&existing))
             .unwrap();
         let root_before = s.get_root().unwrap();
 
         // Batch: create a tag (would succeed), then push a card with wrong ancestor (fails).
         let tag = Tag::first(TAG_ID, "T".into(), None, ts(0));
-        let stale_card = Card::first(ID_A, "".into(), p(1), vec![], false, ts(100), None);
+        let stale_card = Card::first(ID_A, "".into(), 1, vec![], false, ts(100), None);
 
         use blazelist_protocol::PushItem;
         let err = s
@@ -1445,13 +1512,13 @@ mod tests {
     fn batch_with_mixed_deletions_and_pushes() {
         let s = store();
         // Pre-create entities to delete.
-        let card_to_delete = Card::first(ID_A, "".into(), p(1), vec![], false, ts(0), None);
+        let card_to_delete = Card::first(ID_A, "".into(), 1, vec![], false, ts(0), None);
         let tag_to_delete = Tag::first(TAG_ID, "Delete me".into(), None, ts(0));
         s.push_card_versions(&[card_to_delete]).unwrap();
         s.push_tag_versions(&[tag_to_delete]).unwrap();
 
         // Batch: create new card, delete existing card, create new tag, delete existing tag.
-        let new_card = Card::first(ID_B, "".into(), p(2), vec![], false, ts(0), None);
+        let new_card = Card::first(ID_B, "".into(), 2, vec![], false, ts(0), None);
 
         use blazelist_protocol::PushItem;
         s.push_batch(&[
@@ -1482,12 +1549,12 @@ mod tests {
     #[test]
     fn batch_duplicate_priority_rolls_back() {
         let s = store();
-        let c1 = Card::first(ID_A, "".into(), p(100), vec![], false, ts(0), None);
+        let c1 = Card::first(ID_A, "".into(), 100, vec![], false, ts(0), None);
         s.push_card_versions(&[c1]).unwrap();
 
         // Batch: tag (would succeed) + card with duplicate priority (fails).
         let tag = Tag::first(TAG_ID, "T".into(), None, ts(0));
-        let c2 = Card::first(ID_B, "".into(), p(100), vec![], false, ts(0), None);
+        let c2 = Card::first(ID_B, "".into(), 100, vec![], false, ts(0), None);
 
         use blazelist_protocol::PushItem;
         let err = s
@@ -1500,7 +1567,7 @@ mod tests {
             PushOpError::Domain(PushError::DuplicatePriority {
                 conflicting_id,
                 priority,
-            }) if conflicting_id == ID_A && priority == p(100)
+            }) if conflicting_id == ID_A && priority == 100
         ));
 
         // Tag should NOT exist (rolled back).
@@ -1512,7 +1579,7 @@ mod tests {
         let s = store();
         let root_before = s.get_root().unwrap();
 
-        let card = Card::first(ID_A, "".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "".into(), 1, vec![], false, ts(0), None);
         let tag = Tag::first(TAG_ID, "T".into(), None, ts(0));
 
         use blazelist_protocol::PushItem;
@@ -1534,7 +1601,7 @@ mod tests {
     #[test]
     fn root_hash_validation_success() {
         let s = store();
-        let card = Card::first(ID_A, "Test".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "Test".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(&[card]).unwrap();
 
         let root = s.get_root().unwrap();
@@ -1546,7 +1613,7 @@ mod tests {
     #[test]
     fn root_hash_validation_mismatch() {
         let s = store();
-        let card = Card::first(ID_A, "Test".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "Test".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(&[card]).unwrap();
 
         let root = s.get_root().unwrap();
@@ -1584,8 +1651,8 @@ mod tests {
     fn duplicate_priority_within_same_batch() {
         let s = store();
         // Two cards with the same priority within a single batch.
-        let c1 = Card::first(ID_A, "first".into(), p(500), vec![], false, ts(0), None);
-        let c2 = Card::first(ID_B, "second".into(), p(500), vec![], false, ts(0), None);
+        let c1 = Card::first(ID_A, "first".into(), 500, vec![], false, ts(0), None);
+        let c2 = Card::first(ID_B, "second".into(), 500, vec![], false, ts(0), None);
 
         use blazelist_protocol::PushItem;
         let err = s
@@ -1599,7 +1666,7 @@ mod tests {
             PushOpError::Domain(PushError::DuplicatePriority {
                 conflicting_id,
                 priority,
-            }) if conflicting_id == ID_A && priority == p(500)
+            }) if conflicting_id == ID_A && priority == 500
         ));
 
         // First card should NOT exist (batch rolled back).
@@ -1609,11 +1676,11 @@ mod tests {
     #[test]
     fn duplicate_priority_sequential_push_returns_error() {
         let s = store();
-        let c1 = Card::first(ID_A, "first".into(), p(42), vec![], false, ts(0), None);
+        let c1 = Card::first(ID_A, "first".into(), 42, vec![], false, ts(0), None);
         s.push_card_versions(&[c1]).unwrap();
 
         // Push a different card with the same priority
-        let c2 = Card::first(ID_B, "second".into(), p(42), vec![], false, ts(0), None);
+        let c2 = Card::first(ID_B, "second".into(), 42, vec![], false, ts(0), None);
         let err = s.push_card_versions(&[c2]).unwrap_err();
 
         match err {
@@ -1622,7 +1689,7 @@ mod tests {
                 priority,
             }) => {
                 assert_eq!(conflicting_id, ID_A);
-                assert_eq!(priority, p(42));
+                assert_eq!(priority, 42);
             }
             other => panic!("Expected DuplicatePriority, got {other:?}"),
         }
@@ -1637,10 +1704,10 @@ mod tests {
         let s = store();
         // A card can be updated without changing priority — should not conflict
         // with itself.
-        let c1 = Card::first(ID_A, "v1".into(), p(100), vec![], false, ts(0), None);
+        let c1 = Card::first(ID_A, "v1".into(), 100, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&c1)).unwrap();
 
-        let c2 = c1.next("v2".into(), p(100), vec![], false, ts(1), None);
+        let c2 = c1.next("v2".into(), 100, vec![], false, ts(1), None);
         s.push_card_versions(&[c2]).unwrap();
 
         let fetched = s.get_card(ID_A).unwrap().unwrap();
@@ -1652,7 +1719,7 @@ mod tests {
     #[test]
     fn push_same_card_version_twice_fails() {
         let s = store();
-        let card = Card::first(ID_A, "hello".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "hello".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&card)).unwrap();
 
         // Pushing the same version again should fail (ancestor mismatch).
@@ -1677,10 +1744,10 @@ mod tests {
         ));
     }
 
-    // -- Tag deletion while card references it ---------------------------------
+    // -- Tag deletion referential integrity ------------------------------------
 
     #[test]
-    fn tag_deletion_does_not_affect_card_referencing_it() {
+    fn delete_tag_fails_when_card_references_it() {
         let s = store();
         let tag = Tag::first(TAG_ID, "groceries".into(), None, ts(0));
         s.push_tag_versions(&[tag]).unwrap();
@@ -1689,7 +1756,7 @@ mod tests {
         let card = Card::first(
             ID_A,
             "buy tofu".into(),
-            p(1),
+            1,
             vec![TAG_ID],
             false,
             ts(0),
@@ -1697,14 +1764,179 @@ mod tests {
         );
         s.push_card_versions(std::slice::from_ref(&card)).unwrap();
 
-        // Delete the tag
-        s.delete_tag(TAG_ID).unwrap();
-        assert!(s.get_tag(TAG_ID).unwrap().is_none());
+        // Delete the tag — should fail with OrphanedTagReference
+        match s.delete_tag(TAG_ID) {
+            Err(StorageError::OrphanedTagReference {
+                tag_id,
+                referencing_card_ids,
+            }) => {
+                assert_eq!(tag_id, TAG_ID);
+                assert_eq!(referencing_card_ids, vec![ID_A]);
+            }
+            other => panic!("expected OrphanedTagReference, got {other:?}"),
+        }
 
-        // Card should still exist with its tag reference intact
+        // Tag should still exist
+        assert!(s.get_tag(TAG_ID).unwrap().is_some());
+        // Card should still reference the tag
         let fetched = s.get_card(ID_A).unwrap().unwrap();
         assert_eq!(fetched.tags(), &[TAG_ID]);
-        assert_eq!(fetched, card);
+    }
+
+    #[test]
+    fn delete_tag_succeeds_after_card_removed_reference() {
+        let s = store();
+        let tag = Tag::first(TAG_ID, "groceries".into(), None, ts(0));
+        s.push_tag_versions(&[tag]).unwrap();
+
+        // Create card that references this tag
+        let card = Card::first(
+            ID_A,
+            "buy tofu".into(),
+            1,
+            vec![TAG_ID],
+            false,
+            ts(0),
+            None,
+        );
+        s.push_card_versions(std::slice::from_ref(&card)).unwrap();
+
+        // Push updated card with tag removed
+        let updated = card.next("buy tofu".into(), 1, vec![], false, ts(1), None);
+        s.push_card_versions(std::slice::from_ref(&updated))
+            .unwrap();
+
+        // Now deleting the tag should succeed
+        s.delete_tag(TAG_ID).unwrap();
+        assert!(s.get_tag(TAG_ID).unwrap().is_none());
+    }
+
+    #[test]
+    fn push_batch_card_cleanup_then_delete_tag_succeeds() {
+        use blazelist_protocol::PushItem;
+        let s = store();
+        let tag = Tag::first(TAG_ID, "groceries".into(), None, ts(0));
+        s.push_tag_versions(&[tag]).unwrap();
+
+        let card = Card::first(
+            ID_A,
+            "buy tofu".into(),
+            1,
+            vec![TAG_ID],
+            false,
+            ts(0),
+            None,
+        );
+        s.push_card_versions(std::slice::from_ref(&card)).unwrap();
+
+        // Batch: remove the tag from the card, then delete the tag
+        let updated = card.next("buy tofu".into(), 1, vec![], false, ts(1), None);
+        s.push_batch(&[
+            PushItem::Cards(vec![updated]),
+            PushItem::DeleteTag { id: TAG_ID },
+        ])
+        .unwrap();
+
+        assert!(s.get_tag(TAG_ID).unwrap().is_none());
+        let fetched = s.get_card(ID_A).unwrap().unwrap();
+        assert!(fetched.tags().is_empty());
+    }
+
+    #[test]
+    fn push_batch_delete_tag_without_cleanup_fails_and_rolls_back() {
+        use blazelist_protocol::PushItem;
+        let s = store();
+        let tag = Tag::first(TAG_ID, "groceries".into(), None, ts(0));
+        s.push_tag_versions(&[tag]).unwrap();
+
+        let card = Card::first(
+            ID_A,
+            "buy tofu".into(),
+            1,
+            vec![TAG_ID],
+            false,
+            ts(0),
+            None,
+        );
+        s.push_card_versions(std::slice::from_ref(&card)).unwrap();
+
+        // Also create a new tag in the same batch (to verify rollback)
+        let new_tag_id = Uuid::from_bytes([
+            0xb1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x47, 0x08, 0x89, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x20,
+        ]);
+        let new_tag = Tag::first(new_tag_id, "new tag".into(), None, ts(0));
+
+        let err = s
+            .push_batch(&[
+                PushItem::Tags(vec![new_tag]),
+                PushItem::DeleteTag { id: TAG_ID },
+            ])
+            .unwrap_err();
+        assert_eq!(err.index, 1);
+        assert!(matches!(
+            err.error,
+            PushOpError::Domain(PushError::OrphanedTagReference { .. })
+        ));
+
+        // Tag should still exist (rolled back)
+        assert!(s.get_tag(TAG_ID).unwrap().is_some());
+        // New tag should not exist (rolled back)
+        assert!(s.get_tag(new_tag_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_tag_fails_listing_remaining_card_ids_when_partial_cleanup() {
+        use blazelist_protocol::PushItem;
+        let s = store();
+        let tag = Tag::first(TAG_ID, "groceries".into(), None, ts(0));
+        s.push_tag_versions(&[tag]).unwrap();
+
+        // Create two cards referencing the tag
+        let card_a = Card::first(
+            ID_A,
+            "buy tofu".into(),
+            1,
+            vec![TAG_ID],
+            false,
+            ts(0),
+            None,
+        );
+        let card_b = Card::first(
+            ID_B,
+            "buy rice".into(),
+            2,
+            vec![TAG_ID],
+            false,
+            ts(0),
+            None,
+        );
+        s.push_card_versions(std::slice::from_ref(&card_a))
+            .unwrap();
+        s.push_card_versions(std::slice::from_ref(&card_b))
+            .unwrap();
+
+        // Only clean up card_a, not card_b
+        let updated_a = card_a.next("buy tofu".into(), 1, vec![], false, ts(1), None);
+
+        let err = s
+            .push_batch(&[
+                PushItem::Cards(vec![updated_a]),
+                PushItem::DeleteTag { id: TAG_ID },
+            ])
+            .unwrap_err();
+        assert_eq!(err.index, 1);
+        match err.error {
+            PushOpError::Domain(PushError::OrphanedTagReference {
+                tag_id,
+                referencing_card_ids,
+            }) => {
+                assert_eq!(tag_id, TAG_ID);
+                // Only card_b should remain as a referencing card
+                assert_eq!(referencing_card_ids, vec![ID_B]);
+            }
+            other => panic!("expected OrphanedTagReference, got {other:?}"),
+        }
     }
 
     // -- Deep version chains ---------------------------------------------------
@@ -1712,13 +1944,13 @@ mod tests {
     #[test]
     fn deep_version_chain_push() {
         let s = store();
-        let mut current = Card::first(ID_A, "v1".into(), p(1000), vec![], false, ts(0), None);
+        let mut current = Card::first(ID_A, "v1".into(), 1000, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&current))
             .unwrap();
 
         // Build a chain of 50 versions
         for i in 2..=50 {
-            let next = current.next(format!("v{i}"), p(1000), vec![], false, ts(i), None);
+            let next = current.next(format!("v{i}"), 1000, vec![], false, ts(i), None);
             s.push_card_versions(std::slice::from_ref(&next)).unwrap();
             current = next;
         }
@@ -1738,11 +1970,11 @@ mod tests {
         let s = store();
         // Push a chain of 20 versions in a single push call
         let mut versions = Vec::new();
-        let mut current = Card::first(ID_A, "v1".into(), p(1000), vec![], false, ts(0), None);
+        let mut current = Card::first(ID_A, "v1".into(), 1000, vec![], false, ts(0), None);
         versions.push(current.clone());
 
         for i in 2..=20 {
-            let next = current.next(format!("v{i}"), p(1000), vec![], false, ts(i), None);
+            let next = current.next(format!("v{i}"), 1000, vec![], false, ts(i), None);
             versions.push(next.clone());
             current = next;
         }
@@ -1762,8 +1994,8 @@ mod tests {
     #[test]
     fn changes_since_captures_all_mutation_types() {
         let s = store();
-        let card1 = Card::first(ID_A, "card1".into(), p(1), vec![], false, ts(0), None);
-        let card2 = Card::first(ID_B, "card2".into(), p(2), vec![], false, ts(0), None);
+        let card1 = Card::first(ID_A, "card1".into(), 1, vec![], false, ts(0), None);
+        let card2 = Card::first(ID_B, "card2".into(), 2, vec![], false, ts(0), None);
         let tag = Tag::first(TAG_ID, "tag".into(), None, ts(0));
         s.push_card_versions(std::slice::from_ref(&card1)).unwrap();
         s.push_card_versions(std::slice::from_ref(&card2)).unwrap();
@@ -1772,7 +2004,7 @@ mod tests {
         let root_snapshot = s.get_root().unwrap();
 
         // Now: edit card1, delete card2, edit tag
-        let card1_v2 = card1.next("card1-edited".into(), p(1), vec![], false, ts(1), None);
+        let card1_v2 = card1.next("card1-edited".into(), 1, vec![], false, ts(1), None);
         s.push_card_versions(std::slice::from_ref(&card1_v2))
             .unwrap();
         s.delete_card(ID_B).unwrap();
@@ -1795,13 +2027,13 @@ mod tests {
     #[test]
     fn changes_since_after_batch_operation() {
         let s = store();
-        let card = Card::first(ID_A, "initial".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "initial".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(&[card]).unwrap();
 
         let root_snapshot = s.get_root().unwrap();
 
         // Batch: create new card + delete existing card
-        let new_card = Card::first(ID_B, "new".into(), p(2), vec![], false, ts(0), None);
+        let new_card = Card::first(ID_B, "new".into(), 2, vec![], false, ts(0), None);
         use blazelist_protocol::PushItem;
         s.push_batch(&[
             PushItem::Cards(vec![new_card.clone()]),
@@ -1831,15 +2063,15 @@ mod tests {
         use std::sync::Arc;
 
         let s = Arc::new(store());
-        let card = Card::first(ID_A, "base".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "base".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&card)).unwrap();
 
         // Two threads both try to push a v2 based on the same v1.
         let s1 = Arc::clone(&s);
         let s2 = Arc::clone(&s);
 
-        let v2a = card.next("edit-A".into(), p(1), vec![], false, ts(1), None);
-        let v2b = card.next("edit-B".into(), p(1), vec![], false, ts(2), None);
+        let v2a = card.next("edit-A".into(), 1, vec![], false, ts(1), None);
+        let v2b = card.next("edit-B".into(), 1, vec![], false, ts(2), None);
 
         let h1 = std::thread::spawn(move || s1.push_card_versions(&[v2a]));
         let h2 = std::thread::spawn(move || s2.push_card_versions(&[v2b]));
@@ -1868,7 +2100,7 @@ mod tests {
         use std::sync::Arc;
 
         let s = Arc::new(store());
-        let card = Card::first(ID_A, "to-delete".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "to-delete".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(&[card]).unwrap();
 
         let s1 = Arc::clone(&s);
@@ -1899,8 +2131,8 @@ mod tests {
         let s1 = Arc::clone(&s);
         let s2 = Arc::clone(&s);
 
-        let c1 = Card::first(ID_A, "card-A".into(), p(999), vec![], false, ts(0), None);
-        let c2 = Card::first(ID_B, "card-B".into(), p(999), vec![], false, ts(0), None);
+        let c1 = Card::first(ID_A, "card-A".into(), 999, vec![], false, ts(0), None);
+        let c2 = Card::first(ID_B, "card-B".into(), 999, vec![], false, ts(0), None);
 
         let h1 = std::thread::spawn(move || s1.push_card_versions(&[c1]));
         let h2 = std::thread::spawn(move || s2.push_card_versions(&[c2]));
@@ -1933,7 +2165,7 @@ mod tests {
             let card = Card::first(
                 id,
                 format!("card-{i}"),
-                p(1000 + i),
+                1000 + i,
                 vec![],
                 false,
                 ts(0),
@@ -1990,7 +2222,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
 
-        let card = Card::first(ID_A, "me".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "me".into(), 1, vec![], false, ts(0), None);
 
         {
             let s = SqliteStorage::open(&db_path, false).unwrap();
@@ -2022,7 +2254,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
 
-        let card = Card::first(ID_A, "C".into(), p(1), vec![], false, ts(0), None);
+        let card = Card::first(ID_A, "C".into(), 1, vec![], false, ts(0), None);
         {
             let s = SqliteStorage::open(&db_path, false).unwrap();
             s.push_card_versions(std::slice::from_ref(&card)).unwrap();
@@ -2059,7 +2291,7 @@ mod tests {
     }
 
     #[test]
-    fn incompatible_major_version_with_migration_flag_returns_not_implemented() {
+    fn incompatible_major_version_with_migration_flag_still_refuses_downgrade() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
 
@@ -2071,14 +2303,14 @@ mod tests {
                 .unwrap();
         }
 
-        // Reopen with migration flag should fail with MigrationNotImplemented.
+        // Reopen with migration flag still refuses downgrades.
         match SqliteStorage::open(&db_path, true) {
-            Err(StorageError::MigrationNotImplemented { stored, current }) => {
+            Err(StorageError::IncompatibleVersion { stored, current }) => {
                 assert_eq!(stored.major, 999);
                 assert_eq!(current, blazelist_protocol::PROTOCOL_VERSION);
             }
-            Err(e) => panic!("expected MigrationNotImplemented, got {e:?}"),
-            Ok(_) => panic!("expected MigrationNotImplemented, got Ok"),
+            Err(e) => panic!("expected IncompatibleVersion, got {e:?}"),
+            Ok(_) => panic!("expected IncompatibleVersion, got Ok"),
         }
     }
 
@@ -2101,5 +2333,126 @@ mod tests {
 
         // Reopen should succeed (same major version) and update the stored version.
         let _s = SqliteStorage::open(&db_path, false).unwrap();
+    }
+
+    #[test]
+    fn major_upgrade_requires_explicit_migration_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("legacy.db");
+        create_v0_db_with_schema_version(&db_path);
+
+        match SqliteStorage::open(&db_path, false) {
+            Err(StorageError::IncompatibleVersion { stored, current }) => {
+                assert_eq!(stored.major, 0);
+                assert_eq!(current, blazelist_protocol::PROTOCOL_VERSION);
+            }
+            Err(e) => panic!("expected IncompatibleVersion, got {e:?}"),
+            Ok(_) => panic!("expected IncompatibleVersion, got Ok"),
+        }
+    }
+
+    #[test]
+    fn major_upgrade_migrates_v0_to_current_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("legacy.db");
+        let conn = create_v0_db_with_schema_version(&db_path);
+
+        let card = Card::first(ID_A, "legacy".into(), 7, vec![], false, ts(10), None);
+        conn.execute(
+            "INSERT INTO cards (
+                id, content, priority, tags, blazed, created_at, modified_at, due_date, count, ancestor_hash, hash
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?10)",
+            rusqlite::params![
+                card.id().as_bytes().as_slice(),
+                card.content(),
+                i64::from(card.priority()),
+                postcard::to_allocvec(card.tags()).unwrap(),
+                card.blazed(),
+                card.created_at().timestamp_millis(),
+                card.modified_at().timestamp_millis(),
+                i64::from(card.count()),
+                card.ancestor_hash().as_bytes().as_slice(),
+                card.hash().as_bytes().as_slice()
+            ],
+        )
+        .unwrap();
+        drop(conn);
+
+        let s = SqliteStorage::open(&db_path, true).unwrap();
+        let fetched = s.get_card(ID_A).unwrap().unwrap();
+        assert_eq!(fetched, card);
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let version: (i64, i64, i64) = conn
+            .query_row(
+                "SELECT major, minor, patch FROM schema_version WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            version,
+            (
+                blazelist_protocol::PROTOCOL_VERSION.major as i64,
+                blazelist_protocol::PROTOCOL_VERSION.minor as i64,
+                blazelist_protocol::PROTOCOL_VERSION.patch as i64
+            )
+        );
+
+        let bucket: i64 = conn
+            .query_row(
+                "SELECT bucket FROM cards WHERE id = ?1",
+                rusqlite::params![ID_A.as_bytes().as_slice()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(bucket, ID_A.as_bytes()[0] as i64);
+    }
+
+    #[test]
+    fn major_upgrade_rollback_is_atomic_on_failure() {
+        const INVALID_UUID_BLOB: [u8; 1] = [7];
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("legacy.db");
+        let conn = create_v0_db_with_schema_version(&db_path);
+        conn.execute(
+            "INSERT INTO cards (
+                id, content, priority, tags, blazed, created_at, modified_at, due_date, count, ancestor_hash, hash
+             ) VALUES (?1, 'broken', 1, ?2, 0, 0, 0, NULL, 1, ?3, ?4)",
+            rusqlite::params![
+                INVALID_UUID_BLOB.to_vec(),
+                postcard::to_allocvec(&Vec::<Uuid>::new()).unwrap(),
+                ZERO_HASH.as_bytes().as_slice(),
+                ZERO_HASH.as_bytes().as_slice()
+            ],
+        )
+        .unwrap();
+        drop(conn);
+
+        match SqliteStorage::open(&db_path, true) {
+            Err(StorageError::Internal(msg)) => {
+                assert!(msg.contains("invalid UUID while migrating"));
+            }
+            Err(e) => panic!("expected Internal migration error, got {e:?}"),
+            Ok(_) => panic!("expected migration failure, got Ok"),
+        }
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let has_bucket_col: bool = conn
+            .prepare("PRAGMA table_info(cards)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|name| name == "bucket");
+        assert!(!has_bucket_col, "atomic rollback should remove staged DDL");
+
+        let major: i64 = conn
+            .query_row("SELECT major FROM schema_version WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(major, 0);
     }
 }

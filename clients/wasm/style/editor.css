@@ -1,0 +1,296 @@
+/* Card editor */
+.card-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    container-type: inline-size;
+}
+
+/* Main row: editor left, tags right when panel is wide enough */
+.editor-main-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+/* Side-by-side: editor body + tags in the same row */
+@container (min-width: 550px) {
+    .side-by-side .editor-body-row {
+        position: relative;
+        padding-right: calc(180px + 0.5rem);
+    }
+    .side-by-side .editor-body-row > .editor-tags {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 180px;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        margin-top: 0;
+    }
+    .side-by-side .editor-body-row > .editor-tags .editor-tag-list {
+        max-height: none;
+        flex: 1;
+        overflow-y: auto;
+        min-height: 0;
+    }
+}
+
+.editor-left {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.editor-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    justify-content: space-between;
+    font-size: 0.75rem;
+}
+
+.preview-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 0.75rem;
+}
+
+.editor-body {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.editor-body.no-preview .editor-input {
+    flex: 1;
+}
+
+.editor-body .editor-input,
+.editor-body .editor-preview {
+    flex: 1;
+    min-width: 0;
+}
+
+.editor-input {
+    width: 100%;
+    min-height: 40vh;
+    padding: 0.5rem;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 0.8rem;
+    resize: none;
+    overflow: hidden;
+    transition: border-color 0.15s;
+    field-sizing: content;
+}
+
+.editor-input:focus {
+    outline: none;
+    border-color: var(--border-hover);
+}
+
+.editor-preview {
+    padding: 0.5rem;
+    background: rgba(0, 0, 0, 0.25);
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    min-height: 1.5rem;
+    line-height: 1.6;
+    font-size: 0.85rem;
+    overflow-y: auto;
+}
+
+.editor-preview img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 4px;
+}
+
+/* Selected tags shown below the editor as chips */
+.editor-selected-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem;
+}
+
+/* Tag selection panel (right side on wide screens) */
+.editor-tags {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin-top: 0.5rem;
+}
+
+.editor-tag-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    max-height: 25vh;
+    overflow-y: auto;
+}
+
+.editor-tag-item {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.2rem 0.35rem 0.2rem 0.25rem;
+    border-radius: 0;
+    cursor: pointer;
+    font-size: 0.78rem;
+    color: var(--text-primary);
+    transition: background 0.1s;
+    border-left: 3px solid transparent;
+}
+
+@media (hover: hover) {
+    .editor-tag-item:hover {
+        background: rgba(255, 255, 255, 0.03);
+    }
+}
+
+.editor-tag-item.active {
+    background: var(--accent-subtle);
+    color: var(--accent-hover);
+}
+
+.editor-tag-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.editor-actions {
+    display: flex;
+    gap: 0.375rem;
+    align-items: center;
+}
+
+/* Cancel — neutral ghost */
+.btn-cancel {
+    padding: 0.375rem 1rem;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 500;
+    transition: all 0.15s;
+}
+
+.btn-cancel:hover {
+    color: var(--text-secondary);
+    border-color: var(--border-hover);
+}
+
+/* Save — green (action), solid */
+.btn-save {
+    padding: 0.375rem 1rem;
+    background: var(--action-dim);
+    color: var(--action-hover);
+    border: 1px solid var(--action);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 500;
+    transition: all 0.15s;
+}
+
+.btn-save:hover {
+    background: var(--action);
+    color: #fff;
+}
+
+/* Save split-button (new card position dropdown) */
+.btn-save-group {
+    display: inline-flex;
+    position: relative;
+}
+
+.btn-save-group .btn-save {
+    border-radius: 4px 0 0 4px;
+}
+
+.btn-save-dropdown {
+    padding: 0.375rem 0.4rem;
+    background: var(--action-dim);
+    color: var(--action-hover);
+    border: 1px solid var(--action);
+    border-left: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 0 4px 4px 0;
+    cursor: pointer;
+    font-size: 0.6rem;
+    transition: all 0.15s;
+    line-height: 1;
+}
+
+.btn-save-dropdown:hover {
+    background: var(--action);
+    color: #fff;
+}
+
+.save-dropdown-menu {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 2px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    z-index: 20;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.save-dropdown-item {
+    display: block;
+    width: 100%;
+    padding: 0.35rem 0.75rem;
+    background: transparent;
+    color: var(--text-secondary);
+    border: none;
+    cursor: pointer;
+    font-size: 0.75rem;
+    text-align: left;
+    transition: all 0.1s;
+}
+
+.save-dropdown-item:hover {
+    background: var(--bg-card-hover);
+    color: var(--text-primary);
+}
+
+.save-dropdown-item.active {
+    color: var(--action-hover);
+}
+
+/* Auto-save status indicator */
+.auto-save-status {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    transition: color 0.2s;
+}
+
+.auto-save-countdown {
+    color: var(--text-muted);
+}
+
+.auto-save-saving {
+    color: var(--status-syncing);
+}
+
+.auto-save-saved {
+    color: var(--action);
+}

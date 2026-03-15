@@ -3,17 +3,21 @@ use crate::components::hooks::use_click_outside_close;
 use crate::components::tag_detail::TagDetail;
 use crate::components::version_history::VersionHistory;
 use crate::state::store::{
-    AppState, DueDatePreset, confirm_discard_changes, format_due_date_badge,
+    AppState, DueDatePreset, NewCardPosition, confirm_discard_changes, format_due_date_badge,
     format_due_date_display, get_client, sync_query_params, tag_chip_style,
 };
 use blazelist_client_lib::client::Client as _;
 use blazelist_client_lib::priority::{
     InsertPosition, Placement, build_shifted_versions, move_card,
 };
-use blazelist_protocol::{Card, CardFilter, Entity, PushItem, Utc};
+use blazelist_protocol::{Card, CardFilter, Entity, PushItem, Tag, Utc};
 use leptos::prelude::*;
+use rgb::RGB8;
+use uuid::Uuid;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
+
+const CARD_LINK_PREVIEW_MAX_WIDTH: usize = 80;
 
 #[wasm_bindgen]
 extern "C" {
@@ -23,20 +27,27 @@ extern "C" {
     fn clear_timeout_js(handle: i32);
 }
 
-fn render_markdown(content: &str, card_ids: &std::collections::HashSet<uuid::Uuid>) -> String {
+fn render_markdown(
+    content: &str,
+    card_ids: &std::collections::HashSet<uuid::Uuid>,
+    card_previews: &std::collections::HashMap<uuid::Uuid, String>,
+) -> String {
     let html =
         comrak::markdown_to_html(content, &blazelist_client_lib::display::markdown_options());
     // comrak renders checkboxes with disabled="" — remove it so clicks fire
     let html = html.replace(" disabled=\"\"", "");
-    blazelist_client_lib::display::linkify_card_uuids(&html, card_ids)
+    blazelist_client_lib::display::linkify_card_uuids_with_previews(&html, card_ids, card_previews)
 }
 
 /// Flush pending debounced versions (fire-and-forget).
-fn flush_pending_sig(pending: RwSignal<Vec<Card>>, handle: RwSignal<i32>) {
+pub(crate) fn flush_pending(state: &AppState) {
+    let handle = state.debounce_timeout_handle;
+    let pending = state.pending_versions;
     let old = handle.get_untracked();
     if old != 0 {
         clear_timeout_js(old);
         handle.set(0);
+        state.push_debounce_countdown.set(0);
     }
     let versions = pending.get_untracked();
     pending.set(Vec::new());
@@ -52,11 +63,14 @@ fn flush_pending_sig(pending: RwSignal<Vec<Card>>, handle: RwSignal<i32>) {
 }
 
 /// Drain pending debounced versions and return them.
-fn drain_pending_sig(pending: RwSignal<Vec<Card>>, handle: RwSignal<i32>) -> Vec<Card> {
+fn drain_pending(state: &AppState) -> Vec<Card> {
+    let handle = state.debounce_timeout_handle;
+    let pending = state.pending_versions;
     let old = handle.get_untracked();
     if old != 0 {
         clear_timeout_js(old);
         handle.set(0);
+        state.push_debounce_countdown.set(0);
     }
     let versions = pending.get_untracked();
     pending.set(Vec::new());
@@ -64,13 +78,11 @@ fn drain_pending_sig(pending: RwSignal<Vec<Card>>, handle: RwSignal<i32>) -> Vec
 }
 
 /// Schedule a debounced push of a card version.
-fn schedule_push_sig(
-    updated: Card,
-    state: AppState,
-    pending: RwSignal<Vec<Card>>,
-    pending_card_id: RwSignal<Option<uuid::Uuid>>,
-    handle: RwSignal<i32>,
-) {
+pub(crate) fn schedule_push(updated: Card, state: AppState) {
+    let pending = state.pending_versions;
+    let pending_card_id = state.pending_card_id;
+    let handle = state.debounce_timeout_handle;
+
     let card_id = updated.id();
     state.cards.update(|cards| {
         cards.retain(|c| c.id() != card_id);
@@ -98,11 +110,31 @@ fn schedule_push_sig(
         clear_timeout_js(old);
     }
 
+    // When debounce is disabled, push immediately without a timeout.
+    if !state.debounce_enabled.get_untracked() {
+        let versions = pending.get_untracked();
+        pending.set(Vec::new());
+        handle.set(0);
+        pending_card_id.set(None);
+        state.push_debounce_countdown.set(0);
+        if !versions.is_empty() {
+            leptos::task::spawn_local(async move {
+                if let Some(client) = get_client() {
+                    if let Err(e) = client.push_card_versions(versions).await {
+                        log::error!("Failed to push card versions: {e}");
+                    }
+                }
+            });
+        }
+        return;
+    }
+
     let cb = Closure::once(move || {
         let versions = pending.get_untracked();
         pending.set(Vec::new());
         handle.set(0);
         pending_card_id.set(None);
+        state.push_debounce_countdown.set(0);
         if !versions.is_empty() {
             leptos::task::spawn_local(async move {
                 if let Some(client) = get_client() {
@@ -114,20 +146,20 @@ fn schedule_push_sig(
         }
     });
     let func = cb.into_js_value();
-    let new_handle = set_timeout_js(func.unchecked_ref(), 300);
+    let delay_secs = state.debounce_delay_secs.get_untracked();
+    let delay_ms = delay_secs as i32 * 1000;
+    state.push_debounce_countdown.set(delay_secs);
+    let new_handle = set_timeout_js(func.unchecked_ref(), delay_ms);
     handle.set(new_handle);
 }
 
 /// Apply a move placement result: update the moved card locally and push
 /// shifted cards via batch if rebalancing occurred.
-fn apply_move_placement(
+pub(crate) fn apply_move_placement(
     placement: Placement,
     current: &Card,
     all_cards: &[Card],
     state: AppState,
-    pending_versions: RwSignal<Vec<Card>>,
-    pending_card_id: RwSignal<Option<uuid::Uuid>>,
-    timeout_handle: RwSignal<i32>,
 ) {
     match placement {
         Placement::Simple(new_priority) => {
@@ -139,13 +171,7 @@ fn apply_move_placement(
                 Utc::now(),
                 current.due_date(),
             );
-            schedule_push_sig(
-                updated,
-                state,
-                pending_versions,
-                pending_card_id,
-                timeout_handle,
-            );
+            schedule_push(updated, state);
         }
         Placement::Rebalanced { priority, shifted } => {
             let updated = current.next(
@@ -184,7 +210,7 @@ fn apply_move_placement(
 #[component]
 pub fn CardDetail() -> impl IntoView {
     let state = use_context::<AppState>().expect("AppState not provided");
-    let confirm_delete = RwSignal::new(false);
+    let confirm_delete = RwSignal::new(0u8);
     let move_to_input = RwSignal::new(String::new());
     let due_preset = RwSignal::new(DueDatePreset::Today);
     let due_dropdown_open = RwSignal::new(false);
@@ -192,40 +218,62 @@ pub fn CardDetail() -> impl IntoView {
     let due_group_ref = NodeRef::<leptos::html::Div>::new();
     use_click_outside_close(due_dropdown_open, due_group_ref);
 
-    // Debounce state (all signals — Copy + Send + Sync)
-    let pending_versions: RwSignal<Vec<Card>> = RwSignal::new(Vec::new());
-    let pending_card_id: RwSignal<Option<uuid::Uuid>> = RwSignal::new(None);
-    let timeout_handle: RwSignal<i32> = RwSignal::new(0);
-
     on_cleanup(move || {
-        let old = timeout_handle.get_untracked();
+        let old = state.debounce_timeout_handle.get_untracked();
         if old != 0 {
             clear_timeout_js(old);
         }
-        pending_versions.set(Vec::new());
+        state.pending_versions.set(Vec::new());
     });
 
-    let on_close = move |_| {
+    let close_action = move || {
         if !confirm_discard_changes(&state) {
             return;
         }
-        flush_pending_sig(pending_versions, timeout_handle);
+        flush_pending(&state);
         state.selected_card.set(None);
         state.creating_new.set(false);
+        state.creating_new_tag.set(false);
         state.editing.set(false);
-        confirm_delete.set(false);
+        confirm_delete.set(0);
         sync_query_params(&state);
     };
+    let on_close = move |_: web_sys::MouseEvent| close_action();
 
     view! {
         {move || {
             // --- Creating new card ---
             if state.creating_new.get() {
+                let position_hint = move || {
+                    let pos = state.new_card_position.get();
+                    let cards = state.cards.get();
+                    match pos {
+                        NewCardPosition::Bottom => "Adding to bottom".to_string(),
+                        NewCardPosition::Top => "Adding to top".to_string(),
+                        NewCardPosition::Above(id) => {
+                            let preview = cards.iter().find(|c| c.id() == id)
+                                .and_then(|c| blazelist_client_lib::display::card_preview(c.content(), 40));
+                            match preview {
+                                Some(p) => format!("Adding above \u{201c}{p}\u{201d}"),
+                                None => "Adding above selected".to_string(),
+                            }
+                        }
+                        NewCardPosition::Below(id) => {
+                            let preview = cards.iter().find(|c| c.id() == id)
+                                .and_then(|c| blazelist_client_lib::display::card_preview(c.content(), 40));
+                            match preview {
+                                Some(p) => format!("Adding below \u{201c}{p}\u{201d}"),
+                                None => "Adding below selected".to_string(),
+                            }
+                        }
+                    }
+                };
                 return Some(view! {
                     <div class="card-detail">
                         <div class="detail-header">
                             <div class="detail-header-left">
                                 <span class="detail-status active">"New Card"</span>
+                                <span class="new-card-position-hint">{position_hint}</span>
                                 {move || state.has_unsaved_changes.get().then(|| view! {
                                     <span class="unsaved-indicator">"(unsaved)"</span>
                                 })}
@@ -234,8 +282,20 @@ pub fn CardDetail() -> impl IntoView {
                         </div>
                         <CardEditor
                             on_save=move || state.creating_new.set(false)
-                            on_cancel=Callback::new(move |_: ()| state.creating_new.set(false))
+                            on_cancel=Callback::new(move |_: ()| {
+                                if !confirm_discard_changes(&state) { return; }
+                                state.creating_new.set(false);
+                            })
                         />
+                    </div>
+                }.into_any());
+            }
+
+            // --- Creating new tag ---
+            if state.creating_new_tag.get() {
+                return Some(view! {
+                    <div class="card-detail">
+                        <NewTagForm on_close=move |()| close_action() />
                     </div>
                 }.into_any());
             }
@@ -288,12 +348,26 @@ pub fn CardDetail() -> impl IntoView {
             // Build card ID set for linkifying UUIDs in the markdown view.
             let known_card_ids: std::collections::HashSet<uuid::Uuid> =
                 all_cards_snapshot.iter().map(|c| c.id()).collect();
-            let content_html = render_markdown(&content_raw, &known_card_ids);
+            let card_link_previews: std::collections::HashMap<uuid::Uuid, String> =
+                all_cards_snapshot
+                    .iter()
+                    .map(|c| {
+                        (
+                            c.id(),
+                            blazelist_client_lib::display::card_preview(
+                                c.content(),
+                                CARD_LINK_PREVIEW_MAX_WIDTH,
+                            )
+                                .unwrap_or_else(|| "(empty)".to_string()),
+                        )
+                    })
+                    .collect();
+            let content_html = render_markdown(&content_raw, &known_card_ids, &card_link_previews);
 
             let task_progress = blazelist_client_lib::display::task_progress(&content_raw);
             let content_node_ref = NodeRef::<leptos::html::Div>::new();
             let priority_raw = card.priority();
-            let priority_pct = priority_raw.percentage();
+            let priority_pct = blazelist_protocol::priority_percentage(priority_raw);
             let count = i64::from(card.count());
             let created = card.created_at().format("%Y-%m-%d %H:%M:%S UTC").to_string();
             let modified = card.modified_at().format("%Y-%m-%d %H:%M:%S UTC").to_string();
@@ -379,7 +453,7 @@ pub fn CardDetail() -> impl IntoView {
             };
 
             let on_blaze = move |_| {
-                let pending = drain_pending_sig(pending_versions, timeout_handle);
+                let pending = drain_pending(&state);
                 let state = state.clone();
                 leptos::task::spawn_local(async move {
                     if let Some(client) = get_client() {
@@ -410,13 +484,13 @@ pub fn CardDetail() -> impl IntoView {
             };
 
             let on_delete_click = move |_| {
-                confirm_delete.set(true);
+                confirm_delete.set(1);
             };
 
             let on_confirm_delete = move |_| {
-                let pending = drain_pending_sig(pending_versions, timeout_handle);
+                let pending = drain_pending(&state);
                 let state = state.clone();
-                confirm_delete.set(false);
+                confirm_delete.set(0);
                 leptos::task::spawn_local(async move {
                     if let Some(client) = get_client() {
                         if !pending.is_empty() {
@@ -437,7 +511,7 @@ pub fn CardDetail() -> impl IntoView {
             };
 
             let on_cancel_delete = move |_| {
-                confirm_delete.set(false);
+                confirm_delete.set(0);
             };
 
             let filtered_cards_memo = state.filtered_cards();
@@ -447,7 +521,7 @@ pub fn CardDetail() -> impl IntoView {
                 if let Some(current) = current {
                     let filtered = filtered_cards_memo.get_untracked();
                     let placement = move_card(&filtered, card_id, InsertPosition::Top);
-                    apply_move_placement(placement, &current, &filtered, state, pending_versions, pending_card_id, timeout_handle);
+                    apply_move_placement(placement, &current, &filtered, state);
                 }
             };
 
@@ -462,7 +536,7 @@ pub fn CardDetail() -> impl IntoView {
                     if idx == 0 { return; }
                     // After removing the card, position idx-1 in the reduced list
                     let placement = move_card(&filtered, card_id, InsertPosition::At(idx - 1));
-                    apply_move_placement(placement, &current, &filtered, state, pending_versions, pending_card_id, timeout_handle);
+                    apply_move_placement(placement, &current, &filtered, state);
                 }
             };
 
@@ -478,7 +552,7 @@ pub fn CardDetail() -> impl IntoView {
                     // After removing the card, the card at idx+1 shifts to idx,
                     // so we target idx+1 in the reduced list.
                     let placement = move_card(&filtered, card_id, InsertPosition::At(idx + 1));
-                    apply_move_placement(placement, &current, &filtered, state, pending_versions, pending_card_id, timeout_handle);
+                    apply_move_placement(placement, &current, &filtered, state);
                 }
             };
 
@@ -487,7 +561,7 @@ pub fn CardDetail() -> impl IntoView {
                 if let Some(current) = current {
                     let filtered = filtered_cards_memo.get_untracked();
                     let placement = move_card(&filtered, card_id, InsertPosition::Bottom);
-                    apply_move_placement(placement, &current, &filtered, state, pending_versions, pending_card_id, timeout_handle);
+                    apply_move_placement(placement, &current, &filtered, state);
                 }
             };
             let on_move_to = move |_| {
@@ -504,12 +578,12 @@ pub fn CardDetail() -> impl IntoView {
                     };
                     if target_pos - 1 == cur_idx { return; }
                     let placement = move_card(&filtered, card_id, InsertPosition::At(target_pos - 1));
-                    apply_move_placement(placement, &current, &filtered, state, pending_versions, pending_card_id, timeout_handle);
+                    apply_move_placement(placement, &current, &filtered, state);
                 }
             };
 
             let on_edit = move |_| {
-                flush_pending_sig(pending_versions, timeout_handle);
+                flush_pending(&state);
                 state.editing.set(true);
             };
 
@@ -521,19 +595,18 @@ pub fn CardDetail() -> impl IntoView {
 
                 // Check for card UUID link click.
                 if let Ok(el) = target.clone().dyn_into::<web_sys::HtmlElement>() {
-                    if el.class_list().contains("card-uuid-link") {
-                        if let Some(card_id_str) = el.get_attribute("data-card-id") {
-                            if let Ok(target_id) = card_id_str.parse::<uuid::Uuid>() {
-                                if !confirm_discard_changes(&state) {
-                                    return;
-                                }
-                                flush_pending_sig(pending_versions, timeout_handle);
-                                state.selected_card.set(Some(target_id));
-                                state.editing.set(false);
-                                sync_query_params(&state);
-                                return;
-                            }
+                    if let Ok(Some(link_el)) = el.closest(".card-uuid-link")
+                        && let Some(card_id_str) = link_el.get_attribute("data-card-id")
+                        && let Ok(target_id) = card_id_str.parse::<uuid::Uuid>()
+                    {
+                        if !confirm_discard_changes(&state) {
+                            return;
                         }
+                        flush_pending(&state);
+                        state.selected_card.set(Some(target_id));
+                        state.editing.set(false);
+                        sync_query_params(&state);
+                        return;
                     }
                 }
 
@@ -614,13 +687,7 @@ pub fn CardDetail() -> impl IntoView {
                     Utc::now(),
                     current_card.due_date(),
                 );
-                schedule_push_sig(
-                    updated,
-                    state,
-                    pending_versions,
-                    pending_card_id,
-                    timeout_handle,
-                );
+                schedule_push(updated, state);
             };
             let card_for_editor = card.clone();
 
@@ -639,7 +706,10 @@ pub fn CardDetail() -> impl IntoView {
                         <CardEditor
                             editing_card=card_for_editor
                             on_save=move || state.editing.set(false)
-                            on_cancel=Callback::new(move |_: ()| state.editing.set(false))
+                            on_cancel=Callback::new(move |_: ()| {
+                                if !confirm_discard_changes(&state) { return; }
+                                state.editing.set(false);
+                            })
                         />
                     </div>
                 }.into_any()
@@ -791,7 +861,7 @@ pub fn CardDetail() -> impl IntoView {
                                                     if !confirm_discard_changes(&state) {
                                                         return;
                                                     }
-                                                    flush_pending_sig(pending_versions, timeout_handle);
+                                                    flush_pending(&state);
                                                     state.selected_card.set(Some(lid));
                                                     state.editing.set(false);
                                                     sync_query_params(&state);
@@ -834,18 +904,36 @@ pub fn CardDetail() -> impl IntoView {
                             <div class="action-row cmd-row">
                                 <button class="btn-edit" on:click=on_edit>"Edit"</button>
                                 <button class=blaze_class on:click=on_blaze>{blaze_text}</button>
-                                {move || if confirm_delete.get() {
-                                    view! {
-                                        <span class="confirm-delete">
-                                            <span class="confirm-text">"Delete?"</span>
-                                            <button class="btn-confirm-yes" on:click=on_confirm_delete>"Yes"</button>
-                                            <button class="btn-confirm-no" on:click=on_cancel_delete>"No"</button>
-                                        </span>
-                                    }.into_any()
-                                } else {
-                                    view! {
-                                        <button class="btn-delete" on:click=on_delete_click>"Delete"</button>
-                                    }.into_any()
+                                {move || {
+                                    let step = confirm_delete.get();
+                                    if step == 2 {
+                                        let preview = state.cards.get().into_iter()
+                                            .find(|c| c.id() == card_id)
+                                            .map(|c| blazelist_client_lib::display::card_preview(c.content(), 120).unwrap_or_else(|| "(empty)".to_string()))
+                                            .unwrap_or_else(|| "(unknown)".to_string());
+                                        view! {
+                                            <div class="confirm-delete-permanent">
+                                                <span class="confirm-text-permanent">"This action is permanent and cannot be undone."</span>
+                                                <span class="confirm-entity-info">{format!("Card: {preview}")}</span>
+                                                <div class="confirm-permanent-buttons">
+                                                    <button class="btn-confirm-permanent" on:click=on_confirm_delete>"Delete permanently"</button>
+                                                    <button class="btn-confirm-no" on:click=on_cancel_delete>"Cancel"</button>
+                                                </div>
+                                            </div>
+                                        }.into_any()
+                                    } else if step == 1 {
+                                        view! {
+                                            <span class="confirm-delete">
+                                                <span class="confirm-text">"Delete?"</span>
+                                                <button class="btn-confirm-yes" on:click=move |_| confirm_delete.set(2)>"Yes"</button>
+                                                <button class="btn-confirm-no" on:click=on_cancel_delete>"No"</button>
+                                            </span>
+                                        }.into_any()
+                                    } else {
+                                        view! {
+                                            <button class="btn-delete" on:click=on_delete_click>"Delete"</button>
+                                        }.into_any()
+                                    }
                                 }}
                             </div>
                         </div>
@@ -896,5 +984,120 @@ pub fn CardDetail() -> impl IntoView {
             };
             Some(result)
         }}}
+    }
+}
+
+/// Inline component rendered inside `CardDetail` when `creating_new_tag` is true.
+#[component]
+fn NewTagForm(
+    on_close: impl Fn(()) + Copy + 'static,
+) -> impl IntoView {
+    let state = use_context::<AppState>().expect("AppState not provided");
+    let title_input = RwSignal::new(String::new());
+    let color_input = RwSignal::new(String::from("#808080"));
+    let use_color = RwSignal::new(false);
+
+    let create_action = move || {
+        let title = title_input.get_untracked();
+        if title.trim().is_empty() {
+            return;
+        }
+
+        let color = if use_color.get_untracked() {
+            let hex = color_input.get_untracked();
+            let hex = hex.trim_start_matches('#');
+            if hex.len() != 6 {
+                None
+            } else {
+                match (
+                    u8::from_str_radix(&hex[0..2], 16),
+                    u8::from_str_radix(&hex[2..4], 16),
+                    u8::from_str_radix(&hex[4..6], 16),
+                ) {
+                    (Ok(r), Ok(g), Ok(b)) => Some(RGB8::new(r, g, b)),
+                    _ => None,
+                }
+            }
+        } else {
+            None
+        };
+
+        let state = state;
+        leptos::task::spawn_local(async move {
+            if let Some(client) = get_client() {
+                let tag = Tag::first(Uuid::new_v4(), title, color, Utc::now());
+                if let Err(e) = client.push_tag(tag.clone()).await {
+                    log::error!("Failed to create tag: {e}");
+                    return;
+                }
+                let tag_id = tag.id();
+                state.tags.update(|tags| tags.push(tag));
+                state.creating_new_tag.set(false);
+                state.selected_card.set(Some(tag_id));
+                sync_query_params(&state);
+            }
+        });
+    };
+
+    let cancel_action = move || {
+        state.creating_new_tag.set(false);
+        sync_query_params(&state);
+    };
+
+    view! {
+        <div class="detail-header">
+            <div class="detail-header-left">
+                <span class="detail-status tag-not-card">"New Tag"</span>
+            </div>
+            <button class="detail-close" on:click=move |_| on_close(())>"x"</button>
+        </div>
+
+        <div class="tag-title-section">
+            <form class="tag-rename-form" on:submit=move |ev| {
+                ev.prevent_default();
+                create_action();
+            }>
+                <input
+                    class="tag-rename-input"
+                    type="text"
+                    placeholder="Tag title..."
+                    prop:value=move || title_input.get()
+                    on:input=move |ev| title_input.set(event_target_value(&ev))
+                />
+            </form>
+        </div>
+
+        <div class="tag-color-section">
+            <span class="tag-color-label">"Color"</span>
+        </div>
+        <div class="tag-color-row">
+            <input
+                type="checkbox"
+                prop:checked=move || use_color.get()
+                on:change=move |_| use_color.update(|v| *v = !*v)
+            />
+            <input
+                class="tag-color-input"
+                type="color"
+                prop:value=move || color_input.get()
+                on:input=move |ev| color_input.set(event_target_value(&ev))
+                disabled=move || !use_color.get()
+            />
+            {move || use_color.get().then(|| {
+                let hex = color_input.get();
+                let style = format!("background: {hex};");
+                view! {
+                    <span class="tag-color-preview" style=style></span>
+                    <span class="tag-color-hex">{hex}</span>
+                }
+            })}
+        </div>
+
+        <div class="card-actions">
+            <div class="action-row cmd-row">
+                <button class="btn-save" on:click=move |_| create_action()>"Create"</button>
+                <button class="btn-cancel" on:click=move |_| cancel_action()>"Cancel"</button>
+            </div>
+        </div>
     }
 }

@@ -13,7 +13,7 @@ use blazelist_protocol::{
     Card, CardFilter, ChangeSet, DateTime, DeletedEntity, Entity, NonNegativeI64, PushItem,
     RootState, SequenceHistoryEntry, SequenceOperation, SequenceOperationKind, Tag,
 };
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{params, Connection, OpenFlags};
 use uuid::Uuid;
 
 use crate::storage::error::{BatchError, PushError, PushOpError, StorageError};
@@ -39,10 +39,11 @@ impl SqliteStorage {
     /// server refuses to start if the on-disk schema was created by a
     /// different major protocol version.
     pub fn open(path: &Path, allow_migration: bool) -> Result<Self, StorageError> {
-        let writer = Connection::open(path)?;
+        let mut writer = Connection::open(path)?;
         Self::apply_pragmas(&writer)?;
+        Self::ensure_schema_version_table(&writer)?;
+        Self::check_schema_version(&mut writer, allow_migration)?;
         Self::init_schema(&writer)?;
-        Self::check_schema_version(&writer, allow_migration)?;
 
         let reader = Connection::open_with_flags(
             path,
@@ -66,10 +67,11 @@ impl SqliteStorage {
             | OpenFlags::SQLITE_OPEN_CREATE
             | OpenFlags::SQLITE_OPEN_URI
             | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let writer = Connection::open_with_flags(&uri, write_flags)?;
+        let mut writer = Connection::open_with_flags(&uri, write_flags)?;
         Self::apply_pragmas(&writer)?;
+        Self::ensure_schema_version_table(&writer)?;
+        Self::check_schema_version(&mut writer, false)?;
         Self::init_schema(&writer)?;
-        Self::check_schema_version(&writer, false)?;
 
         let read_flags = OpenFlags::SQLITE_OPEN_READ_ONLY
             | OpenFlags::SQLITE_OPEN_URI

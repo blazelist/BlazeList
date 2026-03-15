@@ -1,6 +1,6 @@
 [package]
 name = "blazelist-wasm"
-version = "1.2.0"
+version = "2.0.0"
 edition.workspace = true
 
 [lints]
@@ -16,14 +16,20 @@ leptos = { version = "0.8", features = ["csr"] }
 
 # WebTransport via web-sys
 web-sys = { version = "0.3", features = [
+    "BeforeUnloadEvent",
     "Clipboard",
+    "DataTransfer",
     "Document",
+    "DomRect",
     "DomStringMap",
+    "DragEvent",
     "Element",
     "EventTarget",
     "History",
     "HtmlElement",
     "HtmlInputElement",
+    "HtmlTextAreaElement",
+    "KeyboardEvent",
     "Location",
     "MouseEvent",
     "Navigator",
@@ -32,6 +38,7 @@ web-sys = { version = "0.3", features = [
     "ReadableStream",
     "ReadableStreamDefaultReader",
     "ReadableStreamReadResult",
+    "Storage",
     "Url",
     "UrlSearchParams",
     "WebTransport",
@@ -62,7 +69,7 @@ blake3 = { version = "1", features = ["serde"] }
 getrandom = { version = "0.4", features = ["wasm_js"] }
 
 # Markdown rendering
-comrak = { version = "0.50", default-features = false }
+comrak = { version = "0.51", default-features = false }
 
 # Logging
 log = "0.4"

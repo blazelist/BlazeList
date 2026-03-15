@@ -2,7 +2,7 @@
 //!
 //! This module is transport-agnostic and shared between QUIC and WebTransport.
 
-use blazelist_protocol::{BatchItemError, ProtocolError, Request, Response};
+use blazelist_protocol::{BatchItemError, ProtocolError, PushError, Request, Response};
 
 use crate::storage::{BatchError, PushOpError, Storage, StorageError};
 
@@ -123,6 +123,13 @@ fn storage_error_to_protocol(e: StorageError) -> ProtocolError {
     match e {
         StorageError::NotFound => ProtocolError::NotFound,
         StorageError::AlreadyDeleted => ProtocolError::AlreadyDeleted,
+        StorageError::OrphanedTagReference {
+            tag_id,
+            referencing_card_ids,
+        } => ProtocolError::PushFailed(PushError::OrphanedTagReference {
+            tag_id,
+            referencing_card_ids,
+        }),
         StorageError::RootHashMismatch {
             sequence,
             expected_hash,

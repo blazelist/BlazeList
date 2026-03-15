@@ -5,7 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.0.0] - 2026-03-15
+
+### Added
+
+- `PushError::OrphanedTagReference` variant — returned when attempting to delete
+  a tag that is still referenced by one or more cards.
+
+### Changed
+
+- **Breaking:** `PushError` enum variant ordering changed (new variant inserted
+  at position 3). This is a wire format breaking change requiring all clients and
+  servers to upgrade together.
+- **Breaking:** Card priority changed from `NonNegativeI64` (0..=i64::MAX) to
+  full `i64` range, allowing negative priorities.
 
 ## [1.0.0] - 2026-03-07
 
@@ -27,7 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Priority placement algorithm with midpoint + random jitter to avoid
   collisions when multiple clients insert concurrently
 - Sequence history tracking (`SequenceHistoryEntry` with per-operation details)
-- `NonNegativeI64` wrapper type (0..=i64::MAX) for SQLite/PostgreSQL compatibility
 - `CardFilter` enum (All / Blazed / Extinguished) for filtered listing
 - Comprehensive error types: `ProtocolError`, `PushError`, `BatchItemError`,
   `WireError`, `HandshakeError`, `HashVerificationError`

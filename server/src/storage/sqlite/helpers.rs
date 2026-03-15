@@ -56,13 +56,6 @@ impl SqliteStorage {
         let hash_bytes: Vec<u8> = row.get(10)?;
 
         let id = Uuid::from_bytes(id_bytes.as_slice().try_into().unwrap());
-        let priority = NonNegativeI64::try_from(priority_raw).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                2,
-                rusqlite::types::Type::Integer,
-                Box::new(e),
-            )
-        })?;
         let count = NonNegativeI64::try_from(count_raw).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(
                 8,
@@ -80,7 +73,7 @@ impl SqliteStorage {
         Card::from_parts(
             id,
             content,
-            priority,
+            priority_raw,
             tags,
             blazed,
             created_at,

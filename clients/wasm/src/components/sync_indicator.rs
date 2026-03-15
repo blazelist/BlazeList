@@ -1,5 +1,5 @@
 use crate::app::request_reconnect;
-use crate::state::store::{AppState, ConnectionStatus, format_relative_time, get_client};
+use crate::state::store::{AppState, ConnectionStatus, get_client};
 use crate::state::sync::incremental_sync;
 use leptos::prelude::*;
 
@@ -11,7 +11,14 @@ pub fn SyncIndicator() -> impl IntoView {
         ConnectionStatus::Connected => "Connected".to_string(),
         ConnectionStatus::Connecting => "Connecting...".to_string(),
         ConnectionStatus::Syncing => "Syncing...".to_string(),
-        ConnectionStatus::Disconnected => "Disconnected".to_string(),
+        ConnectionStatus::Disconnected => {
+            let secs = state.reconnect_countdown.get();
+            if secs > 0 {
+                format!("Disconnected \u{00b7} Retrying in {secs}s")
+            } else {
+                "Disconnected".to_string()
+            }
+        }
     };
 
     let status_class = move || match state.connection_status.get() {
@@ -28,18 +35,12 @@ pub fn SyncIndicator() -> impl IntoView {
         )
     };
 
-    let sync_time_text = move || {
-        // Read tick to re-evaluate periodically
-        let _ = state.tick.get();
-        state.last_synced.get().map(|ts| format_relative_time(&ts))
-    };
-
     let on_click = move |_| match state.connection_status.get() {
         ConnectionStatus::Connected => {
             let Some(client) = get_client() else { return };
             leptos::task::spawn_local(async move {
                 if let Err(e) = incremental_sync(&client, &state).await {
-                    log::error!("Manual sync failed: {e}");
+                    log::error!("Manual synchronization failed: {e}");
                 }
             });
         }
@@ -63,18 +64,46 @@ pub fn SyncIndicator() -> impl IntoView {
         _ => "",
     };
 
+    let debounce_text = move || {
+        let countdown = state.push_debounce_countdown.get();
+        if countdown > 0 {
+            Some(format!("Pushing in {countdown}s"))
+        } else {
+            None
+        }
+    };
+
+    let auto_sync_text = move || {
+        let countdown = state.auto_sync_countdown.get();
+        if countdown > 0 && state.auto_sync_enabled.get() {
+            Some(format!("Syncing in {countdown}s"))
+        } else {
+            None
+        }
+    };
+
     view! {
         <div class=indicator_class on:click=on_click
             title=title_text
         >
+            {move || {
+                debounce_text().map(|text| view! {
+                    <span class="sync-detail">{text}</span>
+                    <span class="sync-sep">{"\u{00b7}"}</span>
+                })
+            }}
+            {move || {
+                auto_sync_text().map(|text| view! {
+                    <span class="sync-detail">{text}</span>
+                    <span class="sync-sep">{"\u{00b7}"}</span>
+                })
+            }}
             <span class=status_class>{status_text}</span>
-            {move || sync_time_text().map(|t| view! {
-                <span class="sync-sep">{"\u{00b7}"}</span>
-                <span class="sync-time">{t}</span>
-            })}
-            {move || matches!(state.connection_status.get(), ConnectionStatus::Connected).then(|| view! {
-                <span class="sync-btn" title="Sync now">{"\u{21bb}"}</span>
-            })}
+            <span
+                class="sync-btn"
+                title="Sync now"
+                style:visibility=move || if is_clickable() { "visible" } else { "hidden" }
+            >{"\u{21bb}"}</span>
         </div>
     }
 }

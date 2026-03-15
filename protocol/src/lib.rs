@@ -26,7 +26,7 @@ pub use chrono::{DateTime, Utc};
 pub use deleted_entity::DeletedEntity;
 pub use hash::{Entity, HashVerificationError, ZERO_HASH, canonical_card_hash, canonical_tag_hash};
 pub use non_negative_i64::{NegativeValueError, NonNegativeI64, OutOfRangeError};
-pub use priority::compute_priority;
+pub use priority::{compute_priority, priority_percentage};
 pub use root::RootState;
 pub use tag::Tag;
 pub use version::{PROTOCOL_VERSION, Version, is_compatible};

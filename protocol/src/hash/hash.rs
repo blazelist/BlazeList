@@ -102,9 +102,10 @@ pub fn canonical_tag_hash(
 
 /// A versioned entity with a verifiable BLAKE3 hash chain.
 ///
-/// All UUID-identified entities that carry linear version history
-/// (cards, tags, etc.) implement this trait. Each version references
-/// its direct ancestor by hash, forming a chain similar to git commits.
+/// All entities are identified by UUIDv4 (not UUIDv7 — timestamps are
+/// metadata, hash chains are the authority on state) and carry linear
+/// version history. Each version references its direct ancestor by hash,
+/// forming a chain similar to git commits.
 pub trait Entity {
     fn id(&self) -> Uuid;
     fn created_at(&self) -> DateTime<Utc>;

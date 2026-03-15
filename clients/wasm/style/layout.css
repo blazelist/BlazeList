@@ -1,0 +1,238 @@
+/* App layout */
+.app-container {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+.app-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.5rem 0.75rem 0.5rem 0.5rem;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.sidebar-toggle-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.85rem;
+    padding: 0.2rem 0.4rem;
+    border-radius: 4px;
+    line-height: 1;
+    transition: all 0.15s;
+}
+
+.sidebar-toggle-btn:hover {
+    color: var(--text-secondary);
+    border-color: var(--border-hover);
+}
+
+.app-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.15s;
+    letter-spacing: 0.02em;
+}
+
+.app-title:hover {
+    color: var(--text-primary);
+}
+
+.main-layout {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+}
+
+/* Sync indicator */
+.sync-indicator {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.72rem;
+}
+
+.sync-detail {
+    color: var(--text-muted);
+}
+
+.sync-sep {
+    color: var(--text-muted);
+}
+
+.status-connected { color: var(--status-connected); }
+.status-syncing { color: var(--status-syncing); }
+.status-disconnected { color: var(--status-disconnected); }
+.status-connecting { color: var(--status-connecting); }
+
+/* Header right group */
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+/* Settings gear */
+.settings-group {
+    position: relative;
+}
+
+.settings-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.85rem;
+    padding: 0.2rem 0.4rem;
+    border-radius: 4px;
+    line-height: 1;
+    transition: all 0.15s;
+}
+
+.settings-btn:hover {
+    color: var(--text-secondary);
+    border-color: var(--border-hover);
+}
+
+.settings-page {
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.settings-page > .detail-header .detail-status {
+    color: var(--accent);
+}
+
+.settings-section {
+    margin-bottom: 0;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.settings-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    cursor: pointer;
+}
+
+.settings-label {
+    font-size: 0.78rem;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.settings-tooltip {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    cursor: help;
+}
+
+
+.settings-hint {
+    font-size: 0.62rem;
+    color: var(--text-muted);
+    margin-top: 0.3rem;
+    font-style: italic;
+}
+
+.settings-sub-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    padding-left: 0.25rem;
+}
+
+.settings-number {
+    width: 52px;
+    padding: 0.25rem 0.35rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 0.78rem;
+    text-align: center;
+}
+
+
+/* Sidebar overlay (mobile backdrop) */
+.sidebar-overlay {
+    display: none;
+}
+
+/* Tag sidebar */
+.tag-sidebar {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+}
+
+.tag-sidebar.sidebar-hidden {
+    display: none;
+}
+
+.tag-sidebar-header {
+    padding: 0.75rem 0.5rem 0.5rem;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+
+/* Resize handle */
+.resize-handle {
+    width: 6px;
+    flex-shrink: 0;
+    margin: 0 -3px;
+    cursor: col-resize;
+    background: transparent;
+    position: relative;
+    z-index: 10;
+    transition: background 0.15s;
+}
+
+.resize-handle:hover {
+    background: var(--accent);
+}
+
+.resize-handle::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -4px;
+    right: -4px;
+}
+
+
+/* Content area */
+.content {
+    flex: 1;
+    padding: 0.75rem 0;
+    overflow-y: auto;
+    min-width: 0;
+}

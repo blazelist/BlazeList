@@ -1,6 +1,6 @@
 //! Write operations: push and delete inner logic, sequence stamping.
 
-use blazelist_protocol::{Card, DeletedEntity, Entity, NonNegativeI64, Tag, ZERO_HASH};
+use blazelist_protocol::{Card, DeletedEntity, Entity, Tag, ZERO_HASH};
 use rusqlite::{Connection, params};
 use uuid::Uuid;
 
@@ -72,7 +72,7 @@ impl SqliteStorage {
                     v.id().as_bytes().as_slice(),
                     i64::from(v.count()),
                     v.content(),
-                    i64::from(v.priority()),
+                    v.priority(),
                     tags_bytes,
                     v.blazed(),
                     v.created_at().timestamp_millis(),
@@ -89,7 +89,7 @@ impl SqliteStorage {
             .query_row(
                 "SELECT id, priority FROM cards WHERE priority = ?1 AND id != ?2 LIMIT 1",
                 params![
-                    i64::from(latest.priority()),
+                    latest.priority(),
                     latest.id().as_bytes().as_slice()
                 ],
                 |row| Ok((row.get(0)?, row.get(1)?)),
@@ -97,10 +97,9 @@ impl SqliteStorage {
             .ok();
         if let Some((id_bytes, priority_raw)) = dup {
             let conflicting_id = Uuid::from_bytes(id_bytes.as_slice().try_into().unwrap());
-            let priority = NonNegativeI64::try_from(priority_raw).unwrap();
             return Err(PushError::DuplicatePriority {
                 conflicting_id,
-                priority,
+                priority: priority_raw,
             }
             .into());
         }
@@ -113,7 +112,7 @@ impl SqliteStorage {
             params![
                 latest.id().as_bytes().as_slice(),
                 latest.content(),
-                i64::from(latest.priority()),
+                latest.priority(),
                 tags_bytes,
                 latest.blazed(),
                 latest.created_at().timestamp_millis(),
@@ -280,6 +279,35 @@ impl SqliteStorage {
             .map_err(StorageError::from)?;
         if exists == 0 {
             return Err(StorageError::NotFound);
+        }
+
+        // Referential integrity: reject deletion if any card still references this tag.
+        let mut stmt = conn
+            .prepare("SELECT id, tags FROM cards")
+            .map_err(StorageError::from)?;
+        let referencing_card_ids: Vec<Uuid> = stmt
+            .query_map([], |row| {
+                let id_bytes: Vec<u8> = row.get(0)?;
+                let tags_bytes: Vec<u8> = row.get(1)?;
+                Ok((id_bytes, tags_bytes))
+            })
+            .map_err(StorageError::from)?
+            .filter_map(|r| r.ok())
+            .filter_map(|(id_bytes, tags_bytes)| {
+                let card_id = Uuid::from_bytes(id_bytes.as_slice().try_into().ok()?);
+                let tags = Self::deserialize_tags(&tags_bytes);
+                if tags.contains(&id) {
+                    Some(card_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !referencing_card_ids.is_empty() {
+            return Err(StorageError::OrphanedTagReference {
+                tag_id: id,
+                referencing_card_ids,
+            });
         }
 
         let deleted = DeletedEntity::new(id);

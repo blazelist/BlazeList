@@ -3,12 +3,25 @@
 use std::env;
 
 use blazelist_protocol::ZERO_HASH;
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection, Transaction};
+use uuid::Uuid;
 
 use super::SqliteStorage;
 use crate::storage::StorageError;
 
 impl SqliteStorage {
+    pub(super) fn ensure_schema_version_table(conn: &Connection) -> Result<(), StorageError> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_version (
+                id      INTEGER PRIMARY KEY CHECK (id = 1),
+                major   INTEGER NOT NULL,
+                minor   INTEGER NOT NULL,
+                patch   INTEGER NOT NULL
+            );",
+        )?;
+        Ok(())
+    }
+
     /// Apply per-connection PRAGMA settings.
     ///
     /// Called on both the writer and reader connections so they share the
@@ -30,7 +43,7 @@ impl SqliteStorage {
         conn.execute_batch(&format!(
             "\
             PRAGMA journal_mode = {jm};\
-            PRAGMA foreign_keys = {fk};\
+            PRAGMA foreign_keys = ON;\
             PRAGMA synchronous = {sync};\
             PRAGMA cache_size = {cs};\
             PRAGMA mmap_size = {mm};\
@@ -38,7 +51,6 @@ impl SqliteStorage {
             PRAGMA busy_timeout = {bt};\
             ",
             jm = env_or("BLAZELIST_SQLITE_JOURNAL_MODE", "WAL"),
-            fk = env_or("BLAZELIST_SQLITE_FOREIGN_KEYS", "ON"),
             sync = env_or("BLAZELIST_SQLITE_SYNCHRONOUS", "NORMAL"),
             // ~8 GiB page cache (negative value = KiB); greatly benefits read-heavy workloads.
             cs = env_or("BLAZELIST_SQLITE_CACHE_SIZE", "-8388608"),
@@ -179,11 +191,10 @@ impl SqliteStorage {
     /// - **Same major version:** updates the stored version to current.
     /// - **Different major version, `allow_migration` is false:** returns
     ///   [`StorageError::IncompatibleVersion`].
-    /// - **Different major version, `allow_migration` is true:** returns
-    ///   [`StorageError::MigrationNotImplemented`] (migration logic is not
-    ///   yet written).
+    /// - **Different major version, `allow_migration` is true:** migrates
+    ///   major-to-major in one atomic transaction.
     pub(super) fn check_schema_version(
-        conn: &Connection,
+        conn: &mut Connection,
         allow_migration: bool,
     ) -> Result<(), StorageError> {
         use blazelist_protocol::PROTOCOL_VERSION;
@@ -213,32 +224,202 @@ impl SqliteStorage {
             Some((major, minor, patch)) => {
                 let stored_ver =
                     blazelist_protocol::Version::new(major as u64, minor as u64, patch as u64);
-                if stored_ver.major != current.major {
-                    // Breaking change -- major version differs.
-                    if allow_migration {
-                        return Err(StorageError::MigrationNotImplemented {
-                            stored: stored_ver,
-                            current: current.clone(),
-                        });
-                    } else {
-                        return Err(StorageError::IncompatibleVersion {
-                            stored: stored_ver,
-                            current: current.clone(),
-                        });
-                    }
+
+                if stored_ver.major == current.major {
+                    // Same major version -- update to current (non-breaking).
+                    conn.execute(
+                        "UPDATE schema_version SET major = ?1, minor = ?2, patch = ?3 WHERE id = 1",
+                        params![
+                            current.major as i64,
+                            current.minor as i64,
+                            current.patch as i64
+                        ],
+                    )?;
+                    return Ok(());
                 }
-                // Same major version -- update to current (non-breaking).
-                conn.execute(
-                    "UPDATE schema_version SET major = ?1, minor = ?2, patch = ?3 WHERE id = 1",
-                    params![
-                        current.major as i64,
-                        current.minor as i64,
-                        current.patch as i64
-                    ],
-                )?;
+
+                if !allow_migration || stored_ver.major > current.major {
+                    // Refuse startup unless migration is explicitly enabled.
+                    // Also refuse downgrades; only upgrades are supported.
+                    return Err(StorageError::IncompatibleVersion {
+                        stored: stored_ver,
+                        current: current.clone(),
+                    });
+                }
+
+                Self::migrate_schema_major_to_major(conn, &stored_ver, current)?;
             }
         }
 
+        Ok(())
+    }
+
+    fn migrate_schema_major_to_major(
+        conn: &mut Connection,
+        stored: &blazelist_protocol::Version,
+        current: &blazelist_protocol::Version,
+    ) -> Result<(), StorageError> {
+        let tx = conn.transaction()?;
+        for major in stored.major..current.major {
+            Self::migrate_one_major_step(&tx, major, major + 1)?;
+        }
+        tx.execute(
+            "UPDATE schema_version SET major = ?1, minor = ?2, patch = ?3 WHERE id = 1",
+            params![
+                current.major as i64,
+                current.minor as i64,
+                current.patch as i64
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn migrate_one_major_step(
+        tx: &Transaction<'_>,
+        from_major: u64,
+        to_major: u64,
+    ) -> Result<(), StorageError> {
+        match (from_major, to_major) {
+            (0, 1) => Self::migrate_v0_to_v1(tx),
+            // v1→v2: Card.priority widened from NonNegativeI64 to i64.
+            // SQLite stores both as INTEGER; existing values are valid. No-op.
+            (1, 2) => Ok(()),
+            _ => Err(StorageError::MigrationNotImplemented {
+                stored: blazelist_protocol::Version::new(from_major, 0, 0),
+                current: blazelist_protocol::Version::new(to_major, 0, 0),
+            }),
+        }
+    }
+
+    fn migrate_v0_to_v1(tx: &Transaction<'_>) -> Result<(), StorageError> {
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS root_state (
+                id          INTEGER PRIMARY KEY CHECK (id = 1),
+                hash        BLOB    NOT NULL,
+                sequence    INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS root_history (
+                sequence    INTEGER PRIMARY KEY,
+                hash        BLOB NOT NULL,
+                created_at  INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS root_buckets (
+                bucket      INTEGER PRIMARY KEY,
+                hash        BLOB NOT NULL
+            );",
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO root_state (id, hash, sequence) VALUES (1, ?1, 0)",
+            params![ZERO_HASH.as_bytes().as_slice()],
+        )?;
+        {
+            let mut stmt =
+                tx.prepare("INSERT OR IGNORE INTO root_buckets (bucket, hash) VALUES (?1, ?2)")?;
+            for bucket_id in 0u8..=255 {
+                stmt.execute(params![bucket_id as i64, ZERO_HASH.as_bytes().as_slice()])?;
+            }
+        }
+
+        Self::ensure_column(
+            tx,
+            "cards",
+            "root_sequence_at",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::ensure_column(tx, "cards", "bucket", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::ensure_column(
+            tx,
+            "card_versions",
+            "root_sequence_at",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::ensure_column(tx, "tags", "root_sequence_at", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::ensure_column(tx, "tags", "bucket", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::ensure_column(
+            tx,
+            "tag_versions",
+            "root_sequence_at",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::ensure_column(
+            tx,
+            "deleted_entities",
+            "root_sequence_at",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::ensure_column(
+            tx,
+            "deleted_entities",
+            "bucket",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+
+        Self::backfill_bucket_column(tx, "cards", "id")?;
+        Self::backfill_bucket_column(tx, "tags", "id")?;
+        Self::backfill_bucket_column(tx, "deleted_entities", "id")?;
+
+        for bucket_id in 0u8..=255 {
+            let bucket_hash = Self::recompute_bucket_hash(tx, bucket_id)?;
+            tx.execute(
+                "UPDATE root_buckets SET hash = ?1 WHERE bucket = ?2",
+                params![bucket_hash.as_bytes().as_slice(), bucket_id as i64],
+            )?;
+        }
+        Self::recompute_root_from_buckets(tx)?;
+        Ok(())
+    }
+
+    fn ensure_column(
+        tx: &Transaction<'_>,
+        table: &str,
+        column: &str,
+        definition: &str,
+    ) -> Result<(), StorageError> {
+        let pragma_sql = format!("PRAGMA table_info({table})");
+        let mut stmt = tx.prepare(&pragma_sql)?;
+        let mut rows = stmt.query([])?;
+        let mut exists = false;
+        while let Some(row) = rows.next()? {
+            let name: String = row.get(1)?;
+            if name == column {
+                exists = true;
+                break;
+            }
+        }
+        drop(rows);
+        drop(stmt);
+
+        if !exists {
+            tx.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {definition};"
+            ))?;
+        }
+        Ok(())
+    }
+
+    fn backfill_bucket_column(
+        tx: &Transaction<'_>,
+        table: &str,
+        id_column: &str,
+    ) -> Result<(), StorageError> {
+        let select_sql = format!("SELECT {id_column} FROM {table}");
+        let mut stmt = tx.prepare(&select_sql)?;
+        let ids: Vec<Vec<u8>> = stmt
+            .query_map([], |row| row.get::<_, Vec<u8>>(0))?
+            .collect::<Result<_, _>>()?;
+        drop(stmt);
+
+        let update_sql = format!("UPDATE {table} SET bucket = ?1 WHERE {id_column} = ?2");
+        let mut update_stmt = tx.prepare(&update_sql)?;
+        for id_bytes in ids {
+            let id = Uuid::from_slice(&id_bytes).map_err(|e| {
+                StorageError::Internal(format!(
+                    "invalid UUID while migrating {table}.{id_column}: {e}"
+                ))
+            })?;
+            update_stmt.execute(params![Self::bucket_of(id) as i64, id_bytes])?;
+        }
         Ok(())
     }
 }

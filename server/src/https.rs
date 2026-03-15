@@ -37,10 +37,65 @@ pub fn tls_acceptor(
 /// Serves files from `static_dir` over TLS and exposes `/cert-hash` so the
 /// WASM client can fetch the certificate hash from the same origin (avoiding
 /// mixed-content blocking on HTTPS pages).
+/// Build a JSON config string from `BLAZELIST_DEFAULT_*` env vars.
+///
+/// Returns defaults for client settings that can be overridden per-device
+/// in the browser's localStorage.
+pub fn build_client_config_json() -> String {
+    let auto_save = std::env::var("BLAZELIST_DEFAULT_AUTO_SAVE").ok();
+    let auto_save_delay = std::env::var("BLAZELIST_DEFAULT_AUTO_SAVE_DELAY").ok();
+    let show_preview = std::env::var("BLAZELIST_DEFAULT_SHOW_PREVIEW").ok();
+    let drag_drop = std::env::var("BLAZELIST_DEFAULT_DRAG_DROP").ok();
+    let auto_sync = std::env::var("BLAZELIST_DEFAULT_AUTO_SYNC").ok();
+    let auto_sync_interval = std::env::var("BLAZELIST_DEFAULT_AUTO_SYNC_INTERVAL").ok();
+    let debounce_enabled = std::env::var("BLAZELIST_DEFAULT_DEBOUNCE_ENABLED").ok();
+    let debounce_delay = std::env::var("BLAZELIST_DEFAULT_DEBOUNCE_DELAY").ok();
+    let keyboard_shortcuts = std::env::var("BLAZELIST_DEFAULT_KEYBOARD_SHORTCUTS").ok();
+
+    // Only include env vars that are explicitly set.
+    let mut pairs = Vec::new();
+    if let Some(v) = auto_save {
+        pairs.push(format!(r#""auto_save":{}"#, v == "true"));
+    }
+    if let Some(v) = auto_save_delay {
+        if let Ok(n) = v.parse::<u32>() {
+            pairs.push(format!(r#""auto_save_delay":{n}"#));
+        }
+    }
+    if let Some(v) = show_preview {
+        pairs.push(format!(r#""show_preview":{}"#, v == "true"));
+    }
+    if let Some(v) = drag_drop {
+        pairs.push(format!(r#""drag_drop":{}"#, v == "true"));
+    }
+    if let Some(v) = auto_sync {
+        pairs.push(format!(r#""auto_sync":{}"#, v == "true"));
+    }
+    if let Some(v) = auto_sync_interval {
+        if let Ok(n) = v.parse::<u32>() {
+            pairs.push(format!(r#""auto_sync_interval":{n}"#));
+        }
+    }
+    if let Some(v) = debounce_enabled {
+        pairs.push(format!(r#""debounce_enabled":{}"#, v == "true"));
+    }
+    if let Some(v) = debounce_delay {
+        if let Ok(n) = v.parse::<u32>() {
+            pairs.push(format!(r#""debounce_delay":{n}"#));
+        }
+    }
+    if let Some(v) = keyboard_shortcuts {
+        pairs.push(format!(r#""keyboard_shortcuts":{}"#, v == "true"));
+    }
+
+    format!("{{{}}}", pairs.join(","))
+}
+
 pub async fn run_https_server(
     addr: SocketAddr,
     static_dir: PathBuf,
     cert_hash_hex: String,
+    config_json: String,
     acceptor: TlsAcceptor,
 ) {
     let listener = match TcpListener::bind(addr).await {
@@ -53,6 +108,7 @@ pub async fn run_https_server(
 
     let static_dir = Arc::new(static_dir);
     let cert_hash_hex = Arc::new(cert_hash_hex);
+    let config_json = Arc::new(config_json);
 
     loop {
         let (tcp_stream, _) = match listener.accept().await {
@@ -63,6 +119,7 @@ pub async fn run_https_server(
         let acceptor = acceptor.clone();
         let static_dir = Arc::clone(&static_dir);
         let cert_hash_hex = Arc::clone(&cert_hash_hex);
+        let config_json = Arc::clone(&config_json);
 
         tokio::spawn(async move {
             let tls_stream = match acceptor.accept(tcp_stream).await {
@@ -70,7 +127,7 @@ pub async fn run_https_server(
                 Err(_) => return,
             };
 
-            handle_connection(tls_stream, &static_dir, &cert_hash_hex).await;
+            handle_connection(tls_stream, &static_dir, &cert_hash_hex, &config_json).await;
         });
     }
 }
@@ -79,6 +136,7 @@ async fn handle_connection(
     mut stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
     static_dir: &Path,
     cert_hash_hex: &str,
+    config_json: &str,
 ) {
     let mut buf = [0u8; 8192];
     let n = match stream.read(&mut buf).await {
@@ -92,6 +150,7 @@ async fn handle_connection(
 
     let response = match path.as_deref() {
         Some("/cert-hash") => build_cert_hash_response(cert_hash_hex),
+        Some("/config") => build_json_response(config_json),
         Some(p) => serve_static_file(static_dir, p),
         None => build_error_response(400, "Bad Request"),
     };
@@ -109,7 +168,7 @@ fn parse_request_path(request_line: &str) -> Option<String> {
         return None;
     }
 
-    // Strip query string.
+    // Clear query string.
     let path = raw_path.split('?').next().unwrap_or(raw_path);
     Some(path.to_string())
 }
@@ -169,6 +228,24 @@ fn build_file_response(path: &Path, body: &[u8]) -> Vec<u8> {
     response
 }
 
+fn build_json_response(json: &str) -> Vec<u8> {
+    format!(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         Access-Control-Allow-Origin: *\r\n\
+         Access-Control-Allow-Methods: GET, OPTIONS\r\n\
+         Access-Control-Allow-Headers: *\r\n\
+         Cache-Control: no-store\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {}",
+        json.len(),
+        json
+    )
+    .into_bytes()
+}
+
 fn build_cert_hash_response(hex: &str) -> Vec<u8> {
     format!(
         "HTTP/1.1 200 OK\r\n\
@@ -208,11 +285,15 @@ pub fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Minimal HTTP/1.1 server that responds to any request with the cert hash.
+/// Minimal HTTP/1.1 server for cert-hash and config endpoints.
 ///
 /// Used by WASM clients to auto-fetch the server certificate hash before
-/// establishing a WebTransport connection.
-pub async fn run_cert_hash_server(addr: SocketAddr, cert_hash_hex: String) {
+/// establishing a WebTransport connection, and to get server-default settings.
+pub async fn run_cert_hash_server(
+    addr: SocketAddr,
+    cert_hash_hex: String,
+    config_json: String,
+) {
     let listener = match TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
@@ -221,35 +302,34 @@ pub async fn run_cert_hash_server(addr: SocketAddr, cert_hash_hex: String) {
         }
     };
 
+    let cert_hash_hex = Arc::new(cert_hash_hex);
+    let config_json = Arc::new(config_json);
+
     loop {
         let (mut stream, _) = match listener.accept().await {
             Ok(s) => s,
             Err(_) => continue,
         };
 
-        let body = cert_hash_hex.clone();
+        let cert_hash_hex = Arc::clone(&cert_hash_hex);
+        let config_json = Arc::clone(&config_json);
         tokio::spawn(async move {
-            // Read (and discard) the request — we only need to drain enough to
-            // unblock the client, then send our response.
             let mut buf = [0u8; 1024];
-            let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+            let n = match tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => n,
+            };
 
-            let response = format!(
-                "HTTP/1.1 200 OK\r\n\
-                 Content-Type: text/plain\r\n\
-                 Content-Length: {}\r\n\
-                 Access-Control-Allow-Origin: *\r\n\
-                 Access-Control-Allow-Methods: GET, OPTIONS\r\n\
-                 Access-Control-Allow-Headers: *\r\n\
-                 Cache-Control: no-store\r\n\
-                 Connection: close\r\n\
-                 \r\n\
-                 {}",
-                body.len(),
-                body
-            );
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let request_line = request.lines().next().unwrap_or("");
+            let path = parse_request_path(request_line);
 
-            let _ = stream.write_all(response.as_bytes()).await;
+            let response = match path.as_deref() {
+                Some("/config") => build_json_response(&config_json),
+                _ => build_cert_hash_response(&cert_hash_hex),
+            };
+
+            let _ = stream.write_all(&response).await;
             let _ = stream.shutdown().await;
         });
     }

@@ -4,6 +4,11 @@ use uuid::Uuid;
 /// A deleted entity — replaces any UUID-identified entity (card, tag, etc.)
 /// after deletion. Only the UUID and its hash are retained; everything else
 /// is purged.
+///
+/// Deletion is infectious: when it propagates (client → server or server →
+/// client) it purges everything associated with that UUID on the receiving
+/// side. A `DeletedEntity` must be persisted indefinitely to prevent a
+/// stale client from accidentally re-creating or re-syncing the entity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeletedEntity {
     id: Uuid,

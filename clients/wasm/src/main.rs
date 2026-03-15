@@ -7,6 +7,8 @@ mod pages;
 #[cfg(target_arch = "wasm32")]
 mod state;
 #[cfg(target_arch = "wasm32")]
+mod storage;
+#[cfg(target_arch = "wasm32")]
 mod transport;
 
 #[cfg(target_arch = "wasm32")]

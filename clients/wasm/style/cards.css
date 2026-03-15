@@ -1,0 +1,252 @@
+.btn-new-card-group {
+    display: inline-flex;
+    position: relative;
+    margin: 0 0.625rem 0.75rem;
+}
+
+.btn-new-card {
+    padding: 0.35rem 0.75rem;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px dashed var(--border);
+    border-radius: 4px 0 0 4px;
+    cursor: pointer;
+    font-size: 0.75rem;
+    transition: all 0.15s;
+}
+
+.btn-new-card:hover {
+    color: var(--action);
+    border-color: var(--action);
+    border-style: solid;
+    background: var(--action-subtle);
+}
+
+.btn-new-card-dropdown {
+    padding: 0.35rem 0.4rem;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px dashed var(--border);
+    border-left: none;
+    border-radius: 0 4px 4px 0;
+    cursor: pointer;
+    font-size: 0.6rem;
+    transition: all 0.15s;
+    line-height: 1;
+}
+
+.btn-new-card-dropdown:hover {
+    color: var(--action);
+    border-color: var(--action);
+    border-style: solid;
+    background: var(--action-subtle);
+}
+
+.new-card-dropdown-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 2px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    z-index: 20;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.new-card-dropdown-menu .save-dropdown-item:disabled {
+    color: var(--text-muted);
+    opacity: 0.5;
+    cursor: default;
+}
+
+.new-card-dropdown-menu .save-dropdown-item:disabled:hover {
+    background: transparent;
+    color: var(--text-muted);
+}
+
+.cards {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+/* Card item (list row) */
+.card-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: transparent;
+    border: 1px solid transparent;
+    border-left: none;
+    border-right: none;
+    border-radius: 0;
+    padding: 0.2rem 0.625rem;
+    margin-top: -1px;
+    cursor: pointer;
+    transition: all 0.1s;
+}
+
+.card-number {
+    font-family: monospace;
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
+    user-select: none;
+}
+
+.card-link-indicators {
+    display: flex;
+    gap: 0.3rem;
+    flex-shrink: 0;
+    white-space: nowrap;
+    user-select: none;
+}
+
+.card-link-forward {
+    font-family: monospace;
+    font-size: 0.62rem;
+    color: var(--link-forward);
+}
+
+.card-link-back {
+    font-family: monospace;
+    font-size: 0.62rem;
+    color: var(--link-back);
+}
+
+.card-item:hover {
+    background: var(--bg-card);
+}
+
+.card-item.selected {
+    background: var(--bg-card);
+    border-color: var(--border-hover);
+}
+
+.card-item.blazed {
+    background: var(--blaze-bg);
+    border-color: var(--blaze-border);
+}
+
+.card-item.blazed + .card-item.blazed {
+    border-top-color: transparent;
+}
+
+.card-item.blazed:hover {
+    background: #180c0e;
+}
+
+.card-item.blazed.selected {
+    background: #1a0e10;
+    border-color: var(--blaze-border);
+}
+
+/* Drag-and-drop indicators */
+.card-item.drop-above {
+    box-shadow: 0 -2px 0 0 var(--accent);
+}
+
+.card-item.drop-below {
+    box-shadow: 0 2px 0 0 var(--accent);
+}
+
+.card-item[draggable="true"] {
+    cursor: grab;
+}
+
+.card-item[draggable="true"]:active {
+    cursor: grabbing;
+}
+
+.card-preview {
+    color: var(--text-primary);
+    font-size: 0.8rem;
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+    min-width: 0;
+}
+
+.card-tasks {
+    font-family: monospace;
+    font-size: 0.62rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
+    white-space: nowrap;
+    user-select: none;
+}
+
+.card-time {
+    font-family: monospace;
+    font-size: 0.62rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
+    white-space: nowrap;
+    user-select: none;
+}
+
+.card-preview.empty {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+/* Due date badge in card list */
+.card-due {
+    font-size: 0.6rem;
+    font-weight: 500;
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    user-select: none;
+}
+
+.card-due.due-overdue {
+    color: var(--due-overdue);
+    background: var(--due-overdue-subtle);
+}
+
+.card-due.due-today {
+    color: var(--due-today);
+    background: var(--due-today-subtle);
+}
+
+.card-due.due-upcoming {
+    color: var(--due-upcoming);
+    background: var(--due-upcoming-subtle);
+}
+
+
+/* Card tag color dots */
+.card-tag-dots {
+    display: flex;
+    flex-direction: row;
+    gap: 3px;
+    flex-shrink: 0;
+    align-items: center;
+    margin-left: auto;
+}
+
+.card-tag-dots-grid {
+    display: grid;
+    grid-template-rows: repeat(3, 4px);
+    grid-auto-flow: column;
+    grid-auto-columns: 4px;
+    gap: 2px;
+}
+
+.card-tag-dot {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+}
+
+.card-tag-overflow {
+    font-size: 0.5rem;
+    color: var(--text-muted);
+    line-height: 1;
+}

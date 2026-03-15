@@ -20,8 +20,16 @@ pub enum DueDateFilter {
     Overdue,
     /// Show only cards due today.
     Today,
-    /// Show only cards with due date after today.
+    /// Show cards due today and all future due dates.
+    TodayAndUpcoming,
+    /// Show only cards with due date after today (all future).
     Upcoming,
+    /// Show only cards due tomorrow.
+    UpcomingTomorrow,
+    /// Show only cards due within 7 days (exclusive of today).
+    UpcomingWeek,
+    /// Show only cards due within 14 days (exclusive of today).
+    UpcomingTwoWeeks,
 }
 
 impl DueDateFilter {
@@ -30,8 +38,24 @@ impl DueDateFilter {
             Self::All => "All",
             Self::Overdue => "Overdue",
             Self::Today => "Today",
-            Self::Upcoming => "Upcoming",
+            Self::TodayAndUpcoming => "Today & upcoming",
+            Self::Upcoming => "All upcoming",
+            Self::UpcomingTomorrow => "Tomorrow",
+            Self::UpcomingWeek => "Next 7 days",
+            Self::UpcomingTwoWeeks => "Next 14 days",
         }
+    }
+
+    /// Returns `true` if this is any upcoming variant (including sub-ranges).
+    pub fn is_upcoming(self) -> bool {
+        matches!(
+            self,
+            Self::TodayAndUpcoming
+                | Self::Upcoming
+                | Self::UpcomingTomorrow
+                | Self::UpcomingWeek
+                | Self::UpcomingTwoWeeks
+        )
     }
 }
 
@@ -126,17 +150,28 @@ pub fn apply_tag_filter(
 /// Apply a due date filter.
 ///
 /// No-op if `filter` is [`DueDateFilter::All`].
-pub fn apply_due_date_filter(cards: &mut Vec<Card>, filter: DueDateFilter) {
+/// When `include_overdue` is `true` and `filter` is not `All` or `Overdue`,
+/// cards with a due date before today are also included.
+pub fn apply_due_date_filter(
+    cards: &mut Vec<Card>,
+    filter: DueDateFilter,
+    include_overdue: bool,
+) {
     let today = Utc::now().date_naive();
-    apply_due_date_filter_with_today(cards, filter, today);
+    apply_due_date_filter_with_today(cards, filter, today, include_overdue);
 }
 
 /// Apply a due date filter using an explicit `today` date (for testability).
+///
+/// When `include_overdue` is `true` and `filter` is not `All` or `Overdue`,
+/// cards with a due date before today are also retained.
 pub fn apply_due_date_filter_with_today(
     cards: &mut Vec<Card>,
     filter: DueDateFilter,
     today: NaiveDate,
+    include_overdue: bool,
 ) {
+    let overdue_ok = |d: NaiveDate| include_overdue && d < today;
     match filter {
         DueDateFilter::All => {}
         DueDateFilter::Overdue => {
@@ -149,14 +184,63 @@ pub fn apply_due_date_filter_with_today(
         DueDateFilter::Today => {
             cards.retain(|c| {
                 c.due_date()
-                    .map(|d| d.date_naive() == today)
+                    .map(|d| {
+                        let date = d.date_naive();
+                        date == today || overdue_ok(date)
+                    })
+                    .unwrap_or(false)
+            });
+        }
+        DueDateFilter::TodayAndUpcoming => {
+            cards.retain(|c| {
+                c.due_date()
+                    .map(|d| {
+                        let date = d.date_naive();
+                        date >= today || overdue_ok(date)
+                    })
                     .unwrap_or(false)
             });
         }
         DueDateFilter::Upcoming => {
             cards.retain(|c| {
                 c.due_date()
-                    .map(|d| d.date_naive() > today)
+                    .map(|d| {
+                        let date = d.date_naive();
+                        date > today || overdue_ok(date)
+                    })
+                    .unwrap_or(false)
+            });
+        }
+        DueDateFilter::UpcomingTomorrow => {
+            let tomorrow = today + chrono::Days::new(1);
+            cards.retain(|c| {
+                c.due_date()
+                    .map(|d| {
+                        let date = d.date_naive();
+                        date == tomorrow || overdue_ok(date)
+                    })
+                    .unwrap_or(false)
+            });
+        }
+        DueDateFilter::UpcomingWeek => {
+            let end = today + chrono::Days::new(7);
+            cards.retain(|c| {
+                c.due_date()
+                    .map(|d| {
+                        let date = d.date_naive();
+                        (date > today && date <= end) || overdue_ok(date)
+                    })
+                    .unwrap_or(false)
+            });
+        }
+        DueDateFilter::UpcomingTwoWeeks => {
+            let end = today + chrono::Days::new(14);
+            cards.retain(|c| {
+                c.due_date()
+                    .map(|d| {
+                        let date = d.date_naive();
+                        (date > today && date <= end) || overdue_ok(date)
+                    })
                     .unwrap_or(false)
             });
         }
@@ -203,6 +287,10 @@ pub enum SortOrder {
     Title,
     /// Reverse alphabetical by title (Z-A).
     TitleReverse,
+    /// Earliest due date first (cards without due date last).
+    DueDate,
+    /// Latest due date first (cards without due date last).
+    DueDateReverse,
 }
 
 impl SortOrder {
@@ -220,6 +308,8 @@ impl SortOrder {
             Self::CreatedAtReverse => "Created (reverse)",
             Self::Title => "Title (A-Z)",
             Self::TitleReverse => "Title (Z-A)",
+            Self::DueDate => "Due date",
+            Self::DueDateReverse => "Due date (reverse)",
         }
     }
 
@@ -233,6 +323,8 @@ impl SortOrder {
             Self::CreatedAtReverse => Some("created-reverse"),
             Self::Title => Some("title"),
             Self::TitleReverse => Some("title-reverse"),
+            Self::DueDate => Some("due"),
+            Self::DueDateReverse => Some("due-reverse"),
         }
     }
 
@@ -245,6 +337,8 @@ impl SortOrder {
             "created-reverse" => Self::CreatedAtReverse,
             "title" => Self::Title,
             "title-reverse" => Self::TitleReverse,
+            "due" => Self::DueDate,
+            "due-reverse" => Self::DueDateReverse,
             _ => Self::default(),
         }
     }
@@ -259,6 +353,8 @@ impl SortOrder {
         Self::CreatedAtReverse,
         Self::Title,
         Self::TitleReverse,
+        Self::DueDate,
+        Self::DueDateReverse,
     ];
 }
 
@@ -273,28 +369,50 @@ pub fn sort_by_priority(cards: &mut [Card]) {
 pub fn sort_cards(cards: &mut [Card], order: SortOrder) {
     match order {
         SortOrder::Priority => {
-            cards.sort_by_key(|c| std::cmp::Reverse(c.priority()));
+            cards.sort_unstable_by_key(|c| std::cmp::Reverse(c.priority()));
         }
         SortOrder::PriorityReverse => {
-            cards.sort_by_key(|c| c.priority());
+            cards.sort_unstable_by_key(|c| c.priority());
         }
         SortOrder::ModifiedAt => {
-            cards.sort_by_key(|c| std::cmp::Reverse(c.modified_at()));
+            cards.sort_unstable_by_key(|c| std::cmp::Reverse(c.modified_at()));
         }
         SortOrder::ModifiedAtReverse => {
-            cards.sort_by_key(|c| c.modified_at());
+            cards.sort_unstable_by_key(|c| c.modified_at());
         }
         SortOrder::CreatedAt => {
-            cards.sort_by_key(|c| std::cmp::Reverse(c.created_at()));
+            cards.sort_unstable_by_key(|c| std::cmp::Reverse(c.created_at()));
         }
         SortOrder::CreatedAtReverse => {
-            cards.sort_by_key(|c| c.created_at());
+            cards.sort_unstable_by_key(|c| c.created_at());
         }
         SortOrder::Title => {
-            cards.sort_by_key(|c| c.content().to_lowercase());
+            cards.sort_unstable_by_key(|c| c.content().to_lowercase());
         }
         SortOrder::TitleReverse => {
-            cards.sort_by_key(|c| std::cmp::Reverse(c.content().to_lowercase()));
+            cards.sort_unstable_by_key(|c| std::cmp::Reverse(c.content().to_lowercase()));
+        }
+        SortOrder::DueDate => {
+            cards.sort_by(|a, b| {
+                let cmp = match (a.due_date(), b.due_date()) {
+                    (Some(a_d), Some(b_d)) => a_d.cmp(&b_d),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                };
+                cmp.then_with(|| b.priority().cmp(&a.priority()))
+            });
+        }
+        SortOrder::DueDateReverse => {
+            cards.sort_by(|a, b| {
+                let cmp = match (a.due_date(), b.due_date()) {
+                    (Some(a_d), Some(b_d)) => b_d.cmp(&a_d),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                };
+                cmp.then_with(|| b.priority().cmp(&a.priority()))
+            });
         }
     }
 }
@@ -775,5 +893,301 @@ mod tests {
         assert_eq!(cards[0].content(), "high");
         assert_eq!(cards[1].content(), "mid");
         assert_eq!(cards[2].content(), "low");
+    }
+
+    #[test]
+    fn sort_cards_due_date() {
+        let mut cards = vec![
+            Card::first(
+                fixed_uuid(1),
+                "no due low".into(),
+                priority(100),
+                vec![],
+                false,
+                fixed_time(),
+                None,
+            ),
+            Card::first(
+                fixed_uuid(5),
+                "no due high".into(),
+                priority(500),
+                vec![],
+                false,
+                fixed_time(),
+                None,
+            ),
+            Card::first(
+                fixed_uuid(2),
+                "early".into(),
+                priority(200),
+                vec![],
+                false,
+                fixed_time(),
+                Some(time_millis(1000)),
+            ),
+            Card::first(
+                fixed_uuid(3),
+                "late".into(),
+                priority(300),
+                vec![],
+                false,
+                fixed_time(),
+                Some(time_millis(3000)),
+            ),
+            Card::first(
+                fixed_uuid(4),
+                "mid low".into(),
+                priority(100),
+                vec![],
+                false,
+                fixed_time(),
+                Some(time_millis(2000)),
+            ),
+            Card::first(
+                fixed_uuid(6),
+                "mid high".into(),
+                priority(400),
+                vec![],
+                false,
+                fixed_time(),
+                Some(time_millis(2000)),
+            ),
+        ];
+        sort_cards(&mut cards, SortOrder::DueDate);
+        assert_eq!(cards[0].content(), "early");
+        assert_eq!(cards[1].content(), "mid high");
+        assert_eq!(cards[2].content(), "mid low");
+        assert_eq!(cards[3].content(), "late");
+        // No due date cards sorted by priority (highest first)
+        assert_eq!(cards[4].content(), "no due high");
+        assert_eq!(cards[5].content(), "no due low");
+    }
+
+    #[test]
+    fn sort_cards_due_date_reverse() {
+        let mut cards = vec![
+            Card::first(
+                fixed_uuid(1),
+                "no due low".into(),
+                priority(100),
+                vec![],
+                false,
+                fixed_time(),
+                None,
+            ),
+            Card::first(
+                fixed_uuid(5),
+                "no due high".into(),
+                priority(500),
+                vec![],
+                false,
+                fixed_time(),
+                None,
+            ),
+            Card::first(
+                fixed_uuid(2),
+                "early".into(),
+                priority(200),
+                vec![],
+                false,
+                fixed_time(),
+                Some(time_millis(1000)),
+            ),
+            Card::first(
+                fixed_uuid(3),
+                "late".into(),
+                priority(300),
+                vec![],
+                false,
+                fixed_time(),
+                Some(time_millis(3000)),
+            ),
+            Card::first(
+                fixed_uuid(4),
+                "mid low".into(),
+                priority(100),
+                vec![],
+                false,
+                fixed_time(),
+                Some(time_millis(2000)),
+            ),
+            Card::first(
+                fixed_uuid(6),
+                "mid high".into(),
+                priority(400),
+                vec![],
+                false,
+                fixed_time(),
+                Some(time_millis(2000)),
+            ),
+        ];
+        sort_cards(&mut cards, SortOrder::DueDateReverse);
+        assert_eq!(cards[0].content(), "late");
+        assert_eq!(cards[1].content(), "mid high");
+        assert_eq!(cards[2].content(), "mid low");
+        assert_eq!(cards[3].content(), "early");
+        // No due date cards sorted by priority (highest first)
+        assert_eq!(cards[4].content(), "no due high");
+        assert_eq!(cards[5].content(), "no due low");
+    }
+
+    // ---- Due date filter tests ----
+
+    fn due_date_cards(today: NaiveDate) -> Vec<Card> {
+        use chrono::Days;
+        let to_dt = |d: NaiveDate| -> DateTime<Utc> {
+            d.and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_utc()
+        };
+        vec![
+            Card::first(fixed_uuid(1), "yesterday".into(), priority(100), vec![], false, fixed_time(), Some(to_dt(today - Days::new(1)))),
+            Card::first(fixed_uuid(2), "today".into(), priority(100), vec![], false, fixed_time(), Some(to_dt(today))),
+            Card::first(fixed_uuid(3), "tomorrow".into(), priority(100), vec![], false, fixed_time(), Some(to_dt(today + Days::new(1)))),
+            Card::first(fixed_uuid(4), "in3days".into(), priority(100), vec![], false, fixed_time(), Some(to_dt(today + Days::new(3)))),
+            Card::first(fixed_uuid(5), "in7days".into(), priority(100), vec![], false, fixed_time(), Some(to_dt(today + Days::new(7)))),
+            Card::first(fixed_uuid(6), "in10days".into(), priority(100), vec![], false, fixed_time(), Some(to_dt(today + Days::new(10)))),
+            Card::first(fixed_uuid(7), "in14days".into(), priority(100), vec![], false, fixed_time(), Some(to_dt(today + Days::new(14)))),
+            Card::first(fixed_uuid(8), "in20days".into(), priority(100), vec![], false, fixed_time(), Some(to_dt(today + Days::new(20)))),
+            Card::first(fixed_uuid(9), "no_due".into(), priority(100), vec![], false, fixed_time(), None),
+        ]
+    }
+
+    fn names(cards: &[Card]) -> Vec<&str> {
+        cards.iter().map(|c| c.content()).collect()
+    }
+
+    #[test]
+    fn due_filter_upcoming_all() {
+        let today = NaiveDate::from_ymd_opt(2025, 6, 15).unwrap();
+        let mut cards = due_date_cards(today);
+        apply_due_date_filter_with_today(&mut cards, DueDateFilter::Upcoming, today, false);
+        let n = names(&cards);
+        assert!(n.contains(&"tomorrow"));
+        assert!(n.contains(&"in20days"));
+        assert!(!n.contains(&"today"));
+        assert!(!n.contains(&"yesterday"));
+        assert!(!n.contains(&"no_due"));
+    }
+
+    #[test]
+    fn due_filter_upcoming_tomorrow() {
+        let today = NaiveDate::from_ymd_opt(2025, 6, 15).unwrap();
+        let mut cards = due_date_cards(today);
+        apply_due_date_filter_with_today(&mut cards, DueDateFilter::UpcomingTomorrow, today, false);
+        let n = names(&cards);
+        assert_eq!(n, vec!["tomorrow"]);
+    }
+
+    #[test]
+    fn due_filter_upcoming_week() {
+        let today = NaiveDate::from_ymd_opt(2025, 6, 15).unwrap();
+        let mut cards = due_date_cards(today);
+        apply_due_date_filter_with_today(&mut cards, DueDateFilter::UpcomingWeek, today, false);
+        let n = names(&cards);
+        assert!(n.contains(&"tomorrow"));
+        assert!(n.contains(&"in3days"));
+        assert!(n.contains(&"in7days"));
+        assert!(!n.contains(&"today"));
+        assert!(!n.contains(&"in10days"));
+        assert!(!n.contains(&"no_due"));
+    }
+
+    #[test]
+    fn due_filter_upcoming_two_weeks() {
+        let today = NaiveDate::from_ymd_opt(2025, 6, 15).unwrap();
+        let mut cards = due_date_cards(today);
+        apply_due_date_filter_with_today(&mut cards, DueDateFilter::UpcomingTwoWeeks, today, false);
+        let n = names(&cards);
+        assert!(n.contains(&"tomorrow"));
+        assert!(n.contains(&"in3days"));
+        assert!(n.contains(&"in7days"));
+        assert!(n.contains(&"in10days"));
+        assert!(n.contains(&"in14days"));
+        assert!(!n.contains(&"today"));
+        assert!(!n.contains(&"in20days"));
+        assert!(!n.contains(&"no_due"));
+    }
+
+    #[test]
+    fn due_filter_include_overdue_with_today() {
+        let today = NaiveDate::from_ymd_opt(2025, 6, 15).unwrap();
+        let mut cards = due_date_cards(today);
+        apply_due_date_filter_with_today(&mut cards, DueDateFilter::Today, today, true);
+        let n = names(&cards);
+        assert!(n.contains(&"yesterday"));
+        assert!(n.contains(&"today"));
+        assert!(!n.contains(&"tomorrow"));
+        assert!(!n.contains(&"no_due"));
+    }
+
+    #[test]
+    fn due_filter_include_overdue_with_upcoming_week() {
+        let today = NaiveDate::from_ymd_opt(2025, 6, 15).unwrap();
+        let mut cards = due_date_cards(today);
+        apply_due_date_filter_with_today(&mut cards, DueDateFilter::UpcomingWeek, today, true);
+        let n = names(&cards);
+        assert!(n.contains(&"yesterday"));
+        assert!(n.contains(&"tomorrow"));
+        assert!(n.contains(&"in3days"));
+        assert!(n.contains(&"in7days"));
+        assert!(!n.contains(&"today"));
+        assert!(!n.contains(&"in10days"));
+        assert!(!n.contains(&"no_due"));
+    }
+
+    #[test]
+    fn due_filter_today_and_upcoming() {
+        let today = NaiveDate::from_ymd_opt(2025, 6, 15).unwrap();
+        let mut cards = due_date_cards(today);
+        apply_due_date_filter_with_today(&mut cards, DueDateFilter::TodayAndUpcoming, today, false);
+        let n = names(&cards);
+        assert!(n.contains(&"today"));
+        assert!(n.contains(&"tomorrow"));
+        assert!(n.contains(&"in20days"));
+        assert!(!n.contains(&"yesterday"));
+        assert!(!n.contains(&"no_due"));
+    }
+
+    #[test]
+    fn due_filter_today_and_upcoming_with_overdue() {
+        let today = NaiveDate::from_ymd_opt(2025, 6, 15).unwrap();
+        let mut cards = due_date_cards(today);
+        apply_due_date_filter_with_today(&mut cards, DueDateFilter::TodayAndUpcoming, today, true);
+        let n = names(&cards);
+        assert!(n.contains(&"yesterday"));
+        assert!(n.contains(&"today"));
+        assert!(n.contains(&"tomorrow"));
+        assert!(n.contains(&"in20days"));
+        assert!(!n.contains(&"no_due"));
+    }
+
+    #[test]
+    fn due_filter_is_upcoming() {
+        assert!(!DueDateFilter::All.is_upcoming());
+        assert!(!DueDateFilter::Overdue.is_upcoming());
+        assert!(!DueDateFilter::Today.is_upcoming());
+        assert!(DueDateFilter::TodayAndUpcoming.is_upcoming());
+        assert!(DueDateFilter::Upcoming.is_upcoming());
+        assert!(DueDateFilter::UpcomingTomorrow.is_upcoming());
+        assert!(DueDateFilter::UpcomingWeek.is_upcoming());
+        assert!(DueDateFilter::UpcomingTwoWeeks.is_upcoming());
+    }
+
+    #[test]
+    fn due_filter_labels_non_empty() {
+        let variants = [
+            DueDateFilter::All,
+            DueDateFilter::Overdue,
+            DueDateFilter::Today,
+            DueDateFilter::TodayAndUpcoming,
+            DueDateFilter::Upcoming,
+            DueDateFilter::UpcomingTomorrow,
+            DueDateFilter::UpcomingWeek,
+            DueDateFilter::UpcomingTwoWeeks,
+        ];
+        for v in &variants {
+            assert!(!v.label().is_empty(), "label for {:?} is empty", v);
+        }
     }
 }

@@ -1,0 +1,288 @@
+.tag-sidebar h3 {
+    margin-bottom: 0.15rem;
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-weight: 600;
+}
+
+.tag-input {
+    display: flex;
+    gap: 0.25rem;
+}
+
+.tag-input input {
+    flex: 1;
+    padding: 0.3rem 0.4rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 0.75rem;
+    min-width: 0;
+    transition: border-color 0.15s;
+}
+
+.tag-input input:focus {
+    outline: none;
+    border-color: var(--border-hover);
+}
+
+.tag-input button {
+    padding: 0.3rem 0.5rem;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.75rem;
+    flex-shrink: 0;
+    transition: all 0.15s;
+}
+
+.tag-input button:hover {
+    color: var(--text-primary);
+    border-color: var(--border-hover);
+    background: var(--bg-card-hover);
+}
+
+.btn-new-tag {
+    padding: 0.3rem 0.5rem;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.75rem;
+    flex-shrink: 0;
+    transition: all 0.15s;
+    width: 100%;
+}
+
+.btn-new-tag:hover {
+    color: var(--text-primary);
+    border-color: var(--border-hover);
+    background: var(--bg-card-hover);
+}
+
+/* Shared tag search input — used in sidebar and card editor */
+.tag-search-input {
+    width: 100%;
+    padding: 0.3rem 0.4rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 0.75rem;
+    margin-bottom: 0.25rem;
+    transition: border-color 0.15s;
+    box-sizing: border-box;
+}
+
+.tag-search-input:focus {
+    outline: none;
+    border-color: var(--border-hover);
+}
+
+.tag-search-input::placeholder {
+    color: var(--text-muted);
+}
+
+.tag-list {
+    list-style: none;
+    padding: 0 0 0.375rem;
+}
+
+.tag-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.3rem 0.625rem 0.3rem 0.5rem;
+    border-radius: 0;
+    cursor: pointer;
+    font-size: 0.8rem;
+    color: var(--text-primary);
+    transition: background 0.1s;
+    border-left: 3px solid transparent;
+}
+
+@media (hover: hover) {
+    .tag-item:hover {
+        background: rgba(255, 255, 255, 0.03);
+    }
+}
+
+.tag-item.active {
+    background: var(--accent-subtle);
+    color: var(--accent-hover);
+}
+
+.tag-title {
+    flex: 1;
+}
+
+.no-tags-label {
+    font-style: italic;
+    color: var(--text-muted);
+}
+
+.tag-item.active .no-tags-label {
+    color: var(--accent-hover);
+}
+
+.no-tags-chip {
+    font-style: italic;
+}
+
+.tag-manage {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.8rem;
+    padding: 0 0.2rem;
+    opacity: 0;
+    transition: opacity 0.1s;
+}
+
+@media (hover: hover) {
+    .tag-item:hover .tag-manage {
+        opacity: 1;
+    }
+
+    .tag-manage:hover {
+        color: var(--text-primary);
+    }
+}
+
+@media (hover: none) {
+    .tag-manage {
+        opacity: 1;
+    }
+}
+
+
+/* Sidebar stats — reuses .meta-row / .meta-label / .meta-value from detail panel */
+.sidebar-stats {
+    padding: 0.5rem 0.75rem;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+/* Sync time in header */
+.sync-clickable {
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 0.15rem 0.4rem;
+    transition: background 0.15s;
+}
+
+.sync-clickable:hover {
+    background: var(--bg-hover);
+}
+
+.sync-clickable:hover .sync-btn {
+    color: var(--text-secondary);
+}
+
+.sync-btn {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    transition: color 0.15s;
+}
+
+.sync-sep {
+    color: var(--text-muted);
+}
+
+.sync-time {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+}
+
+.sync-latency {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+}
+
+
+/* Tag color dot in sidebar */
+.tag-color-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-right: 0.35rem;
+}
+
+/* Tag color section in tag detail */
+.tag-color-section {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.375rem 0;
+}
+
+.tag-color-label {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-weight: 600;
+}
+
+.tag-color-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.25rem 0;
+}
+
+.tag-color-input {
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-input);
+    cursor: pointer;
+    padding: 0;
+    -webkit-appearance: none;
+    appearance: none;
+}
+
+.tag-color-input::-webkit-color-swatch-wrapper {
+    padding: 2px;
+}
+
+.tag-color-input::-webkit-color-swatch {
+    border: none;
+    border-radius: 2px;
+}
+
+.tag-color-input::-moz-color-swatch {
+    border: none;
+    border-radius: 2px;
+}
+
+.tag-color-preview {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.tag-color-hex {
+    font-family: monospace;
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+}
+
+.tag-color-btn {
+    padding: 0.25rem 0.625rem;
+    font-size: 0.75rem;
+}

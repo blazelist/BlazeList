@@ -2,9 +2,9 @@ use super::{Version, is_compatible};
 
 #[test]
 fn pkg_version_macro() {
-    // Workspace version is "1.0.0".
+    // Workspace version is "2.0.0".
     let v: Version = crate::pkg_version!();
-    assert_eq!(v, Version::new(1, 0, 0));
+    assert_eq!(v, Version::new(2, 0, 0));
 }
 
 #[test]

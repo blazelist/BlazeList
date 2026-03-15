@@ -1,3 +1,4 @@
+use crate::components::settings_panel::SettingsButton;
 use crate::components::sync_indicator::SyncIndicator;
 use crate::state::store::{AppState, clear_all_state};
 use leptos::prelude::*;
@@ -24,7 +25,10 @@ pub fn Header() -> impl IntoView {
                 </button>
                 <h1 class="app-title" on:click=on_title_click>"BlazeList"</h1>
             </div>
-            <SyncIndicator />
+            <div class="header-right">
+                <SettingsButton />
+                <SyncIndicator />
+            </div>
         </header>
     }
 }

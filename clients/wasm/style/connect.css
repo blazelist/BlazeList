@@ -1,0 +1,66 @@
+/* Connection form (kept for fallback) */
+.connect-form {
+    max-width: 400px;
+    margin: 100px auto;
+    padding: 2rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.connect-form h1 {
+    text-align: center;
+    margin-bottom: 1.5rem;
+    color: var(--text-primary);
+}
+
+.form-group {
+    margin-bottom: 1rem;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 0.25rem;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+.form-group input {
+    width: 100%;
+    padding: 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 0.8rem;
+    transition: border-color 0.15s;
+}
+
+.btn-connect {
+    width: 100%;
+    padding: 0.625rem;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 500;
+    margin-top: 0.5rem;
+    transition: background 0.15s;
+}
+
+.btn-connect:hover {
+    background: var(--accent-hover);
+}
+
+.btn-connect:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.error {
+    color: var(--danger);
+    font-size: 0.8rem;
+    margin: 0.5rem 0;
+}

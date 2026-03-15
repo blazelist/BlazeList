@@ -5,7 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.0.0] - 2026-03-15
+
+### Added
+
+- Due date sort orders (ascending and descending)
+- Include-overdue option in due date filtering
+- Inline linked-card preview rendering with short UUID + card title
+- `TagFilterMode` (And / Or) for multi-tag filtering
+
+### Changed
+
+- Major version bump for protocol compatibility.
+- Card priority uses the full `i64` range (was `NonNegativeI64`),
+  updating placement and rebalancing logic accordingly.
+- Replaced `HashMap` with `IndexMap` for deterministic iteration order;
+  use `sort_unstable` where stable ordering is not required.
 
 ## [1.0.0] - 2026-03-07
 

@@ -1,10 +1,11 @@
 use crate::components::hooks::toggle_expanded;
 use crate::state::store::{AppState, get_client, sync_query_params};
+use crate::storage;
 use blazelist_client_lib::client::Client as _;
 use blazelist_protocol::{Entity, SequenceHistoryEntry, SequenceOperationKind};
 use leptos::prelude::*;
 
-/// Fetch sequence history from the server and update signals.
+/// Fetch sequence history from the server and update signals + cache.
 fn fetch_history(
     entries: RwSignal<Vec<SequenceHistoryEntry>>,
     loading: RwSignal<bool>,
@@ -16,10 +17,14 @@ fn fetch_history(
         if let Some(client) = get_client() {
             match client.get_sequence_history().await {
                 Ok(history) => {
-                    entries.set(history);
+                    entries.set(history.clone());
+                    storage::update_cached_sequence_history(history);
+                    storage::save_history_cache().await;
                 }
                 Err(e) => {
-                    error_msg.set(Some(format!("Failed to load history: {e}")));
+                    if entries.get_untracked().is_empty() {
+                        error_msg.set(Some(format!("Failed to load history: {e}")));
+                    }
                 }
             }
         }
@@ -51,6 +56,12 @@ pub fn SequenceHistory() -> impl IntoView {
 
         // Lazy-load on first expand
         if !is_expanded && !fetched.get() {
+            // Show cached data immediately if available
+            let cached = storage::get_cached_sequence_history();
+            if !cached.is_empty() {
+                entries.set(cached);
+            }
+
             fetched.set(true);
             fetch_history(entries, loading, error_msg);
         }
@@ -70,7 +81,7 @@ pub fn SequenceHistory() -> impl IntoView {
                 if !expanded.get() {
                     return view! { <div></div> }.into_any();
                 }
-                if loading.get() {
+                if loading.get() && entries.get().is_empty() {
                     return view! {
                         <div class="sequence-history-list">
                             <p class="version-loading">"Loading history\u{2026}"</p>

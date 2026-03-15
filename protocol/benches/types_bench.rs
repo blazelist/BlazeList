@@ -16,15 +16,11 @@ fn ts(ms: i64) -> DateTime<Utc> {
     DateTime::from_timestamp_millis(ms).unwrap()
 }
 
-fn p(v: i64) -> NonNegativeI64 {
-    NonNegativeI64::try_from(v).unwrap()
-}
-
 fn sample_card() -> Card {
     Card::first(
         ID,
         "Buy groceries\n- Tofu\n- Lentils\n- Bread\n- Tahini\n- Hummus".into(),
-        p(5_000_000_000),
+        5_000_000_000,
         vec![TAG_ID],
         false,
         ts(1_000_000),
@@ -47,7 +43,7 @@ fn bench_card_first(c: &mut Criterion) {
             Card::first(
                 ID,
                 "Buy groceries\n- Tofu\n- Lentils\n- Bread".into(),
-                p(5_000_000_000),
+                5_000_000_000,
                 vec![TAG_ID],
                 false,
                 ts(1_000_000),
@@ -63,7 +59,7 @@ fn bench_card_next(c: &mut Criterion) {
         b.iter(|| {
             card.next(
                 "Updated content with more text".into(),
-                p(5_000_000_001),
+                5_000_000_001,
                 vec![TAG_ID],
                 false,
                 ts(2_000_000),
@@ -120,11 +116,11 @@ fn bench_hash_chain(c: &mut Criterion) {
         group.bench_function(format!("chain_{chain_len}_versions"), |b| {
             b.iter(|| {
                 let mut card =
-                    Card::first(ID, "Content".into(), p(1000), vec![], false, ts(0), None);
+                    Card::first(ID, "Content".into(), 1000, vec![], false, ts(0), None);
                 for i in 1..chain_len {
                     card = card.next(
                         format!("Content version {i}"),
-                        p(1000),
+                        1000,
                         vec![],
                         false,
                         ts(i as i64 * 1000),
