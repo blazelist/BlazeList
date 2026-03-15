@@ -291,7 +291,7 @@ impl AppState {
             root: RwSignal::new(None),
             filter: RwSignal::new(parse_filter_from_params(&params)),
             due_date_filter: RwSignal::new(parse_due_date_filter_from_params(&params)),
-            include_overdue: RwSignal::new(false),
+            include_overdue: RwSignal::new(params.get("f.inc_overdue").as_deref() == Some("1")),
             sort_order: RwSignal::new(parse_sort_from_params(&params)),
             tag_filter: RwSignal::new({
                 let tags = parse_tags_from_params(&params);

@@ -1,6 +1,6 @@
 [package]
 name = "blazelist-wasm"
-version = "2.2.0"
+version = "2.2.1"
 edition.workspace = true
 
 [lints]
