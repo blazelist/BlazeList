@@ -225,6 +225,7 @@ pub fn CardDetail() -> impl IntoView {
         state.creating_new.set(false);
         state.creating_new_tag.set(false);
         state.editing.set(false);
+        state.has_unsaved_changes.set(false);
         confirm_delete.set(0);
         sync_query_params(&state);
     };
@@ -313,6 +314,19 @@ pub fn CardDetail() -> impl IntoView {
                 return None;
             }
             let selected_id = selected_id.unwrap();
+
+            // Check if the selected ID is a tag — render TagDetail without
+            // reactively tracking `cards` or `tags` so that auto-sync
+            // updating the signals does not destroy the component and
+            // lose unsaved edits.
+            if state.tags.get_untracked().iter().any(|t| t.id() == selected_id) {
+                return Some(view! {
+                    <div class="card-detail">
+                        <TagDetail />
+                    </div>
+                }.into_any());
+            }
+
             // When editing, don't reactively track `cards` — auto-sync
             // updating the signal would destroy the editor and lose unsaved changes.
             let editing_now = state.editing.get_untracked();
@@ -323,33 +337,35 @@ pub fn CardDetail() -> impl IntoView {
             }.into_iter().find(|c| c.id() == selected_id);
 
             if card.is_none() {
-                let is_tag = state.tags.get().iter().any(|t| t.id() == selected_id);
-                let id_str = selected_id.to_string();
-                if is_tag {
+                // Tracked fallback: subscribes to tags so the closure
+                // re-runs when tags arrive (e.g., page reload before
+                // sync finishes).  Once found, the untracked early-return
+                // above takes over and this subscription is dropped.
+                if state.tags.get().iter().any(|t| t.id() == selected_id) {
                     return Some(view! {
                         <div class="card-detail">
                             <TagDetail />
                         </div>
                     }.into_any());
-                } else {
-                    return Some(view! {
-                        <div class="card-detail">
-                            <div class="detail-header">
-                                <span class="detail-status deleted">"Not Found"</span>
-                                <button class="detail-close" on:click=on_close>"x"</button>
-                            </div>
-                            <div class="card-content deleted-notice">
-                                <p>"Entity not found. It may have been deleted."</p>
-                            </div>
-                            <div class="detail-meta">
-                                <div class="meta-row">
-                                    <span class="meta-label">"ID"</span>
-                                    <span class="meta-value">{id_str}</span>
-                                </div>
+                }
+                let id_str = selected_id.to_string();
+                return Some(view! {
+                    <div class="card-detail">
+                        <div class="detail-header">
+                            <span class="detail-status deleted">"Not Found"</span>
+                            <button class="detail-close" on:click=on_close>"x"</button>
+                        </div>
+                        <div class="card-content deleted-notice">
+                            <p>"Entity not found. It may have been deleted."</p>
+                        </div>
+                        <div class="detail-meta">
+                            <div class="meta-row">
+                                <span class="meta-label">"ID"</span>
+                                <span class="meta-value">{id_str}</span>
                             </div>
                         </div>
-                    }.into_any());
-                }
+                    </div>
+                }.into_any());
             }
 
             let card = card.unwrap();
@@ -1030,6 +1046,7 @@ fn NewTagForm(
             None
         };
 
+        state.has_unsaved_changes.set(false);
         let state = state;
         leptos::task::spawn_local(async move {
             if let Some(client) = get_client() {
@@ -1048,6 +1065,10 @@ fn NewTagForm(
     };
 
     let cancel_action = move || {
+        if !confirm_discard_changes(&state) {
+            return;
+        }
+        state.has_unsaved_changes.set(false);
         state.creating_new_tag.set(false);
         sync_query_params(&state);
     };
@@ -1056,6 +1077,9 @@ fn NewTagForm(
         <div class="detail-header">
             <div class="detail-header-left">
                 <span class="detail-status tag-not-card">"New Tag"</span>
+                {move || state.has_unsaved_changes.get().then(|| view! {
+                    <span class="unsaved-indicator">"(unsaved)"</span>
+                })}
             </div>
             <button class="detail-close" on:click=move |_| on_close(())>"x"</button>
         </div>
@@ -1070,7 +1094,10 @@ fn NewTagForm(
                     type="text"
                     placeholder="Tag title..."
                     prop:value=move || title_input.get()
-                    on:input=move |ev| title_input.set(event_target_value(&ev))
+                    on:input=move |ev| {
+                        title_input.set(event_target_value(&ev));
+                        state.has_unsaved_changes.set(true);
+                    }
                 />
             </form>
         </div>
@@ -1086,6 +1113,7 @@ fn NewTagForm(
                 on:input=move |ev| {
                     color_input.set(event_target_value(&ev));
                     use_color.set(true);
+                    state.has_unsaved_changes.set(true);
                 }
             />
             <span
@@ -1102,6 +1130,7 @@ fn NewTagForm(
                 <button class="btn-cancel tag-color-btn" on:click=move |_| {
                     use_color.set(false);
                     color_input.set(String::from("#808080"));
+                    state.has_unsaved_changes.set(true);
                 }>"Clear"</button>
             })}
         </div>

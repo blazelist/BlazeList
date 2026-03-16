@@ -16,11 +16,24 @@ pub fn TagDetail() -> impl IntoView {
     let error_msg: RwSignal<Option<String>> = RwSignal::new(None);
     let expanded: RwSignal<Option<i64>> = RwSignal::new(None);
 
-    // Editing state
-    let editing_title = RwSignal::new(false);
+    // Unified editing state for title + color
+    let editing = RwSignal::new(false);
     let title_input = RwSignal::new(String::new());
     let color_input = RwSignal::new(String::from("#808080"));
+    let use_color = RwSignal::new(false);
     let confirm_delete = RwSignal::new(0u8);
+
+    // Populate editing inputs from the current tag state.
+    let init_inputs = move |tag: &Tag| {
+        title_input.set(tag.title().to_string());
+        if let Some(c) = tag.color() {
+            color_input.set(format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b));
+            use_color.set(true);
+        } else {
+            color_input.set(String::from("#808080"));
+            use_color.set(false);
+        }
+    };
 
     // Fetch tag history on mount — show cached data first, then refresh from server.
     Effect::new(move |_| {
@@ -34,15 +47,12 @@ pub fn TagDetail() -> impl IntoView {
         }
         error_msg.set(None);
         expanded.set(None);
-        editing_title.set(false);
+        editing.set(false);
+        state.has_unsaved_changes.set(false);
         confirm_delete.set(0);
-        // Initialize color picker with the current tag's color
+        // Initialize inputs with current tag data
         if let Some(tag) = state.tags.get_untracked().iter().find(|t| t.id() == tag_id) {
-            color_input.set(
-                tag.color()
-                    .map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b))
-                    .unwrap_or_else(|| "#808080".to_string()),
-            );
+            init_inputs(tag);
         }
 
         // Load from cache immediately
@@ -79,37 +89,58 @@ pub fn TagDetail() -> impl IntoView {
         if !confirm_discard_changes(&state) {
             return;
         }
+        editing.set(false);
+        state.has_unsaved_changes.set(false);
         state.selected_card.set(None);
         state.editing.set(false);
         sync_query_params(&state);
     };
 
-    let on_start_edit = move |_| {
+    let start_editing = move || {
+        if let Some(tag_id) = state.selected_card.get_untracked() {
+            if let Some(tag) = state.tags.get_untracked().iter().find(|t| t.id() == tag_id) {
+                init_inputs(tag);
+                confirm_delete.set(0);
+                editing.set(true);
+            }
+        }
+    };
+
+    let cancel_editing = move || {
         if !confirm_discard_changes(&state) {
             return;
         }
-        let tag_id = state.selected_card.get_untracked().unwrap();
-        if let Some(tag) = state
-            .tags
-            .get_untracked()
-            .into_iter()
-            .find(|t| t.id() == tag_id)
-        {
-            title_input.set(tag.title().to_string());
-            editing_title.set(true);
-        }
+        editing.set(false);
+        state.has_unsaved_changes.set(false);
     };
 
-    let on_cancel_edit = move |_| {
-        editing_title.set(false);
-    };
-
-    let on_save_title = move |_| {
-        let tag_id = state.selected_card.get_untracked().unwrap();
+    let save_changes = move || {
+        let tag_id = match state.selected_card.get_untracked() {
+            Some(id) => id,
+            None => return,
+        };
         let new_title = title_input.get_untracked();
         if new_title.trim().is_empty() {
             return;
         }
+        let new_color = if use_color.get_untracked() {
+            let hex = color_input.get_untracked();
+            let hex = hex.trim_start_matches('#');
+            if hex.len() == 6 {
+                match (
+                    u8::from_str_radix(&hex[0..2], 16),
+                    u8::from_str_radix(&hex[2..4], 16),
+                    u8::from_str_radix(&hex[4..6], 16),
+                ) {
+                    (Ok(r), Ok(g), Ok(b)) => Some(RGB8::new(r, g, b)),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let tag = state
             .tags
             .get_untracked()
@@ -119,13 +150,14 @@ pub fn TagDetail() -> impl IntoView {
             Some(t) => t,
             None => return,
         };
-        let updated = tag.next(new_title, tag.color(), Utc::now());
-        editing_title.set(false);
+        let updated = tag.next(new_title, new_color, Utc::now());
+        editing.set(false);
+        state.has_unsaved_changes.set(false);
         let state = state;
         leptos::task::spawn_local(async move {
             if let Some(client) = get_client() {
                 if let Err(e) = client.push_tag(updated.clone()).await {
-                    tracing::error!(%e, "Failed to rename tag");
+                    tracing::error!(%e, "Failed to save tag");
                     return;
                 }
                 state.tags.update(|tags| {
@@ -133,7 +165,6 @@ pub fn TagDetail() -> impl IntoView {
                         *t = updated.clone();
                     }
                 });
-                // Refresh history
                 versions.update(|v| v.insert(0, updated));
             }
         });
@@ -213,39 +244,122 @@ pub fn TagDetail() -> impl IntoView {
 
     view! {
         <div class="detail-header">
-            <span class="detail-status tag-not-card">"Tag"</span>
+            <div class="detail-header-left">
+                {move || if editing.get() {
+                    view! { <span class="detail-status editing">"Editing"</span> }.into_any()
+                } else {
+                    view! { <span class="detail-status tag-not-card">"Tag"</span> }.into_any()
+                }}
+                {move || (editing.get() && state.has_unsaved_changes.get()).then(|| view! {
+                    <span class="unsaved-indicator">"(unsaved)"</span>
+                })}
+            </div>
             <button class="detail-close" on:click=on_close>"x"</button>
         </div>
 
         // Title section
         {move || {
             let tag_id = state.selected_card.get()?;
-            let tag = state.tags.get().into_iter().find(|t| t.id() == tag_id)?;
-            let title = tag.title().to_string();
+            let editing_now = editing.get();
+            // When editing, use get_untracked to avoid auto-sync
+            // destroying the input and losing the in-progress text.
+            let tag = if editing_now {
+                state.tags.get_untracked()
+            } else {
+                state.tags.get()
+            }.into_iter().find(|t| t.id() == tag_id)?;
 
-            if editing_title.get() {
+            if editing_now {
                 Some(view! {
                     <div class="tag-title-section">
                         <form class="tag-rename-form" on:submit=move |ev| {
                             ev.prevent_default();
-                            on_save_title(());
+                            save_changes();
                         }>
                             <input
                                 class="tag-rename-input"
                                 type="text"
+                                placeholder="Tag title..."
                                 prop:value=move || title_input.get()
-                                on:input=move |ev| title_input.set(event_target_value(&ev))
+                                on:input=move |ev| {
+                                    title_input.set(event_target_value(&ev));
+                                    state.has_unsaved_changes.set(true);
+                                }
                             />
-                            <button type="submit" class="btn-save">"Save"</button>
-                            <button type="button" class="btn-cancel" on:click=on_cancel_edit>"Cancel"</button>
                         </form>
                     </div>
                 }.into_any())
             } else {
+                let title = tag.title().to_string();
                 Some(view! {
-                    <div class="tag-title-section tag-title-editable" on:click=on_start_edit title="Click to rename">
+                    <div class="tag-title-section tag-title-editable" on:click=move |_| start_editing() title="Click to edit">
                         <span class="tag-detail-title">{title}</span>
                         <span class="tag-rename-icon">{"\u{270E}"}</span>
+                    </div>
+                }.into_any())
+            }
+        }}
+
+        // Color section
+        {move || {
+            let tag_id = state.selected_card.get()?;
+            let editing_now = editing.get();
+
+            if editing_now {
+                Some(view! {
+                    <div class="tag-color-section">
+                        <span class="tag-color-label">"Color"</span>
+                    </div>
+                    <div class="tag-color-row">
+                        <input
+                            class="tag-color-input"
+                            type="color"
+                            prop:value=move || color_input.get()
+                            on:input=move |ev| {
+                                color_input.set(event_target_value(&ev));
+                                use_color.set(true);
+                                state.has_unsaved_changes.set(true);
+                            }
+                        />
+                        <span
+                            class=move || if use_color.get() { "tag-color-preview" } else { "tag-color-preview tag-color-placeholder" }
+                            style=move || format!("background: {};", color_input.get())
+                        ></span>
+                        {move || use_color.get().then(|| {
+                            let hex = color_input.get();
+                            view! {
+                                <span class="tag-color-hex">{hex}</span>
+                            }
+                        })}
+                        {move || use_color.get().then(|| view! {
+                            <button class="btn-cancel tag-color-btn" on:click=move |_| {
+                                use_color.set(false);
+                                color_input.set(String::from("#808080"));
+                                state.has_unsaved_changes.set(true);
+                            }>"Clear"</button>
+                        })}
+                    </div>
+                }.into_any())
+            } else {
+                let tag = state.tags.get().into_iter().find(|t| t.id() == tag_id)?;
+                let current_color = tag.color().map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b));
+
+                Some(view! {
+                    <div class="tag-color-section">
+                        <span class="tag-color-label">"Color"</span>
+                    </div>
+                    <div class="tag-color-row">
+                        {current_color.as_ref().map(|c| {
+                            let style = format!("background: {c};");
+                            let hex = c.clone();
+                            view! {
+                                <span class="tag-color-preview" style=style></span>
+                                <span class="tag-color-hex">{hex}</span>
+                            }
+                        })}
+                        {current_color.is_none().then(|| view! {
+                            <span class="tag-color-hex due-not-set">"None"</span>
+                        })}
                     </div>
                 }.into_any())
             }
@@ -260,6 +374,12 @@ pub fn TagDetail() -> impl IntoView {
         <div class="card-actions">
             <div class="action-row cmd-row">
                 {move || {
+                    if editing.get() {
+                        return view! {
+                            <button class="btn-save" on:click=move |_| save_changes()>"Save"</button>
+                            <button class="btn-cancel" on:click=move |_| cancel_editing()>"Cancel"</button>
+                        }.into_any();
+                    }
                     if deleting.get() {
                         return view! {
                             <span class="confirm-text">"Deleting\u{2026}"</span>
@@ -292,6 +412,7 @@ pub fn TagDetail() -> impl IntoView {
                         }.into_any()
                     } else {
                         view! {
+                            <button class="btn-save" on:click=move |_| start_editing()>"Edit"</button>
                             <button class="btn-delete" on:click=move |_| confirm_delete.set(1)>"Delete"</button>
                         }.into_any()
                     }
@@ -299,104 +420,7 @@ pub fn TagDetail() -> impl IntoView {
             </div>
         </div>
 
-        // Color section
-        {move || {
-            let tag_id = state.selected_card.get()?;
-            let tag = state.tags.get().into_iter().find(|t| t.id() == tag_id)?;
-            let current_color = tag.color().map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b));
-            let has_color = tag.color().is_some();
-
-            let on_set_color = move |_| {
-                let tag_id = state.selected_card.get_untracked().unwrap();
-                let hex = color_input.get_untracked();
-                let hex = hex.trim_start_matches('#');
-                if hex.len() != 6 {
-                    return;
-                }
-                let rgb = match (
-                    u8::from_str_radix(&hex[0..2], 16),
-                    u8::from_str_radix(&hex[2..4], 16),
-                    u8::from_str_radix(&hex[4..6], 16),
-                ) {
-                    (Ok(r), Ok(g), Ok(b)) => RGB8::new(r, g, b),
-                    _ => return,
-                };
-                let tag = state.tags.get_untracked().into_iter().find(|t| t.id() == tag_id);
-                let tag = match tag {
-                    Some(t) => t,
-                    None => return,
-                };
-                let updated = tag.next(tag.title().to_string(), Some(rgb), Utc::now());
-                let state = state;
-                leptos::task::spawn_local(async move {
-                    if let Some(client) = get_client() {
-                        if let Err(e) = client.push_tag(updated.clone()).await {
-                            tracing::error!(%e, "Failed to set tag color");
-                            return;
-                        }
-                        state.tags.update(|tags| {
-                            if let Some(t) = tags.iter_mut().find(|t| t.id() == tag_id) {
-                                *t = updated.clone();
-                            }
-                        });
-                        versions.update(|v| v.insert(0, updated));
-                    }
-                });
-            };
-
-            let on_clear_color = move |_| {
-                let tag_id = state.selected_card.get_untracked().unwrap();
-                let tag = state.tags.get_untracked().into_iter().find(|t| t.id() == tag_id);
-                let tag = match tag {
-                    Some(t) => t,
-                    None => return,
-                };
-                let updated = tag.next(tag.title().to_string(), None, Utc::now());
-                let state = state;
-                leptos::task::spawn_local(async move {
-                    if let Some(client) = get_client() {
-                        if let Err(e) = client.push_tag(updated.clone()).await {
-                            tracing::error!(%e, "Failed to clear tag color");
-                            return;
-                        }
-                        state.tags.update(|tags| {
-                            if let Some(t) = tags.iter_mut().find(|t| t.id() == tag_id) {
-                                *t = updated.clone();
-                            }
-                        });
-                        versions.update(|v| v.insert(0, updated));
-                    }
-                });
-            };
-
-            Some(view! {
-                <div class="tag-color-section">
-                    <span class="tag-color-label">"Color"</span>
-                </div>
-                <div class="tag-color-row">
-                    <input
-                        class="tag-color-input"
-                        type="color"
-                        prop:value=move || color_input.get()
-                        on:input=move |ev| color_input.set(event_target_value(&ev))
-                    />
-                    {current_color.as_ref().map(|c| {
-                        let style = format!("background: {c};");
-                        let hex = c.clone();
-                        view! {
-                            <span class="tag-color-preview" style=style></span>
-                            <span class="tag-color-hex">{hex}</span>
-                        }
-                    })}
-                    <button class="btn-save tag-color-btn" on:click=on_set_color>"Set"</button>
-                    {has_color.then(|| view! {
-                        <button class="btn-cancel tag-color-btn" on:click=on_clear_color>"Clear"</button>
-                    })}
-                </div>
-            })
-        }}
-
-        // Metadata (nerd stats)
+        // Metadata
         {move || {
             let tag_id = state.selected_card.get()?;
             let tag = state.tags.get().into_iter().find(|t| t.id() == tag_id)?;
@@ -426,7 +450,7 @@ pub fn TagDetail() -> impl IntoView {
             })
         }}
 
-        // Version history (read-only)
+        // Version history
         <div class="tag-history-section">
             <span class="tag-history-label">"History"</span>
             {move || {

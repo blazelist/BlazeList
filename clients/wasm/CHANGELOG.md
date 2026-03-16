@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.3.0] - 2026-03-16
+
+### Fixed
+
+- Periodic sync check destroying the tag detail panel and losing unsaved
+  edits — the outer reactive closure tracked `state.tags` and `state.cards`,
+  so any incremental sync replaced the entire `TagDetail` component, wiping
+  in-progress title renames and color changes. The tag check now uses
+  untracked access with a self-healing tracked fallback for initial page load.
+- Setting a tag color discarded an in-progress title rename — the color push
+  updated `state.tags`, which triggered the same reactive destruction
+
+### Changed
+
+- Unified tag editing: title and color are now edited together in a single
+  editing mode with shared Save / Cancel buttons at the bottom, matching the
+  card editing UX. Unsaved tag edits are protected by the same
+  `has_unsaved_changes` guard and `beforeunload` confirmation as cards.
+- New tag creation form now shows an `(unsaved)` indicator and prompts
+  before discarding via Cancel or close, matching the card creation flow
+
 ## [2.2.1] - 2026-03-15
 
 ### Fixed
