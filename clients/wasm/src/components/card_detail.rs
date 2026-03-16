@@ -1021,6 +1021,15 @@ fn NewTagForm(
     let color_input = RwSignal::new(String::from("#808080"));
     let use_color = RwSignal::new(false);
 
+    // Track dirty state — compare against initial empty form.
+    Effect::new(move |_| {
+        let dirty = !title_input.get().trim().is_empty() || use_color.get();
+        state.has_unsaved_changes.set(dirty);
+    });
+    on_cleanup(move || {
+        state.has_unsaved_changes.set(false);
+    });
+
     let create_action = move || {
         let title = title_input.get_untracked();
         if title.trim().is_empty() {
@@ -1046,7 +1055,6 @@ fn NewTagForm(
             None
         };
 
-        state.has_unsaved_changes.set(false);
         let state = state;
         leptos::task::spawn_local(async move {
             if let Some(client) = get_client() {
@@ -1068,7 +1076,6 @@ fn NewTagForm(
         if !confirm_discard_changes(&state) {
             return;
         }
-        state.has_unsaved_changes.set(false);
         state.creating_new_tag.set(false);
         sync_query_params(&state);
     };
@@ -1094,10 +1101,7 @@ fn NewTagForm(
                     type="text"
                     placeholder="Tag title..."
                     prop:value=move || title_input.get()
-                    on:input=move |ev| {
-                        title_input.set(event_target_value(&ev));
-                        state.has_unsaved_changes.set(true);
-                    }
+                    on:input=move |ev| title_input.set(event_target_value(&ev))
                 />
             </form>
         </div>
@@ -1113,7 +1117,6 @@ fn NewTagForm(
                 on:input=move |ev| {
                     color_input.set(event_target_value(&ev));
                     use_color.set(true);
-                    state.has_unsaved_changes.set(true);
                 }
             />
             <span
@@ -1130,7 +1133,6 @@ fn NewTagForm(
                 <button class="btn-cancel tag-color-btn" on:click=move |_| {
                     use_color.set(false);
                     color_input.set(String::from("#808080"));
-                    state.has_unsaved_changes.set(true);
                 }>"Clear"</button>
             })}
         </div>

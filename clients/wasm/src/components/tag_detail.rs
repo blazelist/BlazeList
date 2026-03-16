@@ -23,16 +23,38 @@ pub fn TagDetail() -> impl IntoView {
     let use_color = RwSignal::new(false);
     let confirm_delete = RwSignal::new(0u8);
 
+    // Originals captured when editing starts, for dirty comparison.
+    let orig_title = RwSignal::new(String::new());
+    let orig_use_color = RwSignal::new(false);
+    let orig_color = RwSignal::new(String::from("#808080"));
+
+    // Track dirty state — compare current inputs against originals.
+    Effect::new(move |_| {
+        if !editing.get() {
+            return;
+        }
+        let dirty = title_input.get() != orig_title.get()
+            || use_color.get() != orig_use_color.get()
+            || (use_color.get() && color_input.get() != orig_color.get());
+        state.has_unsaved_changes.set(dirty);
+    });
+
     // Populate editing inputs from the current tag state.
     let init_inputs = move |tag: &Tag| {
         title_input.set(tag.title().to_string());
         if let Some(c) = tag.color() {
-            color_input.set(format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b));
+            let hex = format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
+            color_input.set(hex.clone());
             use_color.set(true);
+            orig_color.set(hex);
+            orig_use_color.set(true);
         } else {
             color_input.set(String::from("#808080"));
             use_color.set(false);
+            orig_color.set(String::from("#808080"));
+            orig_use_color.set(false);
         }
+        orig_title.set(tag.title().to_string());
     };
 
     // Fetch tag history on mount — show cached data first, then refresh from server.
@@ -281,10 +303,7 @@ pub fn TagDetail() -> impl IntoView {
                                 type="text"
                                 placeholder="Tag title..."
                                 prop:value=move || title_input.get()
-                                on:input=move |ev| {
-                                    title_input.set(event_target_value(&ev));
-                                    state.has_unsaved_changes.set(true);
-                                }
+                                on:input=move |ev| title_input.set(event_target_value(&ev))
                             />
                         </form>
                     </div>
@@ -318,7 +337,6 @@ pub fn TagDetail() -> impl IntoView {
                             on:input=move |ev| {
                                 color_input.set(event_target_value(&ev));
                                 use_color.set(true);
-                                state.has_unsaved_changes.set(true);
                             }
                         />
                         <span
@@ -335,7 +353,6 @@ pub fn TagDetail() -> impl IntoView {
                             <button class="btn-cancel tag-color-btn" on:click=move |_| {
                                 use_color.set(false);
                                 color_input.set(String::from("#808080"));
-                                state.has_unsaved_changes.set(true);
                             }>"Clear"</button>
                         })}
                     </div>

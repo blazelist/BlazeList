@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.3.1] - 2026-03-16
+
+### Fixed
+
+- Unsaved changes indicator on new tag creation and tag editing stayed dirty
+  after reverting inputs to their original state — now uses a reactive Effect
+  that compares against the original values, matching the card editor behavior
+
 ## [2.3.0] - 2026-03-16
 
 ### Fixed
