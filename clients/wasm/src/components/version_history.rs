@@ -1,4 +1,4 @@
-use crate::components::hooks::toggle_expanded;
+use crate::components::hooks::{handle_code_copy_click, toggle_expanded};
 use crate::state::store::{
     AppState, format_relative_time, get_client, sync_query_params, tag_chip_style,
 };
@@ -13,7 +13,8 @@ use leptos::prelude::*;
 use uuid::Uuid;
 
 fn render_markdown(content: &str) -> String {
-    comrak::markdown_to_html(content, &blazelist_client_lib::display::markdown_options())
+    let html = comrak::markdown_to_html(content, &blazelist_client_lib::display::markdown_options());
+    blazelist_client_lib::display::wrap_code_blocks_with_copy_button(&html)
 }
 
 /// Inline version history section for a card. Renders a "History" label
@@ -25,12 +26,23 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
     let loading = RwSignal::new(true);
     let error_msg: RwSignal<Option<String>> = RwSignal::new(None);
     let expanded: RwSignal<Option<i64>> = RwSignal::new(None);
+    let prev_card: RwSignal<Option<Uuid>> = RwSignal::new(None);
 
     // Fetch history on mount — show cached data first, then refresh from server.
+    // Also re-trigger when connection status changes so that history is fetched
+    // after the client connects (the card detail no longer re-creates this
+    // component on sync, so the Effect must retry on its own).
     Effect::new(move |_| {
-        let _ = state.selected_card.get(); // re-trigger on card change
-        error_msg.set(None);
-        expanded.set(None);
+        let selected = state.selected_card.get(); // re-trigger on card change
+        let _ = state.connection_status.get(); // re-trigger on connect
+
+        // Only reset UI state when the selected card changes,
+        // not on every connection status transition.
+        if prev_card.get_untracked() != selected {
+            error_msg.set(None);
+            expanded.set(None);
+            prev_card.set(selected);
+        }
 
         // Load from cache immediately
         let cached = storage::get_cached_card_history(card_id);
@@ -219,7 +231,9 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
 
                                 Some(view! {
                                     <div class="version-expanded">
-                                        <div class="version-preview" inner_html=content_html></div>
+                                        <div class="version-preview" inner_html=content_html on:click=move |ev: web_sys::MouseEvent| {
+                                            handle_code_copy_click(&ev);
+                                        }></div>
                                         <div class="version-detail-meta">
                                             {(!tag_entries.is_empty()).then(|| {
                                                 let tags = tag_entries.clone();

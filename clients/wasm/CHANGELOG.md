@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.4.0] - 2026-03-17
+
+### Added
+
+- Copy-to-clipboard button on markdown code blocks — hover-reveal button in the
+  top-right corner of rendered `<pre>` blocks copies the text content to the
+  clipboard, wired into card detail, version history, and card editor preview
+- Orange dotted-underline styling for markdown links in card content preview,
+  matching the card UUID link treatment with `--accent` / `--accent-hover` colors
+
+### Changed
+
+- Renamed `?card=` query parameter to `?entity=` since it selects both cards
+  and tags
+
+### Fixed
+
+- Loading screen showed scrollbars due to browser default 8 px body margin
+  combined with `height:100vh` — set `margin:0` inline on `<body>` and removed
+  the previous `margin:-8px;padding:8px` workaround
+- Periodic sync check destroyed the card detail view and closed the version
+  history panel — the outer reactive closure tracked `state.cards`, so any
+  incremental sync replaced the entire component. Now uses untracked access
+  with a self-healing tracked fallback for initial page load, matching the
+  tag detail fix. Card and tag version history also re-trigger their fetch
+  on connection status changes so history loads after the client connects
+  on page reload
+- Fenced code blocks in card detail and version history had a double-stacked
+  dark background — `<code>` inside `<pre>` inherited its own
+  `rgba(0,0,0,0.4)` on top of the `<pre>` background; reset `pre code` to
+  transparent
+
 ## [2.3.1] - 2026-03-16
 
 ### Fixed

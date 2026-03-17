@@ -7,6 +7,7 @@ use blazelist_client_lib::client::Client as _;
 use blazelist_protocol::{Card, Entity, PushItem, Tag, Utc};
 use leptos::prelude::*;
 use rgb::RGB8;
+use uuid::Uuid;
 
 #[component]
 pub fn TagDetail() -> impl IntoView {
@@ -15,6 +16,7 @@ pub fn TagDetail() -> impl IntoView {
     let loading = RwSignal::new(true);
     let error_msg: RwSignal<Option<String>> = RwSignal::new(None);
     let expanded: RwSignal<Option<i64>> = RwSignal::new(None);
+    let prev_tag: RwSignal<Option<Uuid>> = RwSignal::new(None);
 
     // Unified editing state for title + color
     let editing = RwSignal::new(false);
@@ -58,23 +60,32 @@ pub fn TagDetail() -> impl IntoView {
     };
 
     // Fetch tag history on mount — show cached data first, then refresh from server.
+    // Also re-trigger when connection status changes so that history is fetched
+    // after the client connects on page reload.
     Effect::new(move |_| {
         let tag_id = match state.selected_card.get() {
             Some(id) => id,
             None => return,
         };
+        let _ = state.connection_status.get(); // re-trigger on connect
         // Only fetch if this UUID is actually a tag
         if !state.tags.get_untracked().iter().any(|t| t.id() == tag_id) {
             return;
         }
-        error_msg.set(None);
-        expanded.set(None);
-        editing.set(false);
-        state.has_unsaved_changes.set(false);
-        confirm_delete.set(0);
-        // Initialize inputs with current tag data
-        if let Some(tag) = state.tags.get_untracked().iter().find(|t| t.id() == tag_id) {
-            init_inputs(tag);
+
+        // Only reset UI state when the selected tag changes,
+        // not on every connection status transition.
+        if prev_tag.get_untracked() != Some(tag_id) {
+            error_msg.set(None);
+            expanded.set(None);
+            editing.set(false);
+            state.has_unsaved_changes.set(false);
+            confirm_delete.set(0);
+            // Initialize inputs with current tag data
+            if let Some(tag) = state.tags.get_untracked().iter().find(|t| t.id() == tag_id) {
+                init_inputs(tag);
+            }
+            prev_tag.set(Some(tag_id));
         }
 
         // Load from cache immediately

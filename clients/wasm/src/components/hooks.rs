@@ -51,3 +51,35 @@ pub fn use_click_outside_close(open: RwSignal<bool>, container_ref: NodeRef<lept
         });
     });
 }
+
+/// Handle a click event on a code-block copy button (`.code-copy-btn`).
+///
+/// If the click target is (or is inside) a `.code-copy-btn`, finds the
+/// parent `.code-block-wrapper`, reads the `<pre>` text content, and
+/// copies it to the clipboard.  Returns `true` when a copy was handled
+/// so the caller can short-circuit further event processing.
+pub fn handle_code_copy_click(ev: &web_sys::MouseEvent) -> bool {
+    let target = match ev.target() {
+        Some(t) => t,
+        None => return false,
+    };
+    let el = match target.dyn_into::<web_sys::HtmlElement>() {
+        Ok(el) => el,
+        Err(_) => return false,
+    };
+    if let Ok(Some(btn)) = el.closest(".code-copy-btn") {
+        if let Ok(Some(wrapper)) = btn.closest(".code-block-wrapper") {
+            if let Ok(Some(pre)) = wrapper.query_selector("pre") {
+                let text = pre.text_content().unwrap_or_default();
+                // CommonMark renders a trailing newline inside <code> — remove it
+                let text = text.strip_suffix('\n').unwrap_or(&text);
+                if let Some(w) = web_sys::window() {
+                    let clipboard = w.navigator().clipboard();
+                    let _ = clipboard.write_text(&text);
+                }
+            }
+        }
+        return true;
+    }
+    false
+}

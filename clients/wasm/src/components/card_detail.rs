@@ -1,5 +1,5 @@
 use crate::components::card_editor::CardEditor;
-use crate::components::hooks::use_click_outside_close;
+use crate::components::hooks::{handle_code_copy_click, use_click_outside_close};
 use crate::components::tag_detail::TagDetail;
 use crate::components::version_history::VersionHistory;
 use crate::state::store::{
@@ -38,7 +38,8 @@ fn render_markdown(
         comrak::markdown_to_html(content, &blazelist_client_lib::display::markdown_options());
     // comrak renders checkboxes with disabled="" — remove it so clicks fire
     let html = html.replace(" disabled=\"\"", "");
-    blazelist_client_lib::display::linkify_card_uuids_with_previews(&html, card_ids, card_previews, blazed_ids)
+    let html = blazelist_client_lib::display::linkify_card_uuids_with_previews(&html, card_ids, card_previews, blazed_ids);
+    blazelist_client_lib::display::wrap_code_blocks_with_copy_button(&html)
 }
 
 /// Flush pending debounced versions (fire-and-forget).
@@ -327,14 +328,20 @@ pub fn CardDetail() -> impl IntoView {
                 }.into_any());
             }
 
-            // When editing, don't reactively track `cards` — auto-sync
-            // updating the signal would destroy the editor and lose unsaved changes.
+            // Don't reactively track `cards` — auto-sync updating the
+            // signal would destroy the component and lose version history
+            // expansion state (and editor content when editing).
             let editing_now = state.editing.get_untracked();
-            let card = if editing_now {
-                state.cards.get_untracked()
-            } else {
-                state.cards.get()
-            }.into_iter().find(|c| c.id() == selected_id);
+            let card = state.cards.get_untracked()
+                .into_iter().find(|c| c.id() == selected_id)
+                .or_else(|| {
+                    // Tracked fallback: subscribe so the closure re-runs
+                    // when cards arrive (e.g., page reload before sync
+                    // finishes).  Once found via untracked above, this
+                    // path is never reached and the dependency is dropped.
+                    state.cards.get()
+                        .into_iter().find(|c| c.id() == selected_id)
+                });
 
             if card.is_none() {
                 // Tracked fallback: subscribes to tags so the closure
@@ -632,6 +639,11 @@ pub fn CardDetail() -> impl IntoView {
                         sync_query_params(&state);
                         return;
                     }
+                }
+
+                // Check for code-block copy button click.
+                if handle_code_copy_click(&ev) {
+                    return;
                 }
 
                 // Checkbox toggle handling.

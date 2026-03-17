@@ -114,6 +114,10 @@
     margin-bottom: 0.5rem;
     border: 1px solid var(--border);
 }
+.version-preview pre code {
+    background: transparent;
+    padding: 0;
+}
 .version-preview img {
     max-width: 100%;
     height: auto;

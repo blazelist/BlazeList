@@ -70,6 +70,34 @@ pub fn markdown_options() -> Options<'static> {
     opts
 }
 
+/// Post-process rendered HTML to wrap `<pre>` code blocks inside a container
+/// with a "copy to clipboard" button.
+///
+/// Each `<pre>…</pre>` block is wrapped in
+/// `<div class="code-block-wrapper"><button class="code-copy-btn" title="Copy to clipboard">⧉</button><pre>…</pre></div>`.
+pub fn wrap_code_blocks_with_copy_button(html: &str) -> String {
+    static PRE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?s)<pre(?:\s[^>]*)?>.*?</pre>").expect("pre regex is valid")
+    });
+
+    // ~20% extra capacity for the wrapper + button markup added around each <pre>.
+    let mut result = String::with_capacity(html.len() + html.len() / 5);
+    let mut last_end = 0;
+    for m in PRE_RE.find_iter(html) {
+        result.push_str(&html[last_end..m.start()]);
+        result.push_str(
+            r#"<div class="code-block-wrapper"><button class="code-copy-btn" title="Copy to clipboard">"#,
+        );
+        result.push('\u{29C9}'); // ⧉
+        result.push_str("</button>");
+        result.push_str(m.as_str());
+        result.push_str("</div>");
+        last_end = m.end();
+    }
+    result.push_str(&html[last_end..]);
+    result
+}
+
 /// Toggle the `index`-th GFM task-list checkbox in a markdown string.
 ///
 /// Scans for lines matching `- [ ]` / `- [x]` (also `*`/`+` bullets, case-insensitive `x`)
@@ -1184,5 +1212,37 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
         assert!(result.contains("&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;"));
         assert!(!result.contains("<script>alert"));
+    }
+
+    #[test]
+    fn wrap_code_blocks_no_pre() {
+        let html = "<p>Hello world</p>";
+        assert_eq!(wrap_code_blocks_with_copy_button(html), html);
+    }
+
+    #[test]
+    fn wrap_code_blocks_single_pre() {
+        let html = "<pre><code>let x = 1;</code></pre>";
+        let result = wrap_code_blocks_with_copy_button(html);
+        assert!(result.starts_with(r#"<div class="code-block-wrapper">"#));
+        assert!(result.contains(r#"<button class="code-copy-btn" title="Copy to clipboard">"#));
+        assert!(result.contains("<pre><code>let x = 1;</code></pre>"));
+        assert!(result.ends_with("</div>"));
+    }
+
+    #[test]
+    fn wrap_code_blocks_multiple_pre() {
+        let html = "<p>text</p><pre><code>a</code></pre><p>mid</p><pre><code>b</code></pre>";
+        let result = wrap_code_blocks_with_copy_button(html);
+        assert_eq!(result.matches("code-block-wrapper").count(), 2);
+        assert_eq!(result.matches("code-copy-btn").count(), 2);
+    }
+
+    #[test]
+    fn wrap_code_blocks_preserves_surrounding_html() {
+        let html = "<h1>Title</h1><pre><code>x</code></pre><p>after</p>";
+        let result = wrap_code_blocks_with_copy_button(html);
+        assert!(result.starts_with("<h1>Title</h1>"));
+        assert!(result.ends_with("<p>after</p>"));
     }
 }

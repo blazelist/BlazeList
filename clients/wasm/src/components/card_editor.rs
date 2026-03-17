@@ -1,4 +1,4 @@
-use crate::components::hooks::use_click_outside_close;
+use crate::components::hooks::{handle_code_copy_click, use_click_outside_close};
 use crate::state::store::{
     AppState, AutoSaveStatus, DueDatePreset, NewCardPosition, format_due_date_badge, get_client,
     sync_query_params, tag_chip_style,
@@ -409,7 +409,8 @@ pub fn CardEditor(
 
     let preview_html = move || {
         let text = content.get();
-        comrak::markdown_to_html(&text, &blazelist_client_lib::display::markdown_options())
+        let html = comrak::markdown_to_html(&text, &blazelist_client_lib::display::markdown_options());
+        blazelist_client_lib::display::wrap_code_blocks_with_copy_button(&html)
     };
 
     let save_label = move || if card_created.get() { "Update" } else { "Save" };
@@ -485,7 +486,9 @@ pub fn CardEditor(
                                 node_ref=textarea_ref
                             />
                             {move || show_preview.get().then(|| view! {
-                                <div class="editor-preview" inner_html=preview_html></div>
+                                <div class="editor-preview" inner_html=preview_html on:click=move |ev: web_sys::MouseEvent| {
+                                    handle_code_copy_click(&ev);
+                                }></div>
                             })}
                         </div>
                         <div class="editor-tags">

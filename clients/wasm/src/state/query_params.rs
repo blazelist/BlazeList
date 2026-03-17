@@ -70,7 +70,7 @@ pub fn parse_no_tags_from_params(params: &web_sys::UrlSearchParams) -> bool {
 }
 
 pub fn parse_selected_card_from_params(params: &web_sys::UrlSearchParams) -> Option<Uuid> {
-    params.get("card").and_then(|s| s.parse::<Uuid>().ok())
+    params.get("entity").and_then(|s| s.parse::<Uuid>().ok())
 }
 
 pub fn parse_linked_cards_from_params(params: &web_sys::UrlSearchParams) -> Vec<Uuid> {
@@ -141,7 +141,7 @@ fn build_query_string(state: &AppState) -> String {
     }
 
     if let Some(card_id) = state.selected_card.get_untracked() {
-        params.set("card", &card_id.to_string());
+        params.set("entity", &card_id.to_string());
     }
 
     let links = state.linked_card_filter.get_untracked();
