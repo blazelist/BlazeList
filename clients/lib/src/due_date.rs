@@ -64,17 +64,19 @@ pub fn format_due_date_display(due_date: &DateTime<Utc>) -> String {
 pub enum DueDatePreset {
     Today,
     Tomorrow,
+    InTwoDays,
     NextMon,
     NextFri,
 }
 
 impl DueDatePreset {
-    pub const ALL: [Self; 4] = [Self::Today, Self::Tomorrow, Self::NextMon, Self::NextFri];
+    pub const ALL: [Self; 5] = [Self::Today, Self::Tomorrow, Self::InTwoDays, Self::NextMon, Self::NextFri];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Today => "Today",
             Self::Tomorrow => "Tomorrow",
+            Self::InTwoDays => "In 2 Days",
             Self::NextMon => "Next Mon",
             Self::NextFri => "Next Fri",
         }
@@ -84,6 +86,7 @@ impl DueDatePreset {
         match self {
             Self::Today => today_midnight(),
             Self::Tomorrow => tomorrow_midnight(),
+            Self::InTwoDays => in_two_days_midnight(),
             Self::NextMon => next_weekday(Weekday::Mon),
             Self::NextFri => next_weekday(Weekday::Fri),
         }
@@ -103,6 +106,12 @@ pub fn today_midnight() -> DateTime<Utc> {
 pub fn tomorrow_midnight() -> DateTime<Utc> {
     let tomorrow = Utc::now().date_naive().succ_opt().unwrap();
     tomorrow.and_hms_opt(0, 0, 0).unwrap().and_utc()
+}
+
+/// Two days from now at midnight UTC.
+pub fn in_two_days_midnight() -> DateTime<Utc> {
+    let two_days = Utc::now().date_naive() + chrono::Duration::days(2);
+    two_days.and_hms_opt(0, 0, 0).unwrap().and_utc()
 }
 
 /// The next occurrence of the given weekday at midnight UTC.
@@ -215,6 +224,22 @@ mod tests {
             (tomorrow - today).num_days(),
             1,
             "tomorrow should be exactly 1 day after today"
+        );
+    }
+
+    #[test]
+    fn in_two_days_midnight_is_after_tomorrow() {
+        let today = today_midnight();
+        let two_days = in_two_days_midnight();
+        assert_eq!(
+            (two_days - today).num_days(),
+            2,
+            "in_two_days should be exactly 2 days after today"
+        );
+        assert_eq!(
+            two_days.time(),
+            chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap(),
+            "in_two_days should resolve to midnight"
         );
     }
 

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.3.0] - 2026-03-23
+
+### Added
+
+- `InTwoDays` variant to `DueDatePreset` with `in_two_days_midnight()` helper —
+  quick-pick option for setting due dates to two days from now, automatically
+  available in card detail and editor dropdowns via `DueDatePreset::ALL`
+- `reconcile_offline_queue` function that filters an offline card queue against
+  local state — brand-new cards (ancestor hash is zero) are always kept, and
+  only cards whose local version is strictly newer are dropped
+
 ## [2.2.0] - 2026-03-17
 
 ### Added

@@ -5,7 +5,7 @@
 //! the shared logic for that operation.
 
 use blazelist_protocol::ChangeSet;
-use blazelist_protocol::{Card, Entity, Tag};
+use blazelist_protocol::{Card, Entity, Tag, ZERO_HASH};
 use indexmap::IndexMap;
 use uuid::Uuid;
 
@@ -53,6 +53,30 @@ pub fn apply_tag_changeset(current_tags: Vec<Tag>, changes: &ChangeSet) -> Vec<T
     }
 
     tags.into_values().collect()
+}
+
+/// Reconcile an offline queue against the current local card state.
+///
+/// Returns only the cards that should still be pushed to the server:
+///
+/// - **Brand-new cards** (`ancestor_hash == ZERO_HASH`) are always kept —
+///   they only exist locally because the client inserted them optimistically
+///   and have never been confirmed by the server.
+/// - **Stale edits** whose local version is *strictly newer* than the queued
+///   version are dropped (the server already has a newer state).
+/// - Everything else is kept for pushing.
+pub fn reconcile_offline_queue(queue: Vec<Card>, local_cards: &[Card]) -> Vec<Card> {
+    queue
+        .into_iter()
+        .filter(|queued| {
+            if queued.ancestor_hash() == ZERO_HASH {
+                return true;
+            }
+            !local_cards
+                .iter()
+                .any(|lc| lc.id() == queued.id() && lc.count() > queued.count())
+        })
+        .collect()
 }
 
 /// Trim trailing whitespace from card content.
@@ -402,5 +426,196 @@ mod tests {
 
         let result = apply_tag_changeset(tags, &changes);
         assert_eq!(result.len(), 2);
+    }
+
+    // --- Offline queue reconciliation tests ---
+
+    #[test]
+    fn reconcile_keeps_new_card_with_zero_hash_ancestor() {
+        // A brand-new card (ancestor == ZERO_HASH) must always be pushed,
+        // even if local state already has the same card at the same count.
+        let card = Card::first(
+            fixed_uuid(1),
+            "offline card".into(),
+            priority(1000),
+            vec![],
+            false,
+            fixed_time(),
+            None,
+        );
+        let local_cards = vec![card.clone()];
+        let queue = vec![card];
+
+        let result = reconcile_offline_queue(queue, &local_cards);
+        assert_eq!(result.len(), 1, "new card must not be dropped");
+    }
+
+    #[test]
+    fn reconcile_keeps_edit_at_same_count() {
+        // If the local card has the same count as the queued edit, the
+        // queued version might not have been pushed yet — keep it.
+        let original = Card::first(
+            fixed_uuid(1),
+            "v1".into(),
+            priority(1000),
+            vec![],
+            false,
+            fixed_time(),
+            None,
+        );
+        let edited = original.next(
+            "v2".into(),
+            priority(1000),
+            vec![],
+            false,
+            fixed_time(),
+            None,
+        );
+        let local_cards = vec![edited.clone()];
+        let queue = vec![edited];
+
+        let result = reconcile_offline_queue(queue, &local_cards);
+        assert_eq!(result.len(), 1, "same-count edit must not be dropped");
+    }
+
+    #[test]
+    fn reconcile_drops_stale_edit() {
+        // The server (via incremental sync) advanced the card beyond the
+        // queued version — safe to drop.
+        let v1 = Card::first(
+            fixed_uuid(1),
+            "v1".into(),
+            priority(1000),
+            vec![],
+            false,
+            fixed_time(),
+            None,
+        );
+        let v2 = v1.next(
+            "v2".into(),
+            priority(1000),
+            vec![],
+            false,
+            fixed_time(),
+            None,
+        );
+        let v3 = v2.next(
+            "v3".into(),
+            priority(1000),
+            vec![],
+            false,
+            fixed_time(),
+            None,
+        );
+        // Local state has v3, queue still has v2
+        let local_cards = vec![v3];
+        let queue = vec![v2];
+
+        let result = reconcile_offline_queue(queue, &local_cards);
+        assert!(result.is_empty(), "stale edit must be dropped");
+    }
+
+    #[test]
+    fn reconcile_keeps_card_not_in_local_state() {
+        // Card exists in queue but not in local state (e.g. after a full
+        // re-sync wiped local state).
+        let card = Card::first(
+            fixed_uuid(1),
+            "orphan".into(),
+            priority(1000),
+            vec![],
+            false,
+            fixed_time(),
+            None,
+        )
+        .next(
+            "orphan v2".into(),
+            priority(1000),
+            vec![],
+            false,
+            fixed_time(),
+            None,
+        );
+        let local_cards: Vec<Card> = vec![];
+        let queue = vec![card];
+
+        let result = reconcile_offline_queue(queue, &local_cards);
+        assert_eq!(result.len(), 1, "card not in local state must be kept");
+    }
+
+    #[test]
+    fn reconcile_empty_queue() {
+        let local_cards = sample_cards();
+        let result = reconcile_offline_queue(vec![], &local_cards);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn reconcile_mixed_queue() {
+        // Mix of new card, stale edit, and current edit.
+        let new_card = Card::first(
+            fixed_uuid(10),
+            "new".into(),
+            priority(5000),
+            vec![],
+            false,
+            fixed_time(),
+            None,
+        );
+
+        let v1 = Card::first(
+            fixed_uuid(20),
+            "v1".into(),
+            priority(4000),
+            vec![],
+            false,
+            fixed_time(),
+            None,
+        );
+        let v2 = v1.next(
+            "v2".into(),
+            priority(4000),
+            vec![],
+            false,
+            fixed_time(),
+            None,
+        );
+        let v3 = v2.next(
+            "v3".into(),
+            priority(4000),
+            vec![],
+            false,
+            fixed_time(),
+            None,
+        );
+
+        let current_edit = Card::first(
+            fixed_uuid(30),
+            "current".into(),
+            priority(3000),
+            vec![],
+            false,
+            fixed_time(),
+            None,
+        )
+        .next(
+            "current v2".into(),
+            priority(3000),
+            vec![],
+            false,
+            fixed_time(),
+            None,
+        );
+
+        // Local: new_card at count=1, card 20 at v3, card 30 at count=2
+        let local_cards = vec![new_card.clone(), v3, current_edit.clone()];
+        // Queue: new_card (keep), v2 of card 20 (stale, drop), current_edit (keep)
+        let queue = vec![new_card, v2, current_edit];
+
+        let result = reconcile_offline_queue(queue, &local_cards);
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|c| c.id() == fixed_uuid(10)));
+        assert!(result.iter().any(|c| c.id() == fixed_uuid(30)));
+        assert!(!result.iter().any(|c| c.id() == fixed_uuid(20)));
     }
 }

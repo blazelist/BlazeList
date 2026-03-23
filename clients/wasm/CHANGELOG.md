@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.5.0] - 2026-03-23
+
+### Fixed
+
+- Offline-created cards silently dropped by flush reconciliation — the filter
+  compared queued cards against local state (which includes optimistically
+  inserted cards) using `>=`, so new cards with the same count were dropped
+  without ever reaching the server. Now uses `reconcile_offline_queue` from
+  `blazelist-client-lib` which skips brand-new cards and uses strict `>`
+- `HashVerificationFailed` errors (server doesn't have the card at all) now
+  handled in both `push_card_or_queue` and `flush_offline_queue` by recreating
+  the card as a first version, preserving all content. Previously these fell
+  through to the catch-all error handler, leaving the card stuck in the queue
+
 ## [2.4.0] - 2026-03-17
 
 ### Added

@@ -5,6 +5,8 @@
 # BlazeList
 **Blazingly fast sorted list of Markdown cards. 🔥**
 
+[![project status: alpha](https://img.shields.io/badge/project%20status-alpha-orange)](https://github.com/blazelist/BlazeList)
+
 [![blazelist-server](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fblazelist%2FBlazeList%2Fmain%2Fserver%2FCargo.toml&query=package.version&prefix=v&label=blazelist-server)](https://github.com/blazelist/BlazeList/tree/main/server)
 [![blazelist-protocol](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fblazelist%2FBlazeList%2Fmain%2Fprotocol%2FCargo.toml&query=package.version&prefix=v&label=blazelist-protocol)](https://github.com/blazelist/BlazeList/tree/main/protocol)
 [![blazelist-client-lib](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fblazelist%2FBlazeList%2Fmain%2Fclients%2Flib%2FCargo.toml&query=package.version&prefix=v&label=blazelist-client-lib)](https://github.com/blazelist/BlazeList/tree/main/clients/lib)
@@ -24,16 +26,11 @@ Designed to scale to thousands of cards without introducing noticeable latency o
 ---
 
 > [!WARNING]
-> **This project is in active development.**
+> **This project is in alpha — breaking changes are expected.**
 >
-> ⚠️ **It is not recommended to run this in production with data you care about unless you are fully aware of the risks and take the necessary precautions.**
->
-> 🔓️ **No network security or credential management is implemented — you're therefore responsible for securing your deployment.**
->
-> - Breaking changes are expected
-> - Initial iterations rely heavily on large quantities of vibe-coded code with very little review or attention given so far
-> - This is intentional during the prototyping phase to enable fast iteration and experimentation
-> - Code quality standards will be raised as the architecture stabilizes
+> - Not recommended for production use with data you care about unless you have proper precautions and backups in place.
+> - No network security or credential management is implemented — you are responsible for securing your deployment.
+> - Initial iterations rely heavily on vibe-coded code with little review — code quality standards will be raised as the architecture stabilizes.
 
 ## Quick Start (Docker)
 

@@ -190,6 +190,40 @@ pub async fn push_card_or_queue(state: &AppState, card: Card) {
                     }
                 }
             }
+            Err(ClientError::Protocol(ProtocolError::PushFailed(
+                PushError::HashVerificationFailed,
+            ))) => {
+                // Server doesn't have this card — recreate it as a first
+                // version so the user's content is preserved.
+                tracing::info!(card_id = %card.id(), "Hash verification failed, recreating card");
+                let recreated = Card::first(
+                    card.id(),
+                    card.content().to_string(),
+                    card.priority(),
+                    card.tags().to_vec(),
+                    card.blazed(),
+                    card.created_at(),
+                    card.due_date(),
+                );
+                match client.push_card(recreated.clone()).await {
+                    Ok(_) => {
+                        state.upsert_card(recreated);
+                        clear_queued_card(state, card_id).await;
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::warn!(%e, "Recreated card push also failed, queuing");
+                        // Queue the recreated version (ZERO_HASH ancestor) so
+                        // the flush reconciliation won't drop it.
+                        state.offline_queue.update(|q| {
+                            q.retain(|c| c.id() != card_id);
+                            q.push(recreated);
+                        });
+                        storage::save_offline_queue(&state.offline_queue.get_untracked()).await;
+                        return;
+                    }
+                }
+            }
             Err(e) => {
                 tracing::warn!(%e, "Push failed, queuing for later");
             }
@@ -274,33 +308,27 @@ async fn clear_queued_card(state: &AppState, card_id: uuid::Uuid) {
 
 /// Reconcile and flush the offline queue after a successful sync.
 ///
-/// First drops any queued cards the server already has at the same or newer
-/// version (server is source of truth). Then pushes whatever remains.
+/// First drops any queued cards the server already has at a strictly newer
+/// version (server is source of truth), skipping brand-new cards that have
+/// never been pushed.  Then pushes whatever remains.
 pub async fn flush_offline_queue(client: &Client, state: &AppState) {
     let queue = state.offline_queue.get_untracked();
     if queue.is_empty() {
         return;
     }
 
-    // Reconcile: drop queued cards the server already has (same or newer version).
-    let server_cards = state.cards.get_untracked();
-    let queue: Vec<Card> = queue
-        .into_iter()
-        .filter(|queued| {
-            match server_cards.iter().find(|sc| sc.id() == queued.id()) {
-                Some(server_card) if server_card.count() >= queued.count() => {
-                    tracing::info!(
-                        card_id = %queued.id(),
-                        server_version = %server_card.count(),
-                        queued_version = %queued.count(),
-                        "Dropping stale queued card",
-                    );
-                    false
-                }
-                _ => true,
-            }
-        })
-        .collect();
+    // Reconcile: drop queued cards the server already has at a strictly newer
+    // version.  Brand-new cards (ZERO_HASH ancestor) are always kept.
+    let local_cards = state.cards.get_untracked();
+    let before = queue.len();
+    let queue = sync::reconcile_offline_queue(queue, &local_cards);
+    if queue.len() < before {
+        tracing::info!(
+            dropped = before - queue.len(),
+            remaining = queue.len(),
+            "Reconciled offline queue",
+        );
+    }
 
     if queue.is_empty() {
         state.offline_queue.set(Vec::new());
@@ -469,6 +497,38 @@ pub async fn flush_offline_queue(client: &Client, state: &AppState) {
                     }
                     Err(e) => {
                         tracing::warn!(%e, "Rebased push failed, dropping card");
+                    }
+                }
+            }
+            Err(ClientError::Protocol(ProtocolError::PushFailed(
+                PushError::HashVerificationFailed,
+            ))) => {
+                // Server doesn't have this card at all.  Recreate it as a
+                // first version so the user's content is preserved.
+                tracing::info!(
+                    card_id = %card.id(),
+                    "Hash verification failed during flush, recreating card",
+                );
+                let recreated = Card::first(
+                    card.id(),
+                    card.content().to_string(),
+                    card.priority(),
+                    card.tags().to_vec(),
+                    card.blazed(),
+                    card.created_at(),
+                    card.due_date(),
+                );
+                match client.push_card(recreated.clone()).await {
+                    Ok(_) => {
+                        state.upsert_card(recreated);
+                    }
+                    Err(ClientError::ConnectionLost) => {
+                        remaining.push(recreated);
+                        hit_connection_error = true;
+                    }
+                    Err(e) => {
+                        tracing::warn!(%e, "Recreated card push also failed, keeping queued");
+                        remaining.push(recreated);
                     }
                 }
             }
