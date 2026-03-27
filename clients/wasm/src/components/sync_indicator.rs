@@ -42,6 +42,7 @@ pub fn SyncIndicator() -> impl IntoView {
                 if let Err(e) = incremental_sync(&client, &state).await {
                     tracing::error!(%e, "Manual synchronization failed");
                 }
+                state.connection_status.set(ConnectionStatus::Connected);
             });
         }
         ConnectionStatus::Disconnected => {

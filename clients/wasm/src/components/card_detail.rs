@@ -378,7 +378,18 @@ pub fn CardDetail() -> impl IntoView {
             let card = card.unwrap();
             {
             let card_id = card.id();
-            let is_blazed = card.blazed();
+            // Memo that reactively tracks the blazed status of this card so
+            // that the status badge and blaze/extinguish button update when
+            // the card is blazed via button click, keyboard shortcut, or swipe
+            // without re-rendering the entire DynChild (which would lose
+            // editor state, version-history expansion, etc.).
+            let is_blazed = Memo::new(move |_| {
+                state.cards.get()
+                    .iter()
+                    .find(|c| c.id() == card_id)
+                    .map(|c| c.blazed())
+                    .unwrap_or(false)
+            });
             let content_raw = card.content().to_string();
             let all_cards_snapshot = state.cards.get_untracked();
 
@@ -449,8 +460,7 @@ pub fn CardDetail() -> impl IntoView {
                 reorder_disabled = true;
                 filtered = Vec::new();
             } else {
-                reorder_disabled = !state.sort_order.get().is_default()
-                    || !state.search_query.get().is_empty();
+                reorder_disabled = !state.reorder_allowed();
                 filtered = state.filtered_cards().get();
             }
             let filtered_pos = filtered.iter().position(|c| c.id() == card_id);
@@ -465,17 +475,22 @@ pub fn CardDetail() -> impl IntoView {
                 move_to_input.set(String::new());
             }
 
-            let due_date_opt = card.due_date();
-
-            let blaze_text = if is_blazed { "Extinguish" } else { "Blaze" };
-            let blaze_class = if is_blazed { "btn-extinguish" } else { "btn-blaze" };
-            let status_text = if is_blazed { "Blazed" } else { "Active" };
-            let status_class = if is_blazed { "detail-status blazed" } else { "detail-status active" };
+            // Memo that reactively tracks the due date of this card so
+            // that the due date display, date picker, and clear button
+            // update after setting/clearing via button, shortcut, or swipe
+            // without re-rendering the entire DynChild.
+            let due_date_opt = Memo::new(move |_| {
+                state.cards.get()
+                    .iter()
+                    .find(|c| c.id() == card_id)
+                    .and_then(|c| c.due_date())
+            });
 
             // Helper to set due date on a card (creates new version and pushes)
             let set_due_date = move |new_due: Option<chrono::DateTime<Utc>>| {
                 let current = state.cards.get_untracked().into_iter().find(|c| c.id() == card_id);
                 let Some(current) = current else { return };
+                if current.due_date() == new_due { return; }
                 let next = current.next(
                     current.content().to_string(),
                     current.priority(),
@@ -753,7 +768,7 @@ pub fn CardDetail() -> impl IntoView {
                 view! {
                     <div class="card-detail">
                         <div class="detail-header">
-                            <span class=status_class>{status_text}</span>
+                            <span class=move || if is_blazed.get() { "detail-status blazed" } else { "detail-status active" }>{move || if is_blazed.get() { "Blazed" } else { "Active" }}</span>
                             <button class="detail-close" on:click=on_close>"x"</button>
                         </div>
                         <div class="card-content" node_ref=content_node_ref inner_html=content_html on:click=on_content_click></div>
@@ -790,15 +805,17 @@ pub fn CardDetail() -> impl IntoView {
                         <div class="detail-tags">
                             <span class="meta-label">"Due date"</span>
                             <div class="due-date-controls">
-                                {due_date_opt.map(|d| {
-                                    let (_badge_text, badge_class) = format_due_date_badge(&d);
-                                    let cls = format!("due-date-current {badge_class}");
-                                    let display = format_due_date_display(&d);
-                                    view! { <span class=cls>{display}</span> }
-                                })}
-                                {(!due_date_opt.is_some()).then(|| view! {
-                                    <span class="due-date-current due-not-set">"Not set"</span>
-                                })}
+                                {move || match due_date_opt.get() {
+                                    Some(d) => {
+                                        let (_badge_text, badge_class) = format_due_date_badge(&d);
+                                        let cls = format!("due-date-current {badge_class}");
+                                        let display = format_due_date_display(&d);
+                                        view! { <span class=cls>{display}</span> }.into_any()
+                                    }
+                                    None => view! {
+                                        <span class="due-date-current due-not-set">"Not set"</span>
+                                    }.into_any(),
+                                }}
                                 <div class="due-date-dropdown-group" node_ref=due_group_ref>
                                     <button class="due-date-quick-btn" on:click={
                                         let set_due_date = set_due_date.clone();
@@ -837,7 +854,7 @@ pub fn CardDetail() -> impl IntoView {
                                 <input
                                     class="due-date-picker"
                                     type="date"
-                                    prop:value=move || due_date_opt.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()
+                                    prop:value=move || due_date_opt.get().map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()
                                     on:change={
                                         let set_due_date = set_due_date.clone();
                                         move |ev| {
@@ -848,12 +865,15 @@ pub fn CardDetail() -> impl IntoView {
                                         }
                                     }
                                 />
-                                {due_date_opt.map(|_| {
+                                {
                                     let set_due_date = set_due_date.clone();
-                                    view! {
-                                        <button class="due-date-clear-btn" on:click=move |_| set_due_date(None)>"Clear"</button>
-                                    }
-                                })}
+                                    move || due_date_opt.get().map(|_| {
+                                        let set_due_date = set_due_date.clone();
+                                        view! {
+                                            <button class="due-date-clear-btn" on:click=move |_| set_due_date(None)>"Clear"</button>
+                                        }
+                                    })
+                                }
                             </div>
                         </div>
                         {(!linked_cards_with_preview.is_empty()).then(|| {
@@ -939,7 +959,7 @@ pub fn CardDetail() -> impl IntoView {
                             </div>
                             <div class="action-row cmd-row">
                                 <button class="btn-edit" on:click=on_edit>"Edit"</button>
-                                <button class=blaze_class on:click=on_blaze>{blaze_text}</button>
+                                <button class=move || if is_blazed.get() { "btn-extinguish" } else { "btn-blaze" } on:click=on_blaze>{move || if is_blazed.get() { "Extinguish" } else { "Blaze" }}</button>
                                 {move || {
                                     let step = confirm_delete.get();
                                     if step == 2 {
@@ -1004,7 +1024,7 @@ pub fn CardDetail() -> impl IntoView {
                             </div>
                             <div class="meta-row">
                                 <span class="meta-label">"Due Date"</span>
-                                {match due_date_opt {
+                                {move || match due_date_opt.get() {
                                     Some(d) => view! {
                                         <span class="meta-value">{d.format("%Y-%m-%d %H:%M:%S UTC").to_string()}</span>
                                     }.into_any(),

@@ -35,7 +35,9 @@
     </div>
     <script>
         if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/sw.js');
+            navigator.serviceWorker.register('/sw.js').catch(function(err) {
+                console.error('[SW] Registration failed:', err);
+            });
         }
         // If WASM hasn't mounted after 10 seconds, it likely failed to load.
         setTimeout(function() {

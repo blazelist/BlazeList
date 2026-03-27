@@ -72,7 +72,6 @@ pub async fn initial_sync(client: &Client, state: &AppState) -> Result<(), Strin
     state.tags.set(changes.tags);
     state.deleted_count.set(changes.deleted.len());
     state.root.set(Some(changes.root));
-    state.connection_status.set(ConnectionStatus::Connected);
     state.last_synced.set(Some(blazelist_protocol::Utc::now()));
     state.last_sync_ops.set(ops);
     state.last_sync_duration_ms.set(Some((js_sys::Date::now() - t0).round() as u32));
@@ -114,7 +113,6 @@ pub async fn incremental_sync(client: &Client, state: &AppState) -> Result<(), S
                 .set(sync::apply_tag_changeset(current_tags, &changes));
             let ops = changes.cards.len() + changes.tags.len() + deleted_in_changeset;
             state.root.set(Some(changes.root));
-            state.connection_status.set(ConnectionStatus::Connected);
             state.last_synced.set(Some(blazelist_protocol::Utc::now()));
             state.last_sync_ops.set(ops);
             state.deleted_count.update(|c| *c += deleted_in_changeset);
@@ -144,7 +142,6 @@ pub async fn incremental_sync(client: &Client, state: &AppState) -> Result<(), S
             result
         }
         Err(e) => {
-            state.connection_status.set(ConnectionStatus::Connected);
             let msg = e.to_string();
             state.last_sync_error.set(Some(msg.clone()));
             Err(msg)
@@ -582,6 +579,7 @@ pub async fn run_subscription(client: Rc<Client>, state: &AppState) -> Result<()
                 if let Err(e) = incremental_sync(&client, state).await {
                     return Err(format!("Incremental sync failed: {e}"));
                 }
+                state.connection_status.set(ConnectionStatus::Connected);
             }
             Err(e) => {
                 return Err(format!("Subscribe stream error: {e}"));

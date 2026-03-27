@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.6.0] - 2026-03-27
+
+### Fixed
+
+- Offline cold start failures — replaced all-or-nothing `cache.addAll()` with
+  resilient `Promise.allSettled()` so partial precache success still installs
+  the service worker, preventing blank pages when large assets (e.g. WASM
+  binary) fail to download on flaky mobile connections
+- `isHashedAsset` regex not matching `_bg.wasm` multi-segment extensions,
+  causing the WASM binary to use network-first instead of cache-first and
+  adding unnecessary latency on offline cold starts
+- Navigation fallback chain only tried `/index.html` — now tries the request
+  URL, `/index.html`, `/`, and finally an inline offline page explaining the
+  user needs to connect once
+- Cross-origin requests intercepted by the fetch handler — added origin guard
+  to let them pass through
+- Service worker `skipWaiting()` called unconditionally — on partial precache
+  failure during updates, the new service worker would activate and purge the
+  old complete cache, leaving the user with a broken partial cache; now only
+  skips waiting when all assets are cached successfully
+- Service worker registration errors silently swallowed — added `.catch()`
+  with console logging
+- Connection status showed "Connected" before the client was globally
+  available and could get stuck on "Syncing" after auto-sync or manual
+  sync — consolidated all status updates so the UI only reports connected
+  once pushes can actually succeed
+- Blaze/extinguish toggle in card detail view not updating after blazing via
+  button click, keyboard shortcut, or swipe — the status badge, button text,
+  and button class were computed once from a snapshot; now use a reactive `Memo`
+  that tracks `state.cards` so the UI updates without re-rendering the entire
+  detail panel (which would lose editor state and version-history expansion)
+- Due date display in card detail view not updating after setting or clearing
+  via button, preset, date picker, keyboard shortcut, or swipe — the due date
+  badge, date picker value, clear button, and metadata row were computed once
+  from a snapshot; now use a reactive `Memo` (same pattern as the blaze fix).
+  Also added no-op guards in the detail panel and keyboard shortcut handlers
+  to skip creating duplicate card versions when the due date is unchanged
+
+### Changed
+
+- Relaxed priority reorder gating — card reordering is now only blocked when a
+  non-default sort order is active; previously it was also blocked during search,
+  which was unnecessarily restrictive since search preserves priority order
+- Centralized reorder check into `AppState::reorder_allowed()` so card detail
+  nav buttons and keyboard shortcuts (Shift+J / Shift+K) share the same logic;
+  keyboard shortcuts previously had no reorder guard at all
+
 ## [2.5.0] - 2026-03-23
 
 ### Fixed

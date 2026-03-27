@@ -434,6 +434,9 @@ fn focus_search_input() {
 // -- Card movement shortcuts --------------------------------------------------
 
 fn move_card_up(state: AppState) {
+    if !state.reorder_allowed() {
+        return;
+    }
     let card_id = match state.selected_card.get_untracked() {
         Some(id) => id,
         None => return,
@@ -455,6 +458,9 @@ fn move_card_up(state: AppState) {
 }
 
 fn move_card_down(state: AppState) {
+    if !state.reorder_allowed() {
+        return;
+    }
     let card_id = match state.selected_card.get_untracked() {
         Some(id) => id,
         None => return,
@@ -505,6 +511,8 @@ fn set_due_date_shortcut(state: AppState, shortcut: DueDateShortcut) {
         }
         DueDateShortcut::Clear => None,
     };
+
+    if card.due_date() == new_due { return; }
 
     let next = card.next(
         card.content().to_string(),

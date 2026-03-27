@@ -104,6 +104,7 @@ pub fn App() -> impl IntoView {
                     if let Err(e) = incremental_sync(&client, &state).await {
                         tracing::error!(%e, "Automatic sync failed");
                     }
+                    state.connection_status.set(ConnectionStatus::Connected);
                 });
             }
         } else {
@@ -260,6 +261,7 @@ async fn connect_and_run(state: &AppState) {
     }
 
     set_client(Rc::clone(&client));
+    state.connection_status.set(ConnectionStatus::Connected);
 
     // Flush any cards that were queued while offline.
     flush_offline_queue(&client, state).await;

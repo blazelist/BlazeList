@@ -372,6 +372,15 @@ impl AppState {
         });
     }
 
+    /// Whether priority reordering is allowed in the current state.
+    ///
+    /// Reordering only makes sense when the list is sorted by priority
+    /// (the default order); any other sort would make positional moves
+    /// misleading.
+    pub fn reorder_allowed(self) -> bool {
+        self.sort_order.get().is_default()
+    }
+
     /// Derived signal: filtered cards based on current filter, tag selections, and search query.
     /// Cards sorted according to current sort order.
     pub fn filtered_cards(&self) -> Memo<Vec<Card>> {
