@@ -4,6 +4,8 @@
 //! The single required method is [`request`](Client::request); all convenience
 //! methods are provided as defaults.
 
+use std::collections::HashMap;
+
 use blazelist_protocol::{
     Card, CardFilter, ChangeSet, NonNegativeI64, PushItem, Request, Response, RootState,
     SequenceHistoryEntry, Tag,
@@ -188,6 +190,40 @@ pub trait Client {
         async move {
             let resp = self.request(&Request::PushBatch(items)).await?;
             Ok(resp.into_root()?)
+        }
+    }
+
+    /// Get version histories for all (or selected) cards in bulk.
+    fn get_all_card_histories(
+        &self,
+        limit_per_card: Option<u32>,
+        card_ids: Option<Vec<Uuid>>,
+    ) -> impl std::future::Future<Output = Result<HashMap<Uuid, Vec<Card>>, ClientError>> {
+        async move {
+            let resp = self
+                .request(&Request::GetAllCardHistories {
+                    limit_per_card,
+                    card_ids,
+                })
+                .await?;
+            Ok(resp.into_all_card_histories()?)
+        }
+    }
+
+    /// Get version histories for all (or selected) tags in bulk.
+    fn get_all_tag_histories(
+        &self,
+        limit_per_tag: Option<u32>,
+        tag_ids: Option<Vec<Uuid>>,
+    ) -> impl std::future::Future<Output = Result<HashMap<Uuid, Vec<Tag>>, ClientError>> {
+        async move {
+            let resp = self
+                .request(&Request::GetAllTagHistories {
+                    limit_per_tag,
+                    tag_ids,
+                })
+                .await?;
+            Ok(resp.into_all_tag_histories()?)
         }
     }
 }

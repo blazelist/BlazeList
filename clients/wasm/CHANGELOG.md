@@ -5,6 +5,282 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.0.0] - 2026-05-04
+
+### Added
+
+- **Tag implications.** The tag detail view gains an "Implies" section
+  where you can add direct parent tags. While editing, an inline
+  affected-cards preview lists every card whose tag set would need a
+  new version under the new graph (with the missing chips highlighted).
+  Save runs local cycle detection as a fast-fail, then submits one
+  `PushBatch` containing the new tag version plus every affected card
+  version — the server accepts or rejects the whole thing atomically.
+- Card editor auto-cascades transitively-implied tags when a tag is
+  toggled on. Removing a chip cascades upward — anything that
+  transitively requires the removed tag is removed alongside it,
+  while tags that don't depend on it stay selected.
+- Client-side cache schema stamp (`wasm_version+protocol_version`) written
+  to localStorage whenever `save_local_state` successfully writes
+  `blazelist.db`. Checked at load time — before any network activity —
+  so client upgrades automatically wipe incompatible OPFS caches even
+  offline, and the stale main-DB / populated history-cache "ghost" state
+  cannot happen. Replaces the previous connect-time fingerprint eviction
+  that required a successful protocol handshake and therefore could never
+  recover from offline upgrades. Offline queue is preserved across schema
+  changes so unsynced user edits survive client upgrades
+- `Ctrl+Enter` / `Cmd+Enter` keyboard shortcut to save/create the active card
+- `Enter` in tag search input toggles the first matching tag
+- Multi-level swipe-left gesture for due date control: cycles through today,
+  tomorrow, in-2-days, and clear based on the card's current due date
+- Keyboard sub-menus for due date (`d`), sort (`s`), and linked cards (`l`)
+  shortcuts with floating popup and `q`/`Esc` to cancel
+- Direct keyboard shortcuts: `a`/`A`/`b` blaze filter, `v`/`V` tag filter
+  mode / "no tags" filter, `i` include-overdue, `x` toggle sidebar, `r`
+  reset all filters, `f`/`/` focus search, `F` focus tag search, `h`
+  browser history back, `y` copy card ID, `Y` new tag
+- `Enter` in sidebar tag search toggles the first matching tag filter
+  and blurs the input; `Esc` blurs without toggling
+- Prev/next navigation buttons (‹/›) in card detail header — mirrors `k`/`j`
+  keyboard shortcuts for mouse/touch users, disabled at list boundaries
+- Pre-fetch all card/tag/sequence history during sync for full offline access
+- Today quick-filter button beside due date dropdown
+- Card schedule dropdown now lists every weekday — "Next tuesday",
+  "Next wednesday", "Next thursday", "Next saturday", and "Next sunday"
+  join the existing "Next monday" / "Next friday" entries in both the
+  card editor and card detail due-date dropdowns. Labels are spelled
+  out and lowercased to match "Tomorrow" / "In 2 days".
+- Full link graph cache — background BFS computes the complete reachable
+  card set for each linked card via `requestIdleCallback`, processing
+  what fits in each idle window. Persisted to OPFS, survives reloads,
+  invalidated on content changes. Card detail reads cached results
+  instantly instead of re-running BFS. Cache misses on card selection
+  compute on demand and inject into cache.
+- Show transitive link counts in card list setting (default: on) — ⋯N
+  indicators derived from the link graph cache
+- Linked card filter dropdown in card detail — filter by forward only (→),
+  back only (←), or direct (↔) links in addition to the existing "all linked"
+  button
+- Recursive linked cards setting (enabled by default) — transitively expands
+  all linked cards in card detail, following forward and back links through
+  the entire web of connected cards with deduplication
+- Blaze status highlighting on linked cards in card detail view, matching
+  the highlighting used elsewhere in the UI
+- "Local Cache" section in sidebar stats showing history cache sizes,
+  link graph progress (N/M with percentage and progress bar), and
+  offline queue status
+- Swipe action toast with undo for mobile touch gestures
+- Brief "Copied ID" toast notification on `y` shortcut and on the card
+  detail copy-ID button (shows the first 8 characters of the UUID,
+  auto-dismisses after 1.5 s)
+- Configurable swipe undo toast timeout (setting and
+  `BLAZELIST_DEFAULT_SWIPE_UNDO_TIMEOUT_MS` env var)
+- Reusable `Timestamp` component for consistent date/time display
+  (full UTC value shown inline, with hover tooltip)
+- "Show card last-edited time" setting (default: off) — the relative-
+  time label ("x ago") on the right of each card-list row is now
+  hidden by default on every viewport. Users who want it can opt in
+  via the setting or the `BLAZELIST_DEFAULT_SHOW_CARD_TIME` env var
+- Detail-panel expand/collapse mode with `⛶ / ⤢` header toggle (and
+  `m` / `M` keyboard shortcuts). Phones default to expanded, desktop
+  to collapsed; the previous tag-filter-mode bindings move to `v` / `V`
+- Fullscreen (expanded) detail panel uses native page scroll instead
+  of an internal scroll container
+- "Clear local cache" button in the settings Danger Zone — wipes all
+  cached cards, tags, history, and link-graph data and reloads the app
+  for a full re-sync from the server
+- Mutual-link indicator (`↔N`) in card list rows and card detail
+  summary, alongside the existing `→N` / `←N` / `⋯N` indicators
+
+### Changed
+
+- **Breaking:** Tied to protocol 3.0.0. The OPFS cache schema stamp
+  (`wasm_version+protocol_version`) bumps automatically, so previous
+  installations re-sync from scratch on first launch after upgrade.
+- Quick due-date preset button toggles smartly: when a card is already
+  due today (or overdue), clicking now sets it to tomorrow instead of
+  resetting to today. The button label updates to reflect the next action.
+- Default swipe-right (blaze) threshold is now 135 px (was 100 px); default
+  swipe-left (due date) threshold is 115 px (was 90 px)
+- Swipe-undo and error toasts on phones (≤ 480 px) get a wider
+  max-width cap (`calc(100vw - 1rem)`) and tighter chrome (smaller
+  inline gap, container padding, and Undo button padding) so short
+  messages like "Blazed 🔥" or "Due: Today" stay on a single line
+  instead of wrapping mid-phrase.
+- Copy-ID toast dismiss timer resets when the same shortcut fires
+  repeatedly, so back-to-back copies don't truncate the toast
+- `ConfirmDeletePrompt` accepts `first_prompt: impl Fn() -> String`
+  so it can carry dynamic messages. Both existing call sites in
+  `card_detail.rs` and `tag_detail.rs` updated to pass closures.
+- Atomic all-or-nothing cache load: `app.rs` startup now gates loading
+  of `history.db` and `blazelist-link-cache.db` on `load_local_state`
+  actually finding valid data in `blazelist.db`. If the main DB is
+  missing/corrupt/empty, derived caches are cleared as well, so the
+  sidebar never shows the "0 cards + hundreds of cached card histories"
+  ghost state observed on older builds
+- Sidebar `Local Cache` labels renamed: "Cards" → "Card Histories" and
+  "Tags" → "Tag Histories". Those rows count `cached_card_history_count`
+  / `cached_tag_history_count` respectively, not the main-DB card/tag
+  counts (which are already shown under "Data"); the old labels misled
+  readers into thinking they were seeing a parallel copy of the main DB
+- Card list uses Leptos `<For>` keyed diffing instead of `.map().collect()` —
+  DOM nodes persist across card updates instead of being recreated
+- All card-item data (blazed status, due date, tags, preview) is now reactive
+  via per-card `Memo` derivations instead of stale captured values
+- Tag dots use tracked `state.tags.get()` so tag color changes propagate
+- Card tag dots use a 4-dot 2×2 grid (custom-colored tags only); default-
+  colored tags roll up into a single `+N` overflow count styled like the
+  linked-card indicators
+- Card list and card detail share a single `link_indicators_view`
+  component and CSS class set; the per-detail `summary-*` classes are
+  dropped. Linked-cards list and summary are now sorted
+  mutual → forward → back → transitive to match the indicator order.
+- `B` (capital) now blazes/extinguishes a card; `a`/`A`/`b` are direct filter
+  shortcuts (blaze filter sub-menu removed — keys don't conflict)
+- Settings panel organized into titled sections (Sync & Saving, Editor,
+  Search & Filtering, Linked Cards, Input, Appearance, Layout, Danger Zone)
+- Each setting shows its `BLAZELIST_DEFAULT_*` env var name
+- Sub-settings (intervals, thresholds, widths) are now disabled instead
+  of hidden when their parent toggle is off, keeping the UI stable
+- Consistent indentation for env var info below sub-settings
+- Removed redundant per-card position and link_counts Memos — inlined HashMap
+  lookups, reducing reactive graph by 2N nodes
+- Progressive card list rendering — the first 40 cards render
+  immediately and the rest fill in via `requestIdleCallback`, keeping
+  the initial paint snappy on large lists
+- Card detail panel restructured into uniform bordered sections: controls
+  (actions + due date), details (metadata), linked cards, and history
+- Keyboard shortcuts ignore Ctrl/Alt/Meta modifiers so browser shortcuts
+  (Ctrl+F, Alt+D, etc.) pass through correctly
+- "Restore version" and "New from this version" (simple placement) in
+  version history now queue offline via `push_card_or_queue`, matching
+  the regular card edit / new card flows — they no longer silently
+  require a live connection
+- Operations that genuinely can't be queued offline (delete card,
+  create / edit / delete tag, fork with priority rebalance) now show
+  a prominent red `ErrorToast` explaining why the action didn't go
+  through, instead of silently doing nothing. The toast fires both
+  up-front when offline is already detected AND when the underlying
+  client call returns `ClientError::ConnectionLost` (the common case
+  where the server dropped but the client hasn't noticed yet). The
+  `tag_detail` delete inline error is replaced by the same toast for
+  consistency
+- "Restore version" did not visually refresh the card detail after
+  the upsert — `CardDetail`'s outer closure intentionally snapshots
+  `state.cards` for editor stability, so the restored content stayed
+  invisible until the user re-selected the card. `on_restore` now
+  toggles `selected_card` after the upsert to force the detail to
+  re-read, matching the behaviour the user expects from clicking
+  "Restore"
+- Service worker's default fetch fall-through was resolving to
+  `undefined` on cache miss, causing the SW to throw
+  `TypeError: Failed to convert value to 'Response'` on every
+  cert-hash / config fetch while the server was unreachable. Now
+  falls back to a synthetic 503 `Response` like the hashed-asset
+  branch does
+- Offline edits dropped during flush reconciliation (when the rebased
+  version is rejected by the server for reasons other than
+  `ConnectionLost`) now show an error toast so the user knows the
+  edit was discarded, instead of only logging a warning
+- Today quick-filter button now clears all other filters (blaze, tag,
+  linked cards, search) and always enables "include overdue". The
+  separate auto-include-overdue setting has been removed since the
+  Today button handles it directly
+- "New from this" in version history no longer creates a card silently —
+  it now opens the card editor prefilled with the selected version's
+  content, tags, and due date so the user can tweak before saving
+- UUIDs embedded inside URLs, markdown link targets, or glued to
+  surrounding text are no longer rendered as clickable card-link
+  previews — only UUIDs at the start of text or after whitespace
+  count as card references
+- Due date filter dropdown: "Next 7 days" / "Next 14 days" labels
+  replace "This week" / "Two weeks", and both ranges now include
+  today (previously they started from tomorrow). The redundant
+  "All upcoming" option is removed; bookmarked URLs with
+  `f.due=upcoming` fall back to "Today & upcoming". The `U`
+  due-date-submenu shortcut for "Upcoming only" is removed.
+
+### Removed
+
+- `evict_stale_caches` and the connect-time fingerprint check in
+  `connect_and_run` — superseded by the load-time schema stamp, which
+  handles the same job without requiring a server connection
+- `build_cache_fingerprint` helper (no callers remain)
+- `AppState::cache_bust` signal (only ever used to force a re-render
+  after the old eviction mutated state behind the card list's back; the
+  new eviction runs before the card list is mounted so no bust needed)
+- `Client::server_version` field and method in the WASM transport —
+  only consumer was the deleted fingerprint computation
+
+### Fixed
+
+- **PWA cold start hangs indefinitely when the network is stalled**
+  (not just offline — flaky mobile signal, VPN transitions, captive
+  portals, or an unreachable server that still accepts TCP). The
+  service worker's navigation handler was network-first with a
+  `.catch()` fallback to the cache, which looks correct but breaks
+  when `fetch()` never resolves or rejects — the catch never fires
+  and the browser waits on the navigation forever. Symptom: Android
+  PWA stuck on the system splash screen (never reaches the in-HTML
+  "Loading…") and desktop Chrome spins indefinitely. Navigation
+  requests are now cache-first with stale-while-revalidate: the
+  cached `/index.html` is served instantly, and a background fetch
+  refreshes the cache when the network is healthy.
+- Service worker `install` now fetches each precache URL with a
+  hard 15s timeout and an `AbortController`, so a hanging network
+  during an SW update can't wedge the worker in "installing" state
+  (which would prevent `activate` / `clients.claim()` from ever
+  running). The existing `Promise.allSettled` + partial-success
+  behavior is preserved.
+- `apply_server_config()` (the `/config` fetch that seeds settings
+  defaults) now runs in parallel with `connection_loop()` instead
+  of blocking it. Previously a hanging `/config` request would
+  prevent the connection loop from ever starting, so the app
+  couldn't reconnect when the network came back. Safe because
+  each server-config write is guarded by `has_*()` — a user choice
+  in localStorage still wins.
+- Fullscreen (expanded) card detail on phones added a few pixels of
+  horizontal scroll even when the content fit the viewport. On screens
+  ≤480 px `.card-detail` uses 0.875 rem horizontal padding while
+  `.detail-section` / `.linked-card-list` still use `-1rem` negative
+  margins to stretch edge-to-edge, and the native-scroll refactor left
+  `.main-layout` / `.detail-panel.expanded` with `overflow: visible`
+  so the bleed reached the body. `.main-layout` now uses
+  `overflow-x: clip; overflow-y: visible` in expanded mode — horizontal
+  overflow is contained while vertical content still flows up to the
+  body's native page scrollbar.
+- Toggling the "Recursive linked cards" setting required a page reload
+  to take effect — the linked-cards section now reactively tracks the
+  setting and the in-flight idle-callback chain bails out on early-return
+- Tag detail label corrected from "Transitively implied" to
+  "Transitively implies"
+- Swipe toggle mode setting overdue tasks to today instead of skipping
+  ahead to tomorrow
+- Swipe background color for extinguish action now shows cyan
+- Offline-created cards silently dropped by flush reconciliation
+- PWA offline cold start requiring navigate-away-and-back on Android —
+  OPFS cache is now loaded before fetching `/config`, so the network
+  request can no longer stall the splash screen when offline
+- Offline card edits lost on app restart — the main OPFS database is
+  now persisted alongside the offline queue, so changes survive closing
+  and reopening the app
+- Entire local database wiped on version-fingerprint change or root-hash
+  mismatch when the follow-up full sync failed (network drop, server
+  unreachable) — `blazelist.db` is no longer deleted eagerly; the
+  initial sync now overwrites it atomically via `save_local_state`, and
+  the old data is kept as a fallback when the sync cannot complete
+- Swipe due date comparison using exact DateTime instead of calendar date
+- Right sidebar panel overlap when opening new tag while shortcuts panel visible
+- Keyboard sub-menus dismissed by modifier keys (Shift, etc.) before capital
+  letter could be typed
+- Long URLs and unbroken text in card content, editor preview, and version
+  history now wrap instead of overflowing the viewport
+- Linked card filter buttons (Filter Linked, Forward only, Back only, Direct)
+  now clear the search query so results aren't hidden by stale search text
+- `card_list.rs` blake3-hashing every card on every edit (regression from
+  the link-graph cache work) — the hash pass is now scoped to the cards
+  whose link cache could be affected, restoring steady-state performance
+
 ## [2.6.0] - 2026-03-27
 
 ### Fixed

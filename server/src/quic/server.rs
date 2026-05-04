@@ -33,7 +33,7 @@ pub async fn run_server<S: Storage + Send + Sync + 'static>(
             let connection = match incoming.await {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("connection failed: {e}");
+                    tracing::warn!(error = %e, "QUIC connection failed");
                     return;
                 }
             };
@@ -145,10 +145,10 @@ pub async fn send_request(
 }
 
 /// Perform the version handshake on a fresh connection.
-/// Returns `Ok(())` if versions match, or an error on mismatch / wire failure.
+/// Returns the server's version on success, or an error on mismatch / wire failure.
 pub async fn perform_version_handshake(
     connection: &quinn::Connection,
-) -> Result<(), HandshakeError> {
+) -> Result<blazelist_protocol::Version, HandshakeError> {
     let (mut send, mut recv) = connection
         .open_bi()
         .await

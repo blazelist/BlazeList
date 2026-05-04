@@ -47,7 +47,11 @@ fn response_round_trip() {
 
 #[test]
 fn card_filter_round_trip() {
-    for filter in [CardFilter::All, CardFilter::Blazed, CardFilter::Extinguished] {
+    for filter in [
+        CardFilter::All,
+        CardFilter::Blazed,
+        CardFilter::Extinguished,
+    ] {
         let req = Request::ListCards {
             filter,
             limit: None,
@@ -147,7 +151,9 @@ fn version_check_round_trip() {
 
 #[test]
 fn version_result_ok_round_trip() {
-    let result = VersionResult::Ok;
+    let result = VersionResult::Ok {
+        server_version: Version::new(2, 2, 0),
+    };
     let bytes = postcard::to_allocvec(&result).unwrap();
     let decoded: VersionResult = postcard::from_bytes(&bytes).unwrap();
     assert_eq!(result, decoded);
@@ -212,15 +218,62 @@ fn duplicate_priority_round_trip() {
 
 #[test]
 fn orphaned_tag_reference_round_trip() {
+    let resp = Response::Error(ProtocolError::PushFailed(PushError::OrphanedTagReference {
+        tag_id: TEST_UUID_A,
+        referencing_card_ids: vec![TEST_UUID_B, TEST_UUID_C],
+    }));
+    let bytes = postcard::to_allocvec(&resp).unwrap();
+    let decoded: Response = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(resp, decoded);
+}
+
+#[test]
+fn tag_implication_violation_round_trip() {
     let resp = Response::Error(ProtocolError::PushFailed(
-        PushError::OrphanedTagReference {
-            tag_id: TEST_UUID_A,
-            referencing_card_ids: vec![TEST_UUID_B, TEST_UUID_C],
+        PushError::TagImplicationViolation {
+            card_id: TEST_UUID_A,
+            missing: vec![TEST_UUID_B, TEST_UUID_C],
         },
     ));
     let bytes = postcard::to_allocvec(&resp).unwrap();
     let decoded: Response = postcard::from_bytes(&bytes).unwrap();
     assert_eq!(resp, decoded);
+}
+
+#[test]
+fn tag_implication_cycle_round_trip() {
+    let resp = Response::Error(ProtocolError::PushFailed(PushError::TagImplicationCycle {
+        cycle: vec![TEST_UUID_A, TEST_UUID_B, TEST_UUID_A],
+    }));
+    let bytes = postcard::to_allocvec(&resp).unwrap();
+    let decoded: Response = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(resp, decoded);
+}
+
+#[test]
+fn tag_with_implies_round_trip() {
+    let tag = Tag::first_with_implies(
+        TEST_UUID_B,
+        "child".into(),
+        None,
+        vec![TEST_UUID_C, TEST_UUID_D],
+        ts(0),
+    );
+    let bytes = postcard::to_allocvec(&tag).unwrap();
+    let decoded: Tag = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(tag, decoded);
+    assert_eq!(decoded.implies(), &[TEST_UUID_C, TEST_UUID_D]);
+    assert!(decoded.verify());
+}
+
+#[test]
+fn tag_empty_implies_hashes_same_as_pre_feature() {
+    // Locks option (b): a fresh tag with implies = [] must hash to the
+    // same bytes as a pre-implications tag would have. This is critical
+    // for backwards compatibility with existing on-disk tag hashes.
+    let tag_old_style = Tag::first(TEST_UUID_B, "T".into(), None, ts(0));
+    let tag_new_style = Tag::first_with_implies(TEST_UUID_B, "T".into(), None, Vec::new(), ts(0));
+    assert_eq!(tag_old_style.hash(), tag_new_style.hash());
 }
 
 #[test]
@@ -696,6 +749,29 @@ fn push_error_discriminant_stability() {
         })
         .to_string(),
     );
+    expect!["7"].assert_eq(
+        &discriminant(&PushError::TagImplicationViolation {
+            card_id: Uuid::nil(),
+            missing: vec![],
+        })
+        .to_string(),
+    );
+    expect!["8"]
+        .assert_eq(&discriminant(&PushError::TagImplicationCycle { cycle: vec![] }).to_string());
+    expect!["9"].assert_eq(
+        &discriminant(&PushError::OrphanedTagImpliesReference {
+            tag_id: Uuid::nil(),
+            referencing_tag_ids: vec![],
+        })
+        .to_string(),
+    );
+    expect!["10"].assert_eq(
+        &discriminant(&PushError::TagImpliesUnknown {
+            tag_id: Uuid::nil(),
+            missing: vec![],
+        })
+        .to_string(),
+    );
 }
 
 #[test]
@@ -724,7 +800,12 @@ fn card_filter_discriminant_stability() {
 
 #[test]
 fn version_result_discriminant_stability() {
-    expect!["0"].assert_eq(&discriminant(&VersionResult::Ok).to_string());
+    expect!["0"].assert_eq(
+        &discriminant(&VersionResult::Ok {
+            server_version: Version::new(0, 0, 0),
+        })
+        .to_string(),
+    );
     expect!["1"].assert_eq(
         &discriminant(&VersionResult::Mismatch {
             server_version: Version::new(0, 0, 0),

@@ -5,6 +5,71 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.0.0] - 2026-05-04
+
+### Added
+
+- Tag implication invariant enforcement. A new
+  `validate_batch_implications` helper runs inside the existing
+  `push_batch` transaction after every per-item write and before
+  `recompute_root`. It snapshots the live tag graph + live card tag
+  sets, overlays the batch's updates on top, runs iterative cycle
+  detection on the post-batch tag graph, and verifies every
+  post-batch card is closed under the implication relation. Any
+  violation rolls back the whole transaction. Single-item
+  `push_card_versions` and `push_tag_versions` route through the same
+  validator via synthetic one-element batches, so isolated pushes can't
+  bypass the invariant either.
+- Schema v2 → v3 migration: adds an `implies BLOB NOT NULL DEFAULT
+  X'00'` column to both `tags` and `tag_versions`. The default is the
+  postcard encoding of `Vec::<Uuid>::new()` (single zero byte), so
+  existing rows deserialize as `[]` without backfill. Because
+  `canonical_tag_hash` appends the implies block only when non-empty,
+  existing stored tag hashes continue to verify after upgrade. The
+  migration is gated by `BLAZELIST_ALLOW_IRREVERSIBLE_AUTOMATIC_UPGRADE_MIGRATION`
+  consistent with every prior major bump.
+- Fresh-database `init_schema` declares the `implies` column as the last
+  column of both `tags` and `tag_versions`, so the column layout is
+  identical to what `ALTER TABLE ADD COLUMN` produces on a v2→v3
+  upgrade. A regression test
+  (`fresh_and_migrated_schemas_have_identical_table_info`) asserts
+  `PRAGMA table_info` matches byte-for-byte between the two paths.
+- Tag deletion now scans `tags.implies` in addition to `cards.tags`:
+  deleting a tag that another live tag still declares as a parent is
+  rejected with `OrphanedTagImpliesReference`. Without this check the
+  referenced tag would move to `deleted_entities` and every card
+  holding the implying tag would permanently trip
+  `TagImplicationViolation`.
+- The batch tag-implication validator gains a dangling-reference pass:
+  any tag whose `implies` list references an unknown or already-deleted
+  tag id (post-batch) is rejected with `TagImpliesUnknown`. Runs before
+  cycle detection because cycles in a graph with dangling edges are
+  meaningless.
+- `GetAllCardHistories` and `GetAllTagHistories` bulk history endpoints with
+  optional per-entity limit and ID filter
+- `BLAZELIST_DEFAULT_SHOW_DUE_TODAY_BUTTON` environment variable
+- `BLAZELIST_DEFAULT_RECURSIVE_LINKS` environment variable
+- `BLAZELIST_DEFAULT_SHOW_LIST_LINK_COUNTS` environment variable
+- `BLAZELIST_DEFAULT_SWIPE_UNDO_TIMEOUT_MS` environment variable
+- `BLAZELIST_DEFAULT_SHOW_CARD_TIME` environment variable
+- Structured logging via `tokio-tracing` with `tracing-subscriber`
+  initialised in `main()`; log levels controllable via `RUST_LOG`
+  (default `info`). All `println!`/`eprintln!` diagnostic output in
+  server and dev-seeder replaced with structured tracing macros
+
+### Changed
+
+- **Breaking:** Tied to protocol 3.0.0 — wire format for `Tag`
+  changed, `PushError` gained four appended variants, and
+  `canonical_tag_hash` takes an additional `implies` argument. Old
+  clients cannot talk to new servers and vice versa.
+- **Breaking:** Storage schema gains an `implies` column on both
+  tag tables (see migration note above).
+- Tag deletion still rejects via `OrphanedTagReference` when live
+  cards reference the tag. The new batch validator additionally
+  catches post-batch closure violations introduced by co-pushed
+  tag updates.
+
 ## [2.2.0] - 2026-03-15
 
 ### Added

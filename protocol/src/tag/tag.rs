@@ -9,8 +9,16 @@ use crate::hash::{Entity, HashVerificationError, ZERO_HASH, canonical_tag_hash};
 /// A tag that can be attached to cards.
 ///
 /// Tags are identified by UUID and carry the same hash chain as cards.
-/// Initially only have a title; future extensions: icons (Unicode or
-/// custom) and description.
+/// Along with the title + optional color, each tag carries an `implies`
+/// list of direct parent tag IDs. The server enforces that every card's
+/// tag set is closed under the transitive `implies` relation.
+///
+/// Wire format note: adding `implies` changes the postcard layout, so
+/// V3 is a breaking wire bump (see protocol `CHANGELOG.md`). The canonical
+/// hash, however, appends the implies block only when it is non-empty,
+/// so a stored tag with `implies = []` hashes byte-identically to a
+/// pre-implications tag — existing on-disk hashes continue to verify
+/// after the v2→v3 storage migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tag {
     id: Uuid,
@@ -23,6 +31,9 @@ pub struct Tag {
     count: NonNegativeI64,
     ancestor_hash: blake3::Hash,
     hash: blake3::Hash,
+    /// Direct parent tag IDs. Sorted and deduplicated at construction time.
+    /// The transitive closure is computed on demand via `tag::graph::TagGraph`.
+    implies: Vec<Uuid>,
 }
 
 impl Entity for Tag {
@@ -59,8 +70,17 @@ impl Entity for Tag {
             i64::from(self.count),
             &self.ancestor_hash,
             self.color.as_ref(),
+            &self.implies,
         )
     }
+}
+
+/// Sort and deduplicate a `Vec<Uuid>` in place. Used on every ingress so
+/// callers cannot influence the canonical order.
+fn normalize_implies(mut implies: Vec<Uuid>) -> Vec<Uuid> {
+    implies.sort();
+    implies.dedup();
+    implies
 }
 
 impl Tag {
@@ -70,6 +90,11 @@ impl Tag {
 
     pub fn color(&self) -> Option<RGB8> {
         self.color
+    }
+
+    /// Direct parent tags that this tag implies. Sorted and deduplicated.
+    pub fn implies(&self) -> &[Uuid] {
+        &self.implies
     }
 
     /// Reconstruct a tag from all stored fields (e.g. from a database row).
@@ -85,6 +110,7 @@ impl Tag {
         count: NonNegativeI64,
         ancestor_hash: blake3::Hash,
         hash: blake3::Hash,
+        implies: Vec<Uuid>,
     ) -> Result<Self, HashVerificationError> {
         let tag = Self {
             id,
@@ -95,6 +121,7 @@ impl Tag {
             count,
             ancestor_hash,
             hash,
+            implies: normalize_implies(implies),
         };
         if tag.verify() {
             Ok(tag)
@@ -103,8 +130,19 @@ impl Tag {
         }
     }
 
-    /// Create the first version of a new tag.
+    /// Create the first version of a new tag with an empty implies list.
     pub fn first(id: Uuid, title: String, color: Option<RGB8>, created_at: DateTime<Utc>) -> Self {
+        Self::first_with_implies(id, title, color, Vec::new(), created_at)
+    }
+
+    /// Create the first version of a new tag with an explicit implies list.
+    pub fn first_with_implies(
+        id: Uuid,
+        title: String,
+        color: Option<RGB8>,
+        implies: Vec<Uuid>,
+        created_at: DateTime<Utc>,
+    ) -> Self {
         let mut tag = Self {
             id,
             title,
@@ -114,13 +152,25 @@ impl Tag {
             count: NonNegativeI64::try_from(1i64).unwrap(),
             ancestor_hash: ZERO_HASH,
             hash: ZERO_HASH, // placeholder
+            implies: normalize_implies(implies),
         };
         tag.hash = tag.expected_hash();
         tag
     }
 
-    /// Create the next version in the chain.
+    /// Create the next version in the chain, preserving the current implies list.
     pub fn next(&self, title: String, color: Option<RGB8>, modified_at: DateTime<Utc>) -> Self {
+        self.next_with_implies(title, color, self.implies.clone(), modified_at)
+    }
+
+    /// Create the next version in the chain with a new implies list.
+    pub fn next_with_implies(
+        &self,
+        title: String,
+        color: Option<RGB8>,
+        implies: Vec<Uuid>,
+        modified_at: DateTime<Utc>,
+    ) -> Self {
         let mut tag = Self {
             id: self.id,
             title,
@@ -130,6 +180,7 @@ impl Tag {
             count: NonNegativeI64::try_from(u64::from(self.count) + 1).unwrap(),
             ancestor_hash: self.hash,
             hash: ZERO_HASH, // placeholder
+            implies: normalize_implies(implies),
         };
         tag.hash = tag.expected_hash();
         tag

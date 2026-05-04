@@ -75,6 +75,7 @@ fn from_parts_with_valid_hash_succeeds() {
         tag.count(),
         tag.ancestor_hash(),
         tag.hash(),
+        tag.implies().to_vec(),
     );
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), tag);
@@ -92,6 +93,7 @@ fn from_parts_with_tampered_hash_fails() {
         tag.count(),
         tag.ancestor_hash(),
         tag.hash(),
+        tag.implies().to_vec(),
     );
     assert!(result.is_err());
 }
@@ -193,7 +195,60 @@ fn from_parts_with_color_succeeds() {
         tag.count(),
         tag.ancestor_hash(),
         tag.hash(),
+        tag.implies().to_vec(),
     );
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), tag);
+}
+
+#[test]
+fn first_empty_implies() {
+    let t = Tag::first(ID, "Groceries".into(), None, ts(1000));
+    assert!(t.implies().is_empty());
+    assert!(t.verify());
+}
+
+#[test]
+fn first_with_implies_sorts_and_dedups() {
+    let p1 = Uuid::from_bytes([0xAA; 16]);
+    let p2 = Uuid::from_bytes([0xBB; 16]);
+    let t = Tag::first_with_implies(ID, "Child".into(), None, vec![p2, p1, p2], ts(1000));
+    assert_eq!(t.implies(), &[p1, p2]);
+    assert!(t.verify());
+}
+
+#[test]
+fn next_preserves_implies_by_default() {
+    let p = Uuid::from_bytes([0xAA; 16]);
+    let t1 = Tag::first_with_implies(ID, "Child".into(), None, vec![p], ts(1000));
+    let t2 = t1.next("Child (renamed)".into(), None, ts(2000));
+    assert_eq!(t2.implies(), &[p]);
+    assert!(t2.verify());
+}
+
+#[test]
+fn next_with_implies_can_change_list() {
+    let p1 = Uuid::from_bytes([0xAA; 16]);
+    let p2 = Uuid::from_bytes([0xBB; 16]);
+    let t1 = Tag::first_with_implies(ID, "Child".into(), None, vec![p1], ts(1000));
+    let t2 = t1.next_with_implies("Child".into(), None, vec![p2], ts(2000));
+    assert_eq!(t2.implies(), &[p2]);
+    assert!(t2.verify());
+    assert_eq!(t2.ancestor_hash(), t1.hash());
+}
+
+#[test]
+fn first_empty_implies_hashes_same_as_first() {
+    // Locks option (b): empty implies is byte-equivalent to pre-feature.
+    let t_old = Tag::first(ID, "X".into(), None, ts(1000));
+    let t_new = Tag::first_with_implies(ID, "X".into(), None, vec![], ts(1000));
+    assert_eq!(t_old.hash(), t_new.hash());
+}
+
+#[test]
+fn different_implies_produce_different_hashes() {
+    let p = Uuid::from_bytes([0xAA; 16]);
+    let a = Tag::first(ID, "X".into(), None, ts(1000));
+    let b = Tag::first_with_implies(ID, "X".into(), None, vec![p], ts(1000));
+    assert_ne!(a.hash(), b.hash());
 }

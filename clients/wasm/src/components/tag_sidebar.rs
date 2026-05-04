@@ -1,14 +1,38 @@
 use crate::components::sequence_history::SequenceHistory;
-use crate::state::store::{
-    AppState, confirm_discard_changes, sync_query_params,
-};
+use crate::state::store::{AppState, confirm_discard_changes, sync_query_params};
+use blazelist_client_lib::tag_graph::TagGraph;
 use blazelist_protocol::Entity;
 use leptos::prelude::*;
+use std::collections::HashMap;
+use uuid::Uuid;
 
 #[component]
 pub fn TagSidebar() -> impl IntoView {
     let state = use_context::<AppState>().expect("AppState not provided");
     let search = RwSignal::new(String::new());
+
+    // Transitive implication stats: for each tag, count how many tags
+    // it transitively implies (fwd) and how many tags transitively
+    // imply it (rev). Uses TagGraph::closure_of for accurate counts.
+    let implies_stats: Memo<HashMap<Uuid, (usize, usize)>> = Memo::new(move |_| {
+        let tags = state.tags.get();
+        let graph = TagGraph::from_tags(&tags);
+        let mut stats: HashMap<Uuid, (usize, usize)> = HashMap::new();
+        for tag in &tags {
+            // Forward: size of closure minus self.
+            let closure = graph.closure_of(&[tag.id()]);
+            let fwd = closure.len().saturating_sub(1);
+            stats.entry(tag.id()).or_insert((0, 0)).0 = fwd;
+            // Reverse: every other tag in this tag's closure is
+            // transitively implied-by this tag (bump their rev count).
+            for implied_id in &closure {
+                if *implied_id != tag.id() {
+                    stats.entry(*implied_id).or_insert((0, 0)).1 += 1;
+                }
+            }
+        }
+        stats
+    });
 
     let on_new_tag = move |_| {
         state.selected_card.set(None);
@@ -16,6 +40,7 @@ pub fn TagSidebar() -> impl IntoView {
         state.editing.set(false);
         state.creating_new_tag.set(true);
         state.settings_open.set(false);
+        state.shortcuts_open.set(false);
         sync_query_params(&state);
     };
 
@@ -30,6 +55,34 @@ pub fn TagSidebar() -> impl IntoView {
                     placeholder="Search tags\u{2026}"
                     prop:value=move || search.get()
                     on:input=move |ev| search.set(event_target_value(&ev))
+                    on:keydown=move |ev: web_sys::KeyboardEvent| {
+                        if ev.key() == "Enter" {
+                            ev.prevent_default();
+                            let q = search.get_untracked().to_lowercase();
+                            let mut tags = state.tags.get_untracked();
+                            tags.sort_by_key(|a| a.title().to_lowercase());
+                            if !q.is_empty() {
+                                tags.retain(|t| t.title().to_lowercase().contains(&q));
+                            }
+                            if let Some(first) = tags.first() {
+                                let tag_id = first.id();
+                                if state.tag_filter_mode.get_untracked() == blazelist_client_lib::filter::TagFilterMode::And {
+                                    state.no_tags_filter.set(false);
+                                }
+                                state.tag_filter.update(|f| {
+                                    if f.contains(&tag_id) {
+                                        f.retain(|t| *t != tag_id);
+                                    } else {
+                                        f.push(tag_id);
+                                    }
+                                });
+                                if state.clear_tag_search.get_untracked() {
+                                    search.set(String::new());
+                                }
+                                sync_query_params(&state);
+                            }
+                        }
+                    }
                 />
             </div>
             <ul class="tag-list">
@@ -60,7 +113,7 @@ pub fn TagSidebar() -> impl IntoView {
                 {move || {
                 let q = search.get().to_lowercase();
                 let mut tags = state.tags.get();
-                tags.sort_by(|a, b| a.title().to_lowercase().cmp(&b.title().to_lowercase()));
+                tags.sort_by_key(|a| a.title().to_lowercase());
                 if !q.is_empty() {
                     tags.retain(|t| t.title().to_lowercase().contains(&q));
                 }
@@ -106,9 +159,32 @@ pub fn TagSidebar() -> impl IntoView {
                         .map(|c| format!("border-left: 3px solid {c};"))
                         .unwrap_or_else(|| "border-left: 3px solid transparent;".to_string());
 
+                    // Implication indicators (→N / ←M) next to the tag title.
+                    let tag_implies_indicator = move || {
+                        let stats = implies_stats.get();
+                        let (fwd, rev) = stats.get(&tag_id).copied().unwrap_or((0, 0));
+                        let has_any = fwd > 0 || rev > 0;
+                        has_any.then(|| {
+                            let fwd_view = (fwd > 0).then(|| {
+                                let text = format!("\u{2192}{fwd}");
+                                let tip = format!("implies {fwd} tag{}", if fwd == 1 { "" } else { "s" });
+                                view! { <span class="tag-implies-fwd" title=tip>{text}</span> }
+                            });
+                            let rev_view = (rev > 0).then(|| {
+                                let text = format!("\u{2190}{rev}");
+                                let tip = format!("implied by {rev} tag{}", if rev == 1 { "" } else { "s" });
+                                view! { <span class="tag-implies-rev" title=tip>{text}</span> }
+                            });
+                            view! {
+                                <span class="tag-implies-indicators">{fwd_view}{rev_view}</span>
+                            }
+                        })
+                    };
+
                     view! {
                         <li class=item_class style=border_style on:click=toggle_filter>
                             <span class="tag-title">{title}</span>
+                            {tag_implies_indicator}
                             <button class="tag-manage" on:click=on_manage>"\u{2026}"</button>
                         </li>
                     }
@@ -151,41 +227,34 @@ pub fn TagSidebar() -> impl IntoView {
                         "---".to_string()
                     };
                     view! {
+                        // ── Sync ──
+                        <div class="meta-section-label">"Sync"</div>
                         <div class="meta-row">
                             <span class="meta-label">"Last Sync"</span>
                             <span class="meta-value">{synced}</span>
                         </div>
                         <div class="meta-row">
-                            <span class="meta-label">"Last Sync Operations"</span>
+                            <span class="meta-label">"Operations"</span>
                             <span class="meta-value">{sync_ops_str}</span>
                         </div>
                         <div class="meta-row">
-                            <span class="meta-label">"Last Sync Duration"</span>
+                            <span class="meta-label">"Duration"</span>
                             <span class="meta-value">{sync_duration}</span>
                         </div>
+
+                        // ── Data ──
+                        <div class="meta-section-label">"Data"</div>
                         <div class="meta-row">
-                            <span class="meta-label">"Total Cards"</span>
-                            <span class="meta-value">{total_cards.to_string()}</span>
-                        </div>
-                        <div class="meta-row">
-                            <span class="meta-label">"Active Cards"</span>
-                            <span class="meta-value">{active_cards.to_string()}</span>
-                        </div>
-                        <div class="meta-row">
-                            <span class="meta-label">"Blazed Cards"</span>
-                            <span class="meta-value">{blazed_cards.to_string()}</span>
+                            <span class="meta-label">"Cards"</span>
+                            <span class="meta-value">{format!("{total_cards} ({active_cards} active, {blazed_cards} blazed)")}</span>
                         </div>
                         <div class="meta-row">
                             <span class="meta-label">"Tags"</span>
                             <span class="meta-value">{total_tags.to_string()}</span>
                         </div>
                         <div class="meta-row">
-                            <span class="meta-label">"Deleted Entities"</span>
-                            <span class="meta-value">{deleted.to_string()}</span>
-                        </div>
-                        <div class="meta-row">
-                            <span class="meta-label">"Total Entities"</span>
-                            <span class="meta-value">{total_entities.to_string()}</span>
+                            <span class="meta-label">"Entities"</span>
+                            <span class="meta-value">{format!("{total_entities} ({deleted} deleted)")}</span>
                         </div>
                         <div class="meta-row">
                             <span class="meta-label">"Sequence"</span>
@@ -195,6 +264,61 @@ pub fn TagSidebar() -> impl IntoView {
                             <span class="meta-label">"Root Hash"</span>
                             <span class="meta-value">{root_hash}</span>
                         </div>
+
+                        // ── Local Cache ──
+                        <div class="meta-section-label">"Local Cache"</div>
+                        <div class="meta-row">
+                            <span class="meta-label">"Card Histories"</span>
+                            <span class="meta-value">{move || {
+                                let count = crate::storage::cached_card_history_count();
+                                if count > 0 { count.to_string() } else { "---".to_string() }
+                            }}</span>
+                        </div>
+                        <div class="meta-row">
+                            <span class="meta-label">"Tag Histories"</span>
+                            <span class="meta-value">{move || {
+                                let count = crate::storage::cached_tag_history_count();
+                                if count > 0 { count.to_string() } else { "---".to_string() }
+                            }}</span>
+                        </div>
+                        <div class="meta-row">
+                            <span class="meta-label">"Link Graph"</span>
+                            <span class="meta-value">{move || {
+                                let cached = state.link_graph_cache.get().len();
+                                let (grand_total, remaining) = state.link_cache_progress.get();
+                                if remaining > 0 && grand_total > 0 {
+                                    let pct = cached * 100 / grand_total;
+                                    format!("{cached}/{grand_total} \u{2022} {pct}%")
+                                } else if cached > 0 {
+                                    format!("{cached}/{cached}")
+                                } else {
+                                    "---".to_string()
+                                }
+                            }}</span>
+                        </div>
+                        {move || {
+                            let cached = state.link_graph_cache.get().len();
+                            let (grand_total, remaining) = state.link_cache_progress.get();
+                            (remaining > 0 && grand_total > 0).then(|| {
+                                let pct = cached * 100 / grand_total;
+                                let pct_clamped = pct.min(100);
+                                view! {
+                                    <div class="cache-progress-bar">
+                                        <div class="cache-progress-fill" style=format!("width:{pct_clamped}%")></div>
+                                    </div>
+                                }
+                            })
+                        }}
+                        <div class="meta-row">
+                            <span class="meta-label">"Offline Queue"</span>
+                            <span class="meta-value">{move || {
+                                let queue = state.offline_queue.get().len();
+                                if queue > 0 { format!("{queue} pending") } else { "empty".to_string() }
+                            }}</span>
+                        </div>
+
+                        // ── Versions ──
+                        <div class="meta-section-label">"Versions"</div>
                         <div class="meta-row">
                             <span class="meta-label">"WASM"</span>
                             <span class="meta-value">{concat!("v", env!("CARGO_PKG_VERSION"))}</span>
@@ -205,7 +329,7 @@ pub fn TagSidebar() -> impl IntoView {
                         </div>
                         <div class="meta-row">
                             <span class="meta-label">"Protocol"</span>
-                            <span class="meta-value">{format!("v{}", blazelist_protocol::PROTOCOL_VERSION)}</span>
+                            <span class="meta-value">{format!("v{}", blazelist_protocol::PROTOCOL_VERSION_STR)}</span>
                         </div>
                     }
                 }}

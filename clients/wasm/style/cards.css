@@ -110,6 +110,18 @@
     color: var(--link-back);
 }
 
+.card-link-mutual {
+    font-family: monospace;
+    font-size: 0.62rem;
+    color: var(--link-mutual);
+}
+
+.card-link-transitive {
+    font-family: monospace;
+    font-size: 0.62rem;
+    color: var(--text-primary);
+}
+
 .card-item:hover {
     background: var(--bg-card);
 }
@@ -149,6 +161,13 @@
     flex-shrink: 0;
     white-space: nowrap;
     user-select: none;
+}
+
+/* Hidden by default at all viewport sizes; the `show-card-time` class
+   on <html> (toggled by the "Show card last-edited time" setting) opts
+   back in. */
+html:not(.show-card-time) .card-time {
+    display: none;
 }
 
 .card-preview.empty {
@@ -194,22 +213,34 @@
 }
 
 .card-tag-dots-grid {
-    display: grid;
-    grid-template-rows: repeat(3, 4px);
-    grid-auto-flow: column;
-    grid-auto-columns: 4px;
+    /* Fixed-size flex box so 1 or 2 dots center inside the same
+       footprint as a full 2×2. Flex-wrap takes care of 3 and 4
+       dots wrapping into the second row, and `justify-content: center`
+       centers any lonely dot on either row. */
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    align-content: center;
+    width: 14px;
+    height: 14px;
     gap: 2px;
 }
 
 .card-tag-dot {
-    width: 4px;
-    height: 4px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
 }
 
 .card-tag-overflow {
-    font-size: 0.5rem;
-    color: var(--text-muted);
+    /* Sized and styled like the linked-card indicators
+       (`.card-link-forward` et al.) so it reads as a count rather than
+       as muted noise. Uses --accent to tie the "+N" visually to the
+       default-accent tags it represents. */
+    font-family: monospace;
+    font-size: 0.62rem;
+    color: var(--accent);
     line-height: 1;
 }
 
@@ -229,14 +260,18 @@
 }
 
 .density-cozy .card-tag-dots-grid {
-    grid-template-rows: repeat(3, 7px);
-    grid-auto-columns: 7px;
+    width: 23px;
+    height: 23px;
     gap: 3px;
 }
 
 .density-cozy .card-tag-dot {
-    width: 7px;
-    height: 7px;
+    width: 10px;
+    height: 10px;
+}
+
+.density-cozy .card-tag-overflow {
+    font-size: 0.68rem;
 }
 
 .density-cozy .card-tag-dots {
@@ -296,6 +331,13 @@
     padding-left: 1rem;
 }
 
+.swipe-bg.swipe-bg-extinguish {
+    opacity: 1;
+    transition: opacity 0.05s, background-color 0.15s;
+    justify-content: flex-start;
+    padding-left: 1rem;
+}
+
 .swipe-bg.swipe-bg-due {
     opacity: 1;
     transition: opacity 0.05s, background-color 0.15s;
@@ -305,6 +347,10 @@
 
 .swipe-bg.swipe-commit.swipe-bg-blaze {
     background: var(--danger-subtle);
+}
+
+.swipe-bg.swipe-commit.swipe-bg-extinguish {
+    background: var(--extinguish-subtle);
 }
 
 .swipe-bg.swipe-commit.swipe-bg-due {
@@ -323,6 +369,126 @@
     color: var(--danger);
 }
 
+.swipe-commit.swipe-bg-extinguish .swipe-label {
+    color: var(--extinguish);
+}
+
 .swipe-commit.swipe-bg-due .swipe-label {
     color: var(--due-today);
+}
+
+/* Swipe action toast / undo bar */
+.swipe-toast {
+    position: fixed;
+    bottom: 1.5rem;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.5rem 0.75rem;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    z-index: 100;
+    animation: swipe-toast-in 0.2s ease-out;
+    max-width: calc(100vw - 2rem);
+}
+
+@keyframes swipe-toast-in {
+    from {
+        opacity: 0;
+        transform: translateX(-50%) translateY(0.5rem);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+    }
+}
+
+.swipe-toast-msg {
+    font-size: 0.78rem;
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+
+.swipe-toast-undo {
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.2rem 0.6rem;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+
+.swipe-toast-undo:hover {
+    background: var(--accent-subtle);
+    color: var(--accent-hover);
+}
+
+.swipe-toast-close {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    cursor: pointer;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.15s;
+}
+
+.swipe-toast-close:hover {
+    color: var(--text-secondary);
+}
+
+/* Brief copy/action notification toast */
+.copy-toast {
+    position: fixed;
+    bottom: 1.5rem;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.3rem 0.75rem;
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+    z-index: 100;
+    animation: copy-toast-in 0.15s ease-out;
+    pointer-events: none;
+}
+
+@keyframes copy-toast-in {
+    from { opacity: 0; transform: translateX(-50%) translateY(0.4rem); }
+    to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* Prominent error toast — larger and red so the user actually
+   notices when an action fails (e.g. offline delete). */
+.error-toast {
+    position: fixed;
+    bottom: 2rem;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--danger);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 8px;
+    padding: 0.75rem 1.25rem;
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: #ffffff;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    z-index: 101;
+    animation: copy-toast-in 0.15s ease-out;
+    pointer-events: none;
+    max-width: 90vw;
+    text-align: center;
 }

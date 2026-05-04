@@ -13,9 +13,9 @@ use super::SqliteStorage;
 pub(super) const CARD_COLS: &str = "id, content, priority, tags, blazed, created_at, modified_at, due_date, count, ancestor_hash, hash";
 pub(super) const CARD_VERSION_COLS: &str = "card_id, content, priority, tags, blazed, created_at, modified_at, due_date, count, ancestor_hash, hash";
 pub(super) const TAG_COLS: &str =
-    "id, title, color, created_at, modified_at, count, ancestor_hash, hash";
+    "id, title, color, created_at, modified_at, count, ancestor_hash, hash, implies";
 pub(super) const TAG_VERSION_COLS: &str =
-    "tag_id, title, color, created_at, modified_at, count, ancestor_hash, hash";
+    "tag_id, title, color, created_at, modified_at, count, ancestor_hash, hash, implies";
 
 impl SqliteStorage {
     /// Return the bucket index (0-255) for a given entity UUID.
@@ -33,6 +33,17 @@ impl SqliteStorage {
     /// Deserialize a `Vec<Uuid>` from postcard bytes.
     pub(super) fn deserialize_tags(bytes: &[u8]) -> Vec<Uuid> {
         postcard::from_bytes(bytes).expect("tag deserialization should not fail")
+    }
+
+    /// Serialize a tag's `implies` list. Same format as `serialize_tags`,
+    /// kept as a dedicated helper for clarity at call sites.
+    pub(super) fn serialize_implies(implies: &[Uuid]) -> Vec<u8> {
+        postcard::to_allocvec(implies).expect("implies serialization should not fail")
+    }
+
+    /// Deserialize a tag's `implies` list.
+    pub(super) fn deserialize_implies(bytes: &[u8]) -> Vec<Uuid> {
+        postcard::from_bytes(bytes).expect("implies deserialization should not fail")
     }
 
     /// Reconstruct a `blake3::Hash` from a 32-byte slice.
@@ -99,6 +110,7 @@ impl SqliteStorage {
         let count_raw: i64 = row.get(5)?;
         let ancestor_hash_bytes: Vec<u8> = row.get(6)?;
         let hash_bytes: Vec<u8> = row.get(7)?;
+        let implies_bytes: Vec<u8> = row.get(8)?;
 
         let id = Uuid::from_bytes(id_bytes.as_slice().try_into().unwrap());
         let count = NonNegativeI64::try_from(count_raw).map_err(|e| {
@@ -112,6 +124,7 @@ impl SqliteStorage {
         let modified_at: DateTime<Utc> = DateTime::from_timestamp_millis(modified_at_ms).unwrap();
         let ancestor_hash = Self::hash_from_bytes(&ancestor_hash_bytes);
         let hash = Self::hash_from_bytes(&hash_bytes);
+        let implies = Self::deserialize_implies(&implies_bytes);
 
         Tag::from_parts(
             id,
@@ -122,6 +135,7 @@ impl SqliteStorage {
             count,
             ancestor_hash,
             hash,
+            implies,
         )
         .map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Blob, Box::new(e))

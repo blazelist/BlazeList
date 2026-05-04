@@ -27,7 +27,8 @@ pub use hash::{Entity, HashVerificationError, ZERO_HASH, canonical_card_hash, ca
 pub use non_negative_i64::{NegativeValueError, NonNegativeI64, OutOfRangeError};
 pub use root::RootState;
 pub use tag::Tag;
-pub use version::{PROTOCOL_VERSION, Version, is_compatible};
+pub use tag::graph::{TagGraph, TagImplicationCycle, affected_cards_for_change};
+pub use version::{PROTOCOL_VERSION, PROTOCOL_VERSION_STR, Version, is_compatible};
 
 // -- Protocol modules (wire format, handshake, request/response types) --
 #[cfg(feature = "io")]

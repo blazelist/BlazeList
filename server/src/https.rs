@@ -56,21 +56,26 @@ pub fn build_client_config_json() -> String {
     let touch_swipe = std::env::var("BLAZELIST_DEFAULT_TOUCH_SWIPE").ok();
     let swipe_threshold_right = std::env::var("BLAZELIST_DEFAULT_SWIPE_THRESHOLD_RIGHT").ok();
     let swipe_threshold_left = std::env::var("BLAZELIST_DEFAULT_SWIPE_THRESHOLD_LEFT").ok();
+    let swipe_undo_timeout_ms = std::env::var("BLAZELIST_DEFAULT_SWIPE_UNDO_TIMEOUT_MS").ok();
     let clear_tag_search = std::env::var("BLAZELIST_DEFAULT_CLEAR_TAG_SEARCH").ok();
     let default_sidebar_width = std::env::var("BLAZELIST_DEFAULT_SIDEBAR_WIDTH").ok();
     let default_detail_width = std::env::var("BLAZELIST_DEFAULT_DETAIL_WIDTH").ok();
     let override_sidebar_width = std::env::var("BLAZELIST_DEFAULT_OVERRIDE_SIDEBAR_WIDTH").ok();
     let override_detail_width = std::env::var("BLAZELIST_DEFAULT_OVERRIDE_DETAIL_WIDTH").ok();
+    let recursive_links = std::env::var("BLAZELIST_DEFAULT_RECURSIVE_LINKS").ok();
+    let show_list_link_counts = std::env::var("BLAZELIST_DEFAULT_SHOW_LIST_LINK_COUNTS").ok();
+    let show_due_today_button = std::env::var("BLAZELIST_DEFAULT_SHOW_DUE_TODAY_BUTTON").ok();
+    let show_card_time = std::env::var("BLAZELIST_DEFAULT_SHOW_CARD_TIME").ok();
 
     // Only include env vars that are explicitly set.
     let mut pairs = Vec::new();
     if let Some(v) = auto_save {
         pairs.push(format!(r#""auto_save":{}"#, v == "true"));
     }
-    if let Some(v) = auto_save_delay {
-        if let Ok(n) = v.parse::<u32>() {
-            pairs.push(format!(r#""auto_save_delay":{n}"#));
-        }
+    if let Some(v) = auto_save_delay
+        && let Ok(n) = v.parse::<u32>()
+    {
+        pairs.push(format!(r#""auto_save_delay":{n}"#));
     }
     if let Some(v) = show_preview {
         pairs.push(format!(r#""show_preview":{}"#, v == "true"));
@@ -78,18 +83,18 @@ pub fn build_client_config_json() -> String {
     if let Some(v) = auto_sync {
         pairs.push(format!(r#""auto_sync":{}"#, v == "true"));
     }
-    if let Some(v) = auto_sync_interval {
-        if let Ok(n) = v.parse::<u32>() {
-            pairs.push(format!(r#""auto_sync_interval":{n}"#));
-        }
+    if let Some(v) = auto_sync_interval
+        && let Ok(n) = v.parse::<u32>()
+    {
+        pairs.push(format!(r#""auto_sync_interval":{n}"#));
     }
     if let Some(v) = debounce_enabled {
         pairs.push(format!(r#""debounce_enabled":{}"#, v == "true"));
     }
-    if let Some(v) = debounce_delay {
-        if let Ok(n) = v.parse::<u32>() {
-            pairs.push(format!(r#""debounce_delay":{n}"#));
-        }
+    if let Some(v) = debounce_delay
+        && let Ok(n) = v.parse::<u32>()
+    {
+        pairs.push(format!(r#""debounce_delay":{n}"#));
     }
     if let Some(v) = keyboard_shortcuts {
         pairs.push(format!(r#""keyboard_shortcuts":{}"#, v == "true"));
@@ -97,10 +102,10 @@ pub fn build_client_config_json() -> String {
     if let Some(v) = search_tags {
         pairs.push(format!(r#""search_tags":{}"#, v == "true"));
     }
-    if let Some(v) = ui_scale {
-        if let Ok(n) = v.parse::<u32>() {
-            pairs.push(format!(r#""ui_scale":{n}"#));
-        }
+    if let Some(v) = ui_scale
+        && let Ok(n) = v.parse::<u32>()
+    {
+        pairs.push(format!(r#""ui_scale":{n}"#));
     }
     if let Some(v) = ui_density {
         pairs.push(format!(r#""ui_density":"{}""#, v.replace('"', "")));
@@ -108,34 +113,51 @@ pub fn build_client_config_json() -> String {
     if let Some(v) = touch_swipe {
         pairs.push(format!(r#""touch_swipe":{}"#, v == "true"));
     }
-    if let Some(v) = swipe_threshold_right {
-        if let Ok(n) = v.parse::<u32>() {
-            pairs.push(format!(r#""swipe_threshold_right":{n}"#));
-        }
+    if let Some(v) = swipe_threshold_right
+        && let Ok(n) = v.parse::<u32>()
+    {
+        pairs.push(format!(r#""swipe_threshold_right":{n}"#));
     }
-    if let Some(v) = swipe_threshold_left {
-        if let Ok(n) = v.parse::<u32>() {
-            pairs.push(format!(r#""swipe_threshold_left":{n}"#));
-        }
+    if let Some(v) = swipe_threshold_left
+        && let Ok(n) = v.parse::<u32>()
+    {
+        pairs.push(format!(r#""swipe_threshold_left":{n}"#));
+    }
+    if let Some(v) = swipe_undo_timeout_ms
+        && let Ok(n) = v.parse::<u32>()
+    {
+        pairs.push(format!(r#""swipe_undo_timeout_ms":{n}"#));
     }
     if let Some(v) = clear_tag_search {
         pairs.push(format!(r#""clear_tag_search":{}"#, v == "true"));
     }
-    if let Some(v) = default_sidebar_width {
-        if let Ok(n) = v.parse::<u32>() {
-            pairs.push(format!(r#""default_sidebar_width":{n}"#));
-        }
+    if let Some(v) = default_sidebar_width
+        && let Ok(n) = v.parse::<u32>()
+    {
+        pairs.push(format!(r#""default_sidebar_width":{n}"#));
     }
-    if let Some(v) = default_detail_width {
-        if let Ok(n) = v.parse::<u32>() {
-            pairs.push(format!(r#""default_detail_width":{n}"#));
-        }
+    if let Some(v) = default_detail_width
+        && let Ok(n) = v.parse::<u32>()
+    {
+        pairs.push(format!(r#""default_detail_width":{n}"#));
     }
     if let Some(v) = override_sidebar_width {
         pairs.push(format!(r#""override_sidebar_width":{}"#, v == "true"));
     }
     if let Some(v) = override_detail_width {
         pairs.push(format!(r#""override_detail_width":{}"#, v == "true"));
+    }
+    if let Some(v) = recursive_links {
+        pairs.push(format!(r#""recursive_links":{}"#, v == "true"));
+    }
+    if let Some(v) = show_list_link_counts {
+        pairs.push(format!(r#""show_list_link_counts":{}"#, v == "true"));
+    }
+    if let Some(v) = show_due_today_button {
+        pairs.push(format!(r#""show_due_today_button":{}"#, v == "true"));
+    }
+    if let Some(v) = show_card_time {
+        pairs.push(format!(r#""show_card_time":{}"#, v == "true"));
     }
 
     format!("{{{}}}", pairs.join(","))
@@ -151,7 +173,7 @@ pub async fn run_https_server(
     let listener = match TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("failed to bind HTTPS server on {addr}: {e}");
+            tracing::error!(%addr, error = %e, "failed to bind HTTPS server");
             return;
         }
     };
@@ -339,15 +361,11 @@ pub fn hex_encode(bytes: &[u8]) -> String {
 ///
 /// Used by WASM clients to auto-fetch the server certificate hash before
 /// establishing a WebTransport connection, and to get server-default settings.
-pub async fn run_cert_hash_server(
-    addr: SocketAddr,
-    cert_hash_hex: String,
-    config_json: String,
-) {
+pub async fn run_cert_hash_server(addr: SocketAddr, cert_hash_hex: String, config_json: String) {
     let listener = match TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("failed to bind cert-hash HTTP server on {addr}: {e}");
+            tracing::error!(%addr, error = %e, "failed to bind cert-hash HTTP server");
             return;
         }
     };

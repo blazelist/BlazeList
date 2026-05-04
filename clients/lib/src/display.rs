@@ -9,10 +9,12 @@ use comrak::nodes::NodeValue;
 use comrak::{Arena, Options, parse_document};
 use uuid::Uuid;
 
-/// Regex matching UUID-formatted strings (8-4-4-4-12 hex).
+/// Regex matching UUID-formatted strings (8-4-4-4-12 hex) that appear
+/// at the start of text or after whitespace. This naturally excludes
+/// UUIDs embedded in URLs (after `/`, `=`, `?`, etc.).
 static UUID_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(
-        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        r"(?:^|\s)([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})",
     )
     .expect("UUID regex is valid")
 });
@@ -20,7 +22,6 @@ static UUID_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
 /// Regex matching HTML tags (for splitting HTML into tags and text).
 static HTML_TAG_RE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"<[^>]*>").expect("HTML tag regex is valid"));
-
 
 /// Render a Markdown string as plain text by removing all formatting.
 ///
@@ -201,8 +202,12 @@ pub fn task_progress(content: &str) -> Option<(usize, usize)> {
 pub fn extract_card_links(content: &str, own_id: Uuid) -> Vec<Uuid> {
     let mut links = Vec::new();
     let mut seen = HashSet::new();
-    for m in UUID_RE.find_iter(content) {
-        if let Ok(uuid) = m.as_str().parse::<Uuid>()
+    for caps in UUID_RE.captures_iter(content) {
+        let uuid_str = caps
+            .get(1)
+            .expect("capture group 1 always present")
+            .as_str();
+        if let Ok(uuid) = uuid_str.parse::<Uuid>()
             && uuid != own_id
             && seen.insert(uuid)
         {
@@ -244,42 +249,136 @@ pub fn extract_back_links(card_id: Uuid, all_cards: &[Card]) -> Vec<Uuid> {
     let needle = card_id.to_string();
     all_cards
         .iter()
-        .filter(|c| c.id() != card_id && c.content().contains(&needle))
+        .filter(|c| {
+            // Fast pre-filter: skip cards that don't contain the UUID string at all.
+            // Then verify with the regex to exclude UUIDs embedded in URLs.
+            c.id() != card_id
+                && c.content().contains(&needle)
+                && extract_card_links(c.content(), c.id()).contains(&card_id)
+        })
         .map(|c| c.id())
         .collect()
 }
 
-/// Forward and backward link counts for a card.
+/// Recursively expand all transitively linked cards from a starting card.
+///
+/// Starting from `card_id`, follows both forward links (UUIDs in content)
+/// and back links (other cards referencing this card) transitively until
+/// no new cards are discovered. Returns a deduplicated list of all linked
+/// card IDs (excluding `card_id` itself).
+pub fn expand_linked_cards(card_id: Uuid, all_cards: &[Card]) -> Vec<Uuid> {
+    let card_map: HashMap<Uuid, &Card> = all_cards.iter().map(|c| (c.id(), c)).collect();
+    let mut visited = HashSet::new();
+    visited.insert(card_id);
+    let mut queue = std::collections::VecDeque::new();
+
+    // Seed queue with direct links from the starting card.
+    if let Some(card) = card_map.get(&card_id) {
+        for id in extract_card_links(card.content(), card_id) {
+            if visited.insert(id) {
+                queue.push_back(id);
+            }
+        }
+    }
+    for id in extract_back_links(card_id, all_cards) {
+        if visited.insert(id) {
+            queue.push_back(id);
+        }
+    }
+
+    // BFS: keep expanding until no new cards are found.
+    let mut result = Vec::new();
+    while let Some(current) = queue.pop_front() {
+        result.push(current);
+        if let Some(card) = card_map.get(&current) {
+            for id in extract_card_links(card.content(), current) {
+                if visited.insert(id) {
+                    queue.push_back(id);
+                }
+            }
+        }
+        for id in extract_back_links(current, all_cards) {
+            if visited.insert(id) {
+                queue.push_back(id);
+            }
+        }
+    }
+    result
+}
+
+/// Forward, backward, and mutual link counts for a card.
+///
+/// `forward` and `back` are *exclusive* of mutual links: if A links to B and
+/// B also links back to A, that pair contributes only to `mutual` on both
+/// sides — not to `forward` or `back`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LinkCounts {
-    /// Number of other cards this card's content references.
+    /// Cards this card references that don't reference back (forward-only).
     pub forward: usize,
-    /// Number of other cards whose content references this card.
+    /// Cards that reference this card and aren't referenced back (back-only).
     pub back: usize,
+    /// Cards that link to this card and that this card also links to.
+    pub mutual: usize,
+    /// Number of additional cards reachable transitively (beyond direct links).
+    /// Only populated when recursive link expansion is enabled.
+    pub transitive: usize,
 }
 
 /// Compute link counts for every card in a single pass.
 ///
-/// For each card, extracts forward links (UUIDs in content) and increments
-/// the back-link count on the referenced cards. Returns a map from card ID
-/// to its [`LinkCounts`].
+/// First collects each card's outgoing link set, then classifies each pair
+/// as forward-only or mutual based on whether the target also links back.
+/// Back-only is incremented on the target when the link is one-way.
+/// Returns a map from card ID to its [`LinkCounts`].
 pub fn compute_all_link_counts(cards: &[Card]) -> HashMap<Uuid, LinkCounts> {
     let card_ids: HashSet<Uuid> = cards.iter().map(|c| c.id()).collect();
+
+    let outgoing: HashMap<Uuid, HashSet<Uuid>> = cards
+        .iter()
+        .map(|c| {
+            let own = c.id();
+            let set: HashSet<Uuid> = extract_card_links(c.content(), own)
+                .into_iter()
+                .filter(|id| card_ids.contains(id))
+                .collect();
+            (own, set)
+        })
+        .collect();
+
     let mut counts: HashMap<Uuid, LinkCounts> = HashMap::new();
+    for (&own, links) in &outgoing {
+        for &target in links {
+            let target_links_back = outgoing.get(&target).is_some_and(|s| s.contains(&own));
+            if target_links_back {
+                counts.entry(own).or_default().mutual += 1;
+            } else {
+                counts.entry(own).or_default().forward += 1;
+                counts.entry(target).or_default().back += 1;
+            }
+        }
+    }
+
+    counts
+}
+
+/// Compute link counts with transitive expansion via BFS.
+///
+/// Starts from `compute_all_link_counts` for direct forward/back/mutual counts,
+/// then for each card runs `expand_linked_cards` and sets `transitive` to the
+/// number of additional cards beyond the direct links.
+pub fn compute_all_link_counts_recursive(cards: &[Card]) -> HashMap<Uuid, LinkCounts> {
+    let mut counts = compute_all_link_counts(cards);
 
     for card in cards {
-        let own_id = card.id();
-        let forward = extract_card_links(card.content(), own_id);
-
-        let valid: Vec<Uuid> = forward
-            .into_iter()
-            .filter(|id| card_ids.contains(id))
-            .collect();
-        counts.entry(own_id).or_default().forward = valid.len();
-
-        for target_id in valid {
-            counts.entry(target_id).or_default().back += 1;
-        }
+        let id = card.id();
+        let expanded = expand_linked_cards(id, cards);
+        let direct = {
+            let lc = counts.get(&id).copied().unwrap_or_default();
+            lc.forward + lc.back + lc.mutual
+        };
+        // Transitive = total reachable minus direct links (expanded already excludes self).
+        let transitive = expanded.len().saturating_sub(direct);
+        counts.entry(id).or_default().transitive = transitive;
     }
 
     counts
@@ -326,7 +425,13 @@ pub fn linkify_card_uuids_with_previews(
         last_end = tag_match.end();
     }
     // Remaining text after the last tag.
-    linkify_segment(&html[last_end..], card_ids, card_previews, blazed_ids, &mut result);
+    linkify_segment(
+        &html[last_end..],
+        card_ids,
+        card_previews,
+        blazed_ids,
+        &mut result,
+    );
 
     result
 }
@@ -340,9 +445,13 @@ fn linkify_segment(
     out: &mut String,
 ) {
     let mut last = 0;
-    for m in UUID_RE.find_iter(text) {
-        out.push_str(&text[last..m.start()]);
-        if let Ok(uuid) = m.as_str().parse::<Uuid>() {
+    for caps in UUID_RE.captures_iter(text) {
+        let full_match = caps.get(0).unwrap();
+        let uuid_match = caps.get(1).unwrap();
+        // Emit text up to the full match, then any leading whitespace
+        // that's part of the match but before the UUID itself.
+        out.push_str(&text[last..uuid_match.start()]);
+        if let Ok(uuid) = uuid_match.as_str().parse::<Uuid>() {
             if card_ids.contains(&uuid) {
                 let full_id = uuid.to_string();
                 let short_id = &full_id[..8];
@@ -356,7 +465,7 @@ fn linkify_segment(
                 out.push_str(r#"<span class="card-uuid-link-id">"#);
                 out.push_str(short_id);
                 if card_previews.contains_key(&uuid) {
-                    out.push_str("\u{2026}");
+                    out.push('\u{2026}');
                 }
                 out.push_str("</span>");
                 if let Some(preview) = card_previews.get(&uuid) {
@@ -366,12 +475,12 @@ fn linkify_segment(
                 }
                 out.push_str("</span>");
             } else {
-                out.push_str(m.as_str());
+                out.push_str(uuid_match.as_str());
             }
         } else {
-            out.push_str(m.as_str());
+            out.push_str(uuid_match.as_str());
         }
-        last = m.end();
+        last = full_match.end();
     }
     out.push_str(&text[last..]);
 }
@@ -682,12 +791,22 @@ mod tests {
     }
 
     #[test]
-    fn extract_card_links_back_to_back() {
+    fn extract_card_links_back_to_back_no_space() {
         let own = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
         let a = Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
         let b = Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
-        // Two UUIDs with no separator
+        // No separator — only first matches (second has no whitespace before it)
         let content = format!("{a}{b}");
+        let result = extract_card_links(&content, own);
+        assert_eq!(result, vec![a]);
+    }
+
+    #[test]
+    fn extract_card_links_back_to_back_with_space() {
+        let own = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let a = Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        let b = Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
+        let content = format!("{a} {b}");
         let result = extract_card_links(&content, own);
         assert_eq!(result, vec![a, b]);
     }
@@ -716,19 +835,69 @@ mod tests {
     }
 
     #[test]
-    fn extract_card_links_in_url() {
+    fn extract_card_links_in_url_path_excluded() {
         let own = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
         let linked = Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap();
         let content = format!("https://example.com/card/{linked}");
         let result = extract_card_links(&content, own);
+        assert!(result.is_empty(), "UUID in URL path should be excluded");
+    }
+
+    #[test]
+    fn extract_card_links_in_url_query_excluded() {
+        let own = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let linked = Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap();
+        let content = format!("http://localhost:47812/?entity={linked}");
+        let result = extract_card_links(&content, own);
+        assert!(
+            result.is_empty(),
+            "UUID in URL query param should be excluded"
+        );
+    }
+
+    #[test]
+    fn extract_card_links_standalone_still_works() {
+        let own = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let linked = Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap();
+        // Standalone on its own line
+        let result = extract_card_links(&linked.to_string(), own);
+        assert_eq!(result, vec![linked]);
+        // After text
+        let result = extract_card_links(&format!("See also: {linked}"), own);
+        assert_eq!(result, vec![linked]);
+        // In a task list
+        let result = extract_card_links(&format!("- [ ] {linked}"), own);
         assert_eq!(result, vec![linked]);
     }
 
     #[test]
-    fn extract_card_links_in_markdown_link() {
+    fn extract_card_links_in_markdown_link_excluded() {
         let own = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
         let linked = Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap();
+        // UUID inside parentheses (markdown link URL) — not preceded by whitespace
         let content = format!("[linked card]({linked})");
+        let result = extract_card_links(&content, own);
+        assert!(
+            result.is_empty(),
+            "UUID in markdown link URL should be excluded"
+        );
+    }
+
+    #[test]
+    fn extract_card_links_glued_text_excluded() {
+        let own = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let linked = Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap();
+        // UUID directly after text with no space
+        let content = format!("hello{linked}");
+        let result = extract_card_links(&content, own);
+        assert!(result.is_empty(), "UUID glued to text should be excluded");
+    }
+
+    #[test]
+    fn extract_card_links_after_newline() {
+        let own = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let linked = Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap();
+        let content = format!("hello\n{linked}");
         let result = extract_card_links(&content, own);
         assert_eq!(result, vec![linked]);
     }
@@ -826,7 +995,6 @@ Done.";
                 [],
                 [
                     "11111111-1111-1111-1111-111111111111",
-                    "22222222-2222-2222-2222-222222222222",
                 ],
             )
         "#]]
@@ -857,7 +1025,6 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
     #[test]
     fn resolve_linked_cards_basic() {
-
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
@@ -880,7 +1047,6 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
     #[test]
     fn resolve_linked_cards_empty_content() {
-
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
@@ -901,7 +1067,6 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
     #[test]
     fn resolve_linked_cards_truncates_preview() {
-
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
@@ -924,7 +1089,6 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
     #[test]
     fn extract_back_links_finds_referencing_cards() {
-
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
@@ -953,7 +1117,6 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
     #[test]
     fn extract_back_links_excludes_self() {
-
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
@@ -976,7 +1139,6 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
     #[test]
     fn extract_back_links_empty_when_no_references() {
-
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
@@ -997,7 +1159,6 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
     #[test]
     fn compute_all_link_counts_basic() {
-
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
@@ -1036,7 +1197,6 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
     #[test]
     fn compute_all_link_counts_self_ref_excluded() {
-
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
@@ -1060,7 +1220,6 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
 
     #[test]
     fn compute_all_link_counts_duplicate_uuid_counted_once() {
-
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
@@ -1088,8 +1247,80 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
     }
 
     #[test]
-    fn compute_all_link_counts_nonexistent_target_ignored() {
+    fn compute_all_link_counts_mutual_pair() {
+        use chrono::DateTime;
 
+        let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
+        let p = 1000i64;
+        let id_a = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let id_b = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
+
+        // A and B reference each other (mutual)
+        let cards = vec![
+            Card::first(id_a, format!("Links to {id_b}"), p, vec![], false, t, None),
+            Card::first(id_b, format!("Links to {id_a}"), p, vec![], false, t, None),
+        ];
+
+        let counts = compute_all_link_counts(&cards);
+
+        assert_eq!(counts[&id_a].forward, 0);
+        assert_eq!(counts[&id_a].back, 0);
+        assert_eq!(counts[&id_a].mutual, 1);
+
+        assert_eq!(counts[&id_b].forward, 0);
+        assert_eq!(counts[&id_b].back, 0);
+        assert_eq!(counts[&id_b].mutual, 1);
+    }
+
+    #[test]
+    fn compute_all_link_counts_mixed_forward_back_mutual() {
+        use chrono::DateTime;
+
+        let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
+        let p = 1000i64;
+        let id_a = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let id_b = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
+        let id_c = Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").unwrap();
+        let id_d = Uuid::parse_str("dddddddd-dddd-dddd-dddd-dddddddddddd").unwrap();
+
+        // A ↔ B (mutual), A → C (forward), D → A (back)
+        let cards = vec![
+            Card::first(
+                id_a,
+                format!("Links to {id_b} and {id_c}"),
+                p,
+                vec![],
+                false,
+                t,
+                None,
+            ),
+            Card::first(id_b, format!("Links to {id_a}"), p, vec![], false, t, None),
+            Card::first(id_c, "No links".into(), p, vec![], false, t, None),
+            Card::first(id_d, format!("Links to {id_a}"), p, vec![], false, t, None),
+        ];
+
+        let counts = compute_all_link_counts(&cards);
+
+        // A: forward-only=1 (C), back-only=1 (from D), mutual=1 (B)
+        assert_eq!(counts[&id_a].forward, 1);
+        assert_eq!(counts[&id_a].back, 1);
+        assert_eq!(counts[&id_a].mutual, 1);
+        // B: only mutual link with A
+        assert_eq!(counts[&id_b].forward, 0);
+        assert_eq!(counts[&id_b].back, 0);
+        assert_eq!(counts[&id_b].mutual, 1);
+        // C: only back-only from A
+        assert_eq!(counts[&id_c].forward, 0);
+        assert_eq!(counts[&id_c].back, 1);
+        assert_eq!(counts[&id_c].mutual, 0);
+        // D: only forward-only to A
+        assert_eq!(counts[&id_d].forward, 1);
+        assert_eq!(counts[&id_d].back, 0);
+        assert_eq!(counts[&id_d].mutual, 0);
+    }
+
+    #[test]
+    fn compute_all_link_counts_nonexistent_target_ignored() {
         use chrono::DateTime;
 
         let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
@@ -1192,7 +1423,12 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
                 .collect();
 
         let html = format!("<p>{id}</p>");
-        let result = linkify_card_uuids_with_previews(&html, &card_ids, &previews, &std::collections::HashSet::new());
+        let result = linkify_card_uuids_with_previews(
+            &html,
+            &card_ids,
+            &previews,
+            &std::collections::HashSet::new(),
+        );
 
         assert!(result.contains("card-uuid-link-preview"));
         assert!(result.contains("Linked card preview"));
@@ -1208,7 +1444,12 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
                 .collect();
 
         let html = format!("<p>{id}</p>");
-        let result = linkify_card_uuids_with_previews(&html, &card_ids, &previews, &std::collections::HashSet::new());
+        let result = linkify_card_uuids_with_previews(
+            &html,
+            &card_ids,
+            &previews,
+            &std::collections::HashSet::new(),
+        );
 
         assert!(result.contains("&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;"));
         assert!(!result.contains("<script>alert"));
@@ -1244,5 +1485,159 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
         let result = wrap_code_blocks_with_copy_button(html);
         assert!(result.starts_with("<h1>Title</h1>"));
         assert!(result.ends_with("<p>after</p>"));
+    }
+
+    // -- expand_linked_cards tests -------------------------------------------
+
+    #[test]
+    fn expand_linked_cards_no_links() {
+        use chrono::DateTime;
+        let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
+        let id = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let cards = vec![Card::first(
+            id,
+            "No links here".into(),
+            100,
+            vec![],
+            false,
+            t,
+            None,
+        )];
+        let result = expand_linked_cards(id, &cards);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn expand_linked_cards_direct_forward() {
+        use chrono::DateTime;
+        let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
+        let id_a = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let id_b = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
+        let cards = vec![
+            Card::first(id_a, format!("See {id_b}"), 100, vec![], false, t, None),
+            Card::first(id_b, "Target".into(), 100, vec![], false, t, None),
+        ];
+        let result = expand_linked_cards(id_a, &cards);
+        assert_eq!(result, vec![id_b]);
+    }
+
+    #[test]
+    fn expand_linked_cards_direct_back() {
+        use chrono::DateTime;
+        let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
+        let id_a = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let id_b = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
+        let cards = vec![
+            Card::first(id_a, "No links".into(), 100, vec![], false, t, None),
+            Card::first(
+                id_b,
+                format!("Links to {id_a}"),
+                100,
+                vec![],
+                false,
+                t,
+                None,
+            ),
+        ];
+        let result = expand_linked_cards(id_a, &cards);
+        assert_eq!(result, vec![id_b]);
+    }
+
+    #[test]
+    fn expand_linked_cards_transitive_chain() {
+        use chrono::DateTime;
+        let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
+        let id_a = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let id_b = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
+        let id_c = Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").unwrap();
+        // A -> B -> C
+        let cards = vec![
+            Card::first(id_a, format!("See {id_b}"), 100, vec![], false, t, None),
+            Card::first(id_b, format!("See {id_c}"), 100, vec![], false, t, None),
+            Card::first(id_c, "End".into(), 100, vec![], false, t, None),
+        ];
+        let result = expand_linked_cards(id_a, &cards);
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&id_b));
+        assert!(result.contains(&id_c));
+    }
+
+    #[test]
+    fn expand_linked_cards_cycle() {
+        use chrono::DateTime;
+        let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
+        let id_a = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let id_b = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
+        let id_c = Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").unwrap();
+        // A -> B -> C -> A (cycle)
+        let cards = vec![
+            Card::first(id_a, format!("See {id_b}"), 100, vec![], false, t, None),
+            Card::first(id_b, format!("See {id_c}"), 100, vec![], false, t, None),
+            Card::first(id_c, format!("See {id_a}"), 100, vec![], false, t, None),
+        ];
+        let result = expand_linked_cards(id_a, &cards);
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&id_b));
+        assert!(result.contains(&id_c));
+    }
+
+    #[test]
+    fn expand_linked_cards_excludes_self() {
+        use chrono::DateTime;
+        let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
+        let id_a = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let id_b = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
+        let cards = vec![
+            Card::first(
+                id_a,
+                format!("Self: {id_a}, Other: {id_b}"),
+                100,
+                vec![],
+                false,
+                t,
+                None,
+            ),
+            Card::first(id_b, "Target".into(), 100, vec![], false, t, None),
+        ];
+        let result = expand_linked_cards(id_a, &cards);
+        assert_eq!(result, vec![id_b]);
+        assert!(!result.contains(&id_a));
+    }
+
+    #[test]
+    fn expand_linked_cards_mixed_forward_back_transitive() {
+        use chrono::DateTime;
+        let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
+        let id_a = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let id_b = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
+        let id_c = Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").unwrap();
+        let id_d = Uuid::parse_str("dddddddd-dddd-dddd-dddd-dddddddddddd").unwrap();
+        // A -> B (forward), C -> A (back), C -> D (forward from C)
+        let cards = vec![
+            Card::first(id_a, format!("See {id_b}"), 100, vec![], false, t, None),
+            Card::first(id_b, "End B".into(), 100, vec![], false, t, None),
+            Card::first(
+                id_c,
+                format!("Links to {id_a} and {id_d}"),
+                100,
+                vec![],
+                false,
+                t,
+                None,
+            ),
+            Card::first(id_d, "End D".into(), 100, vec![], false, t, None),
+        ];
+        let result = expand_linked_cards(id_a, &cards);
+        assert_eq!(result.len(), 3);
+        assert!(result.contains(&id_b));
+        assert!(result.contains(&id_c));
+        assert!(result.contains(&id_d));
+    }
+
+    #[test]
+    fn expand_linked_cards_unknown_card_id() {
+        let unknown = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let result = expand_linked_cards(unknown, &[]);
+        assert!(result.is_empty());
     }
 }

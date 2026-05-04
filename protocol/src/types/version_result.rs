@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VersionResult {
     /// Versions are compatible — proceed with requests.
-    Ok,
+    Ok { server_version: Version },
     /// Major versions differ — connection will be closed.
     Mismatch { server_version: Version },
 }

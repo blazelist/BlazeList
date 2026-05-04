@@ -70,7 +70,16 @@ pub fn canonical_card_hash(
 /// [8 B: created_at ms i64 BE] [8 B: modified_at ms i64 BE]
 /// [1 B: has_color u8] [3 B: RGB (only if has_color == 1)]
 /// [8 B: count i64 BE] [32 B: ancestor_hash]
+/// -- only when implies is non-empty:
+/// [8 B: implies count u64 BE] [16 B * N: sorted implies UUIDs]
 /// ```
+///
+/// **Backwards compatibility**: when `implies.is_empty()` the function
+/// produces the same byte sequence as the pre-implications version, so
+/// existing on-disk tag hashes continue to verify after the feature lands.
+/// Only tags that adopt a non-empty implies list (via the new
+/// `first_with_implies` / `next_with_implies` constructors) diverge.
+#[allow(clippy::too_many_arguments)]
 pub fn canonical_tag_hash(
     id: &Uuid,
     title: &str,
@@ -79,6 +88,7 @@ pub fn canonical_tag_hash(
     count: i64,
     ancestor_hash: &blake3::Hash,
     color: Option<&RGB8>,
+    implies: &[Uuid],
 ) -> blake3::Hash {
     let mut hasher = blake3::Hasher::new();
     hasher.update(id.as_bytes());
@@ -97,6 +107,18 @@ pub fn canonical_tag_hash(
     }
     hasher.update(&count.to_be_bytes());
     hasher.update(ancestor_hash.as_bytes());
+    // Conditional append: only hash the implies block when non-empty so
+    // tags without implications still match the pre-feature canonical
+    // bytes. The caller is responsible for passing a sorted+deduplicated
+    // slice (see `Tag::from_parts` / `first_with_implies` / `next_with_implies`).
+    if !implies.is_empty() {
+        let mut sorted = implies.to_vec();
+        sorted.sort();
+        hasher.update(&(sorted.len() as u64).to_be_bytes());
+        for id in &sorted {
+            hasher.update(id.as_bytes());
+        }
+    }
     hasher.finalize()
 }
 

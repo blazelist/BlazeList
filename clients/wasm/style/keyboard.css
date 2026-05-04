@@ -3,6 +3,16 @@
     padding: 0;
 }
 
+.help-section-title {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.6rem 0.5rem 0.15rem;
+    margin: 0;
+}
+
 .help-table {
     width: 100%;
     border-collapse: collapse;
@@ -31,6 +41,91 @@
     padding: 0.1rem 0.4rem;
     font-family: monospace;
     font-size: 0.8rem;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text-primary);
+}
+
+/* ---- Sub-menu popup (floating overlay) ---- */
+
+.submenu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.35);
+}
+
+.submenu-popup {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    min-width: 200px;
+    max-width: 340px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+}
+
+.submenu-title {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.submenu-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
+
+.submenu-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.25rem 0.35rem;
+    border-radius: 4px;
+    font-size: 0.82rem;
+    color: var(--text-primary);
+}
+
+.submenu-item:hover {
+    background: var(--bg-hover);
+}
+
+.submenu-item kbd {
+    display: inline-block;
+    min-width: 1.4em;
+    text-align: center;
+    padding: 0.1rem 0.35rem;
+    font-family: monospace;
+    font-size: 0.8rem;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text-primary);
+}
+
+.submenu-hint {
+    margin-top: 0.5rem;
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    text-align: center;
+}
+
+.submenu-hint kbd {
+    display: inline-block;
+    padding: 0.05rem 0.3rem;
+    font-family: monospace;
+    font-size: 0.7rem;
     background: var(--bg-primary);
     border: 1px solid var(--border);
     border-radius: 3px;

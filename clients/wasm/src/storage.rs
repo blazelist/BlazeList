@@ -17,6 +17,7 @@ use wasm_bindgen::prelude::*;
 const DB_FILENAME: &str = "blazelist.db";
 const HISTORY_FILENAME: &str = "blazelist-history.db";
 const QUEUE_FILENAME: &str = "blazelist-queue.db";
+const LINK_CACHE_FILENAME: &str = "blazelist-link-cache.db";
 
 /// Check that OPFS is available. Panics with a user-visible alert if not.
 pub async fn require_opfs() {
@@ -73,15 +74,32 @@ pub async fn load() -> LocalState {
     match opfs_read(DB_FILENAME).await {
         Ok(data) => {
             if data.is_null() || data.is_undefined() {
+                tracing::info!(
+                    file = DB_FILENAME,
+                    "OPFS file missing — returning default LocalState"
+                );
                 return LocalState::default();
             }
             let array = js_sys::Uint8Array::new(&data);
             let bytes = array.to_vec();
             if bytes.is_empty() {
+                tracing::info!(
+                    file = DB_FILENAME,
+                    "OPFS file empty — returning default LocalState"
+                );
                 return LocalState::default();
             }
-            match postcard::from_bytes(&bytes) {
-                Ok(state) => state,
+            match postcard::from_bytes::<LocalState>(&bytes) {
+                Ok(state) => {
+                    tracing::info!(
+                        file = DB_FILENAME,
+                        bytes = bytes.len(),
+                        cards = state.cards.len(),
+                        tags = state.tags.len(),
+                        "Loaded LocalState from OPFS"
+                    );
+                    state
+                }
                 Err(e) => {
                     tracing::warn!(%e, "Local database corrupted, starting fresh");
                     LocalState::default()
@@ -99,8 +117,17 @@ pub async fn load() -> LocalState {
 pub async fn save(state: &LocalState) {
     match postcard::to_allocvec(state) {
         Ok(bytes) => {
+            let byte_count = bytes.len();
             if let Err(e) = opfs_write(DB_FILENAME, &bytes).await {
                 tracing::error!(?e, "Failed to save local database");
+            } else {
+                tracing::info!(
+                    file = DB_FILENAME,
+                    bytes = byte_count,
+                    cards = state.cards.len(),
+                    tags = state.tags.len(),
+                    "Saved LocalState to OPFS"
+                );
             }
         }
         Err(e) => {
@@ -168,26 +195,23 @@ pub async fn save_offline_queue(queue: &[Card]) {
 
 /// Load the history cache from OPFS into memory.
 pub async fn load_history_cache() {
-    match opfs_read(HISTORY_FILENAME).await {
-        Ok(data) => {
-            if data.is_null() || data.is_undefined() {
-                return;
+    if let Ok(data) = opfs_read(HISTORY_FILENAME).await {
+        if data.is_null() || data.is_undefined() {
+            return;
+        }
+        let array = js_sys::Uint8Array::new(&data);
+        let bytes = array.to_vec();
+        if bytes.is_empty() {
+            return;
+        }
+        match postcard::from_bytes::<HistoryCache>(&bytes) {
+            Ok(cache) => {
+                HISTORY.with(|h| *h.borrow_mut() = cache);
             }
-            let array = js_sys::Uint8Array::new(&data);
-            let bytes = array.to_vec();
-            if bytes.is_empty() {
-                return;
-            }
-            match postcard::from_bytes::<HistoryCache>(&bytes) {
-                Ok(cache) => {
-                    HISTORY.with(|h| *h.borrow_mut() = cache);
-                }
-                Err(e) => {
-                    tracing::warn!(%e, "History cache corrupted, starting fresh");
-                }
+            Err(e) => {
+                tracing::warn!(%e, "History cache corrupted, starting fresh");
             }
         }
-        Err(_) => {}
     }
 }
 
@@ -216,7 +240,13 @@ pub async fn clear_history_cache() {
 
 /// Get cached card version history (empty vec if not cached).
 pub fn get_cached_card_history(id: Uuid) -> Vec<Card> {
-    HISTORY.with(|h| h.borrow().card_histories.get(&id).cloned().unwrap_or_default())
+    HISTORY.with(|h| {
+        h.borrow()
+            .card_histories
+            .get(&id)
+            .cloned()
+            .unwrap_or_default()
+    })
 }
 
 /// Update cached card version history in memory.
@@ -228,7 +258,13 @@ pub fn update_cached_card_history(id: Uuid, history: Vec<Card>) {
 
 /// Get cached tag version history (empty vec if not cached).
 pub fn get_cached_tag_history(id: Uuid) -> Vec<Tag> {
-    HISTORY.with(|h| h.borrow().tag_histories.get(&id).cloned().unwrap_or_default())
+    HISTORY.with(|h| {
+        h.borrow()
+            .tag_histories
+            .get(&id)
+            .cloned()
+            .unwrap_or_default()
+    })
 }
 
 /// Update cached tag version history in memory.
@@ -248,6 +284,71 @@ pub fn update_cached_sequence_history(history: Vec<SequenceHistoryEntry>) {
     HISTORY.with(|h| {
         h.borrow_mut().sequence_history = history;
     });
+}
+
+/// Number of card version histories in the local cache.
+pub fn cached_card_history_count() -> usize {
+    HISTORY.with(|h| h.borrow().card_histories.len())
+}
+
+/// Number of tag version histories in the local cache.
+pub fn cached_tag_history_count() -> usize {
+    HISTORY.with(|h| h.borrow().tag_histories.len())
+}
+
+// -- Transitive link cache API -----------------------------------------------
+
+/// Load the persisted transitive link cache from OPFS.
+pub async fn load_link_cache() -> crate::state::store::LinkGraphCache {
+    match opfs_read(LINK_CACHE_FILENAME).await {
+        Ok(data) => {
+            if data.is_null() || data.is_undefined() {
+                return HashMap::new();
+            }
+            let array = js_sys::Uint8Array::new(&data);
+            let bytes = array.to_vec();
+            if bytes.is_empty() {
+                return HashMap::new();
+            }
+            postcard::from_bytes(&bytes).unwrap_or_default()
+        }
+        Err(_) => HashMap::new(),
+    }
+}
+
+/// Persist the transitive link cache to OPFS.
+pub async fn save_link_cache(cache: &crate::state::store::LinkGraphCache) {
+    if cache.is_empty() {
+        let _ = opfs_delete(LINK_CACHE_FILENAME).await;
+        return;
+    }
+    match postcard::to_allocvec(cache) {
+        Ok(bytes) => {
+            if let Err(e) = opfs_write(LINK_CACHE_FILENAME, &bytes).await {
+                tracing::error!(?e, "Failed to save link cache");
+            }
+        }
+        Err(e) => {
+            tracing::error!(%e, "Failed to serialize link cache");
+        }
+    }
+}
+
+/// Delete the persisted link graph cache from OPFS.
+pub async fn clear_link_cache() {
+    if let Err(e) = opfs_delete(LINK_CACHE_FILENAME).await {
+        tracing::warn!(?e, "Failed to clear link cache");
+    }
+}
+
+/// Clear all caches except the offline queue.
+///
+/// Used on version mismatch to evict potentially stale data while preserving
+/// unsynced operations. Clears the main DB, history cache, and link cache.
+pub async fn clear_all_caches() {
+    clear().await;
+    clear_history_cache().await;
+    clear_link_cache().await;
 }
 
 // -- OPFS bindings via inline JavaScript ------------------------------------

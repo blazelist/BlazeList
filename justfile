@@ -44,6 +44,10 @@ clean_db := "true"
 # Whether to seed the database after starting. Override: just seed=false dev
 seed := "true"
 
+# Dev seeder environment size preset (small, medium, large).
+# Override: just preset=large dev
+preset := "medium"
+
 # ==============================
 # Composite workflows
 # ==============================
@@ -56,17 +60,26 @@ dev-build:
 
 # Start server, seed data, and serve WASM client (Ctrl+C to stop)
 # Usage: just dev                       — full (server + WASM)
+#        just dev --keep                — shorthand for clean_db=false seed=false (reuse existing DB)
 #        just offset=1 dev              — second dev environment
 #        just clean_db=false dev        — keep existing database
 #        just seed=false dev            — skip seeding
-dev:
+dev *args:
     #!/usr/bin/env bash
+    CLEAN_DB="{{clean_db}}"
+    SEED="{{seed}}"
+    for arg in {{args}}; do
+        case "$arg" in
+            --keep) CLEAN_DB=false; SEED=false ;;
+        esac
+    done
+
     QUIC_PORT=$(({{QUIC_PORT_BASE}} + {{offset}}))
     WT_PORT=$(({{WT_PORT_BASE}} + {{offset}}))
     HTTP_PORT=$(({{HTTP_PORT_BASE}} + {{offset}}))
     TRUNK_PORT=$(({{TRUNK_PORT_BASE}} + {{offset}}))
 
-    if [ "{{clean_db}}" = "true" ]; then
+    if [ "$CLEAN_DB" = "true" ]; then
         just clean
     fi
 
@@ -83,13 +96,13 @@ dev:
 
     just _wait-for-server "$QUIC_PORT"
 
-    if [ "{{seed}}" = "true" ]; then
+    if [ "$SEED" = "true" ]; then
         echo "Running dev seeder..."
-        just offset={{offset}} seed
+        just offset={{offset}} preset={{preset}} seed
     fi
 
     echo ""
-    echo "Dev environment ready (offset={{offset}})."
+    echo "Dev environment ready (offset={{offset}}, preset={{preset}})."
     echo "  QUIC:          {{bind}}:$QUIC_PORT"
     echo "  WebTransport:  {{bind}}:$WT_PORT"
     echo "  HTTP cert:     {{bind}}:$HTTP_PORT"
@@ -105,14 +118,23 @@ dev:
 
 # Build WASM client and start server with HTTPS for LAN/Tailscale access
 # Usage: just bind=0.0.0.0 dev-lan
-dev-lan:
+#        just bind=0.0.0.0 dev-lan --keep   (reuse existing DB, shorthand for clean_db=false seed=false)
+dev-lan *args:
     #!/usr/bin/env bash
+    CLEAN_DB="{{clean_db}}"
+    SEED="{{seed}}"
+    for arg in {{args}}; do
+        case "$arg" in
+            --keep) CLEAN_DB=false; SEED=false ;;
+        esac
+    done
+
     QUIC_PORT=$(({{QUIC_PORT_BASE}} + {{offset}}))
     WT_PORT=$(({{WT_PORT_BASE}} + {{offset}}))
     HTTP_PORT=$(({{HTTP_PORT_BASE}} + {{offset}}))
     HTTPS_PORT=$(({{TRUNK_PORT_BASE}} + {{offset}}))
 
-    if [ "{{clean_db}}" = "true" ]; then
+    if [ "$CLEAN_DB" = "true" ]; then
         just clean
     fi
 
@@ -134,13 +156,13 @@ dev-lan:
 
     just _wait-for-server "$QUIC_PORT"
 
-    if [ "{{seed}}" = "true" ]; then
+    if [ "$SEED" = "true" ]; then
         echo "Running dev seeder..."
-        just offset={{offset}} seed
+        just offset={{offset}} preset={{preset}} seed
     fi
 
     echo ""
-    echo "LAN dev environment ready (offset={{offset}})."
+    echo "LAN dev environment ready (offset={{offset}}, preset={{preset}})."
     echo "  QUIC:          {{bind}}:$QUIC_PORT"
     echo "  WebTransport:  {{bind}}:$WT_PORT"
     echo "  HTTP cert:     {{bind}}:$HTTP_PORT"
@@ -166,11 +188,19 @@ server:
         --http-port "$HTTP_PORT" \
         --bind "{{bind}}"
 
-# Run the dev seeder with defaults
+# Run the dev seeder (uses preset variable, default: medium)
 seed:
     #!/usr/bin/env bash
     QUIC_PORT=$(({{QUIC_PORT_BASE}} + {{offset}}))
-    cargo run -p blazelist-dev-seeder -- --server "127.0.0.1:$QUIC_PORT"
+    cargo run -p blazelist-dev-seeder -- --server "127.0.0.1:$QUIC_PORT" --preset "{{preset}}"
+
+# Seed with the small preset (120 cards, 8 tags)
+seed-sm:
+    just offset={{offset}} preset=small seed
+
+# Seed with the large preset (1200 cards, 50 tags)
+seed-lg:
+    just offset={{offset}} preset=large seed
 
 # ==============================
 # WASM client

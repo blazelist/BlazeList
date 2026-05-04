@@ -22,6 +22,7 @@ pub mod error;
 pub mod filter;
 pub mod priority;
 pub mod sync;
+pub mod tag_graph;
 
 #[cfg(test)]
 pub(crate) mod test_helpers {

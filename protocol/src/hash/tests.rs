@@ -155,16 +155,16 @@ fn canonical_card_hash_different_due_date_different_hash() {
 #[test]
 fn canonical_tag_hash_is_deterministic() {
     let id = Uuid::from_bytes([2; 16]);
-    let a = canonical_tag_hash(&id, "Groceries", 1000, 2000, 1, &ZERO_HASH, None);
-    let b = canonical_tag_hash(&id, "Groceries", 1000, 2000, 1, &ZERO_HASH, None);
+    let a = canonical_tag_hash(&id, "Groceries", 1000, 2000, 1, &ZERO_HASH, None, &[]);
+    let b = canonical_tag_hash(&id, "Groceries", 1000, 2000, 1, &ZERO_HASH, None, &[]);
     assert_eq!(a, b);
 }
 
 #[test]
 fn canonical_tag_hash_different_title_different_hash() {
     let id = Uuid::from_bytes([2; 16]);
-    let a = canonical_tag_hash(&id, "Groceries", 0, 0, 1, &ZERO_HASH, None);
-    let b = canonical_tag_hash(&id, "Work", 0, 0, 1, &ZERO_HASH, None);
+    let a = canonical_tag_hash(&id, "Groceries", 0, 0, 1, &ZERO_HASH, None, &[]);
+    let b = canonical_tag_hash(&id, "Work", 0, 0, 1, &ZERO_HASH, None, &[]);
     assert_ne!(a, b);
 }
 
@@ -174,7 +174,10 @@ fn canonical_tag_hash_snapshot() {
         0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x47, 0x08, 0x89, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
         0x10,
     ]);
-    let hash = canonical_tag_hash(&id, "Groceries", 1000, 2000, 1, &ZERO_HASH, None);
+    let hash = canonical_tag_hash(&id, "Groceries", 1000, 2000, 1, &ZERO_HASH, None, &[]);
+    // Backwards-compat snapshot: empty implies must produce the same bytes
+    // as the pre-implications canonical format. If this test fails after a
+    // refactor, you've accidentally broken option (b) hash compatibility.
     expect!["d2aeffc782308defcbd56988109ab8db28254a77f0f63de027442a4d777cc8d5"]
         .assert_eq(&hash.to_string());
 }
@@ -182,7 +185,7 @@ fn canonical_tag_hash_snapshot() {
 #[test]
 fn canonical_tag_hash_different_color_different_hash() {
     let id = Uuid::from_bytes([2; 16]);
-    let a = canonical_tag_hash(&id, "Groceries", 0, 0, 1, &ZERO_HASH, None);
+    let a = canonical_tag_hash(&id, "Groceries", 0, 0, 1, &ZERO_HASH, None, &[]);
     let b = canonical_tag_hash(
         &id,
         "Groceries",
@@ -191,6 +194,7 @@ fn canonical_tag_hash_different_color_different_hash() {
         1,
         &ZERO_HASH,
         Some(&RGB8::new(0xff, 0x00, 0x00)),
+        &[],
     );
     let c = canonical_tag_hash(
         &id,
@@ -200,10 +204,56 @@ fn canonical_tag_hash_different_color_different_hash() {
         1,
         &ZERO_HASH,
         Some(&RGB8::new(0x00, 0xff, 0x00)),
+        &[],
     );
     assert_ne!(a, b);
     assert_ne!(b, c);
     assert_ne!(a, c);
+}
+
+#[test]
+fn canonical_tag_hash_empty_implies_equals_no_implies() {
+    // This is the backwards-compat invariant for option (b): passing an
+    // empty implies slice must produce the identical hash to the
+    // pre-implications caller semantics. We validate by constructing the
+    // hash manually (without any implies block) and comparing.
+    let id = Uuid::from_bytes([2; 16]);
+    let hash_with_new_api =
+        canonical_tag_hash(&id, "Groceries", 1000, 2000, 1, &ZERO_HASH, None, &[]);
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(id.as_bytes());
+    let title = "Groceries";
+    hasher.update(&(title.len() as u64).to_be_bytes());
+    hasher.update(title.as_bytes());
+    hasher.update(&1000i64.to_be_bytes());
+    hasher.update(&2000i64.to_be_bytes());
+    hasher.update(&[0u8]); // no color
+    hasher.update(&1i64.to_be_bytes());
+    hasher.update(ZERO_HASH.as_bytes());
+    // NOTE: no implies block appended — that's the whole point.
+    let manual = hasher.finalize();
+
+    assert_eq!(hash_with_new_api, manual);
+}
+
+#[test]
+fn canonical_tag_hash_with_implies_differs_from_empty() {
+    let id = Uuid::from_bytes([2; 16]);
+    let parent = Uuid::from_bytes([3; 16]);
+    let a = canonical_tag_hash(&id, "Groceries", 0, 0, 1, &ZERO_HASH, None, &[]);
+    let b = canonical_tag_hash(&id, "Groceries", 0, 0, 1, &ZERO_HASH, None, &[parent]);
+    assert_ne!(a, b);
+}
+
+#[test]
+fn canonical_tag_hash_implies_order_independent() {
+    let id = Uuid::from_bytes([2; 16]);
+    let p1 = Uuid::from_bytes([3; 16]);
+    let p2 = Uuid::from_bytes([4; 16]);
+    let a = canonical_tag_hash(&id, "Groceries", 0, 0, 1, &ZERO_HASH, None, &[p1, p2]);
+    let b = canonical_tag_hash(&id, "Groceries", 0, 0, 1, &ZERO_HASH, None, &[p2, p1]);
+    assert_eq!(a, b);
 }
 
 #[test]

@@ -35,6 +35,15 @@
     </div>
     <script>
         if ('serviceWorker' in navigator) {
+            // If the page loaded without a controlling SW (e.g. cold start
+            // where the SW was waiting or just installed), reload once the
+            // SW becomes active so it can serve cached assets.  This
+            // eliminates the need to manually navigate away and back.
+            if (!navigator.serviceWorker.controller) {
+                navigator.serviceWorker.addEventListener('controllerchange', function() {
+                    window.location.reload();
+                }, { once: true });
+            }
             navigator.serviceWorker.register('/sw.js').catch(function(err) {
                 console.error('[SW] Registration failed:', err);
             });
@@ -42,7 +51,12 @@
         // If WASM hasn't mounted after 10 seconds, it likely failed to load.
         setTimeout(function() {
             var el = document.getElementById('loading-text');
-            if (el) el.textContent = 'Could not load. Please check your connection and try again.';
+            if (!el) return;
+            if (!navigator.onLine) {
+                el.textContent = 'You appear to be offline. Please connect once to enable offline access.';
+            } else {
+                el.textContent = 'Could not load. Please check your connection and try again.';
+            }
         }, 10000);
     </script>
 </body>

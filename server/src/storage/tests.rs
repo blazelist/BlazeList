@@ -776,24 +776,8 @@ mod tests {
         // Three cards in bucket 1.
         let s = store();
         let c1 = Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None);
-        let c2 = Card::first(
-            SAME_BUCKET_1,
-            "SB1".into(),
-            2,
-            vec![],
-            false,
-            ts(0),
-            None,
-        );
-        let c3 = Card::first(
-            SAME_BUCKET_2,
-            "SB2".into(),
-            3,
-            vec![],
-            false,
-            ts(0),
-            None,
-        );
+        let c2 = Card::first(SAME_BUCKET_1, "SB1".into(), 2, vec![], false, ts(0), None);
+        let c3 = Card::first(SAME_BUCKET_2, "SB2".into(), 3, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&c1)).unwrap();
         s.push_card_versions(std::slice::from_ref(&c2)).unwrap();
         s.push_card_versions(std::slice::from_ref(&c3)).unwrap();
@@ -887,15 +871,7 @@ mod tests {
         let s2 = store();
 
         let c_a = Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None);
-        let c_sb1 = Card::first(
-            SAME_BUCKET_1,
-            "SB1".into(),
-            2,
-            vec![],
-            false,
-            ts(0),
-            None,
-        );
+        let c_sb1 = Card::first(SAME_BUCKET_1, "SB1".into(), 2, vec![], false, ts(0), None);
 
         s1.push_card_versions(std::slice::from_ref(&c_a)).unwrap();
         s1.push_card_versions(std::slice::from_ref(&c_sb1)).unwrap();
@@ -912,24 +888,8 @@ mod tests {
         // the same root hash.
         let cards = [
             Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None),
-            Card::first(
-                SAME_BUCKET_1,
-                "SB1".into(),
-                2,
-                vec![],
-                false,
-                ts(0),
-                None,
-            ),
-            Card::first(
-                SAME_BUCKET_2,
-                "SB2".into(),
-                3,
-                vec![],
-                false,
-                ts(0),
-                None,
-            ),
+            Card::first(SAME_BUCKET_1, "SB1".into(), 2, vec![], false, ts(0), None),
+            Card::first(SAME_BUCKET_2, "SB2".into(), 3, vec![], false, ts(0), None),
         ];
         let orders: [[usize; 3]; 6] = [
             [0, 1, 2],
@@ -1023,15 +983,7 @@ mod tests {
         // the bucket hash must remain unchanged.
         let s = store();
         let c1 = Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None);
-        let c2 = Card::first(
-            SAME_BUCKET_1,
-            "SB1".into(),
-            2,
-            vec![],
-            false,
-            ts(0),
-            None,
-        );
+        let c2 = Card::first(SAME_BUCKET_1, "SB1".into(), 2, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&c1)).unwrap();
         s.push_card_versions(std::slice::from_ref(&c2)).unwrap();
 
@@ -1078,15 +1030,7 @@ mod tests {
         // the remaining card hash and the deleted entity hash.
         let s = store();
         let c1 = Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None);
-        let c2 = Card::first(
-            SAME_BUCKET_1,
-            "SB1".into(),
-            2,
-            vec![],
-            false,
-            ts(0),
-            None,
-        );
+        let c2 = Card::first(SAME_BUCKET_1, "SB1".into(), 2, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&c1)).unwrap();
         s.push_card_versions(std::slice::from_ref(&c2)).unwrap();
 
@@ -1105,15 +1049,7 @@ mod tests {
         // the two deleted entity hashes.
         let s = store();
         let c1 = Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None);
-        let c2 = Card::first(
-            SAME_BUCKET_1,
-            "SB1".into(),
-            2,
-            vec![],
-            false,
-            ts(0),
-            None,
-        );
+        let c2 = Card::first(SAME_BUCKET_1, "SB1".into(), 2, vec![], false, ts(0), None);
         s.push_card_versions(&[c1]).unwrap();
         s.push_card_versions(&[c2]).unwrap();
 
@@ -1135,15 +1071,7 @@ mod tests {
         // Two cards in bucket 1 (ID_A, SAME_BUCKET_1) + one card in bucket 16 (ID_B).
         let s = store();
         let c_a = Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None);
-        let c_sb1 = Card::first(
-            SAME_BUCKET_1,
-            "SB1".into(),
-            2,
-            vec![],
-            false,
-            ts(0),
-            None,
-        );
+        let c_sb1 = Card::first(SAME_BUCKET_1, "SB1".into(), 2, vec![], false, ts(0), None);
         let c_b = Card::first(ID_B, "B".into(), 3, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&c_a)).unwrap();
         s.push_card_versions(std::slice::from_ref(&c_sb1)).unwrap();
@@ -1161,15 +1089,7 @@ mod tests {
         // Mutate bucket 16 — bucket 1's hash contribution must stay the same.
         let s = store();
         let c_a = Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None);
-        let c_sb1 = Card::first(
-            SAME_BUCKET_1,
-            "SB1".into(),
-            2,
-            vec![],
-            false,
-            ts(0),
-            None,
-        );
+        let c_sb1 = Card::first(SAME_BUCKET_1, "SB1".into(), 2, vec![], false, ts(0), None);
         let c_b = Card::first(ID_B, "B".into(), 3, vec![], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&c_a)).unwrap();
         s.push_card_versions(std::slice::from_ref(&c_sb1)).unwrap();
@@ -1220,15 +1140,7 @@ mod tests {
         let existing = Card::first(ID_A, "old".into(), 1, vec![], false, ts(0), None);
         s.push_card_versions(&[existing]).unwrap();
 
-        let new_card = Card::first(
-            SAME_BUCKET_1,
-            "new".into(),
-            2,
-            vec![],
-            false,
-            ts(0),
-            None,
-        );
+        let new_card = Card::first(SAME_BUCKET_1, "new".into(), 2, vec![], false, ts(0), None);
 
         use blazelist_protocol::PushItem;
         s.push_batch(&[
@@ -1250,15 +1162,7 @@ mod tests {
         // Batch with entities spanning multiple buckets, some sharing a bucket.
         let s = store();
         let c_a = Card::first(ID_A, "A".into(), 1, vec![], false, ts(0), None);
-        let c_sb1 = Card::first(
-            SAME_BUCKET_1,
-            "SB1".into(),
-            2,
-            vec![],
-            false,
-            ts(0),
-            None,
-        );
+        let c_sb1 = Card::first(SAME_BUCKET_1, "SB1".into(), 2, vec![], false, ts(0), None);
         let tag_b = Tag::first(ID_B, "T".into(), None, ts(0));
 
         use blazelist_protocol::PushItem;
@@ -1310,15 +1214,7 @@ mod tests {
         }
         {
             let s = SqliteStorage::open(&db_path, false).unwrap();
-            let c2 = Card::first(
-                SAME_BUCKET_1,
-                "SB1".into(),
-                2,
-                vec![],
-                false,
-                ts(0),
-                None,
-            );
+            let c2 = Card::first(SAME_BUCKET_1, "SB1".into(), 2, vec![], false, ts(0), None);
             s.push_card_versions(std::slice::from_ref(&c2)).unwrap();
 
             let root = s.get_root().unwrap();
@@ -1777,15 +1673,7 @@ mod tests {
         s.push_tag_versions(&[tag]).unwrap();
 
         // Create card that references this tag
-        let card = Card::first(
-            ID_A,
-            "buy tofu".into(),
-            1,
-            vec![TAG_ID],
-            false,
-            ts(0),
-            None,
-        );
+        let card = Card::first(ID_A, "buy tofu".into(), 1, vec![TAG_ID], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&card)).unwrap();
 
         // Delete the tag — should fail with OrphanedTagReference
@@ -1814,15 +1702,7 @@ mod tests {
         s.push_tag_versions(&[tag]).unwrap();
 
         // Create card that references this tag
-        let card = Card::first(
-            ID_A,
-            "buy tofu".into(),
-            1,
-            vec![TAG_ID],
-            false,
-            ts(0),
-            None,
-        );
+        let card = Card::first(ID_A, "buy tofu".into(), 1, vec![TAG_ID], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&card)).unwrap();
 
         // Push updated card with tag removed
@@ -1842,15 +1722,7 @@ mod tests {
         let tag = Tag::first(TAG_ID, "groceries".into(), None, ts(0));
         s.push_tag_versions(&[tag]).unwrap();
 
-        let card = Card::first(
-            ID_A,
-            "buy tofu".into(),
-            1,
-            vec![TAG_ID],
-            false,
-            ts(0),
-            None,
-        );
+        let card = Card::first(ID_A, "buy tofu".into(), 1, vec![TAG_ID], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&card)).unwrap();
 
         // Batch: remove the tag from the card, then delete the tag
@@ -1873,15 +1745,7 @@ mod tests {
         let tag = Tag::first(TAG_ID, "groceries".into(), None, ts(0));
         s.push_tag_versions(&[tag]).unwrap();
 
-        let card = Card::first(
-            ID_A,
-            "buy tofu".into(),
-            1,
-            vec![TAG_ID],
-            false,
-            ts(0),
-            None,
-        );
+        let card = Card::first(ID_A, "buy tofu".into(), 1, vec![TAG_ID], false, ts(0), None);
         s.push_card_versions(std::slice::from_ref(&card)).unwrap();
 
         // Also create a new tag in the same batch (to verify rollback)
@@ -1917,28 +1781,10 @@ mod tests {
         s.push_tag_versions(&[tag]).unwrap();
 
         // Create two cards referencing the tag
-        let card_a = Card::first(
-            ID_A,
-            "buy tofu".into(),
-            1,
-            vec![TAG_ID],
-            false,
-            ts(0),
-            None,
-        );
-        let card_b = Card::first(
-            ID_B,
-            "buy rice".into(),
-            2,
-            vec![TAG_ID],
-            false,
-            ts(0),
-            None,
-        );
-        s.push_card_versions(std::slice::from_ref(&card_a))
-            .unwrap();
-        s.push_card_versions(std::slice::from_ref(&card_b))
-            .unwrap();
+        let card_a = Card::first(ID_A, "buy tofu".into(), 1, vec![TAG_ID], false, ts(0), None);
+        let card_b = Card::first(ID_B, "buy rice".into(), 2, vec![TAG_ID], false, ts(0), None);
+        s.push_card_versions(std::slice::from_ref(&card_a)).unwrap();
+        s.push_card_versions(std::slice::from_ref(&card_b)).unwrap();
 
         // Only clean up card_a, not card_b
         let updated_a = card_a.next("buy tofu".into(), 1, vec![], false, ts(1), None);
@@ -2478,5 +2324,576 @@ mod tests {
             })
             .unwrap();
         assert_eq!(major, 0);
+    }
+
+    // -- Bulk history --------------------------------------------------------
+
+    #[test]
+    fn get_all_card_histories_returns_all() {
+        let s = store();
+        let v1a = Card::first(ID_A, "A1".into(), 1, vec![], false, ts(0), None);
+        s.push_card_versions(&[v1a.clone()]).unwrap();
+        let v2a = v1a.next("A2".into(), 1, vec![], false, ts(1000), None);
+        s.push_card_versions(&[v2a]).unwrap();
+
+        let v1b = Card::first(ID_B, "B1".into(), 2, vec![], false, ts(0), None);
+        s.push_card_versions(&[v1b]).unwrap();
+
+        let all = s.get_all_card_histories(None, None).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[&ID_A].len(), 2);
+        assert_eq!(all[&ID_B].len(), 1);
+    }
+
+    #[test]
+    fn get_all_card_histories_with_limit() {
+        let s = store();
+        let v1 = Card::first(ID_A, "A1".into(), 1, vec![], false, ts(0), None);
+        s.push_card_versions(&[v1.clone()]).unwrap();
+        let v2 = v1.next("A2".into(), 1, vec![], false, ts(1000), None);
+        s.push_card_versions(&[v2.clone()]).unwrap();
+        let v3 = v2.next("A3".into(), 1, vec![], false, ts(2000), None);
+        s.push_card_versions(&[v3]).unwrap();
+
+        let all = s.get_all_card_histories(Some(2), None).unwrap();
+        assert_eq!(all[&ID_A].len(), 2);
+        // Limit per card caps at 2 (oldest first)
+        assert_eq!(all[&ID_A][0].count(), p(1));
+        assert_eq!(all[&ID_A][1].count(), p(2));
+    }
+
+    #[test]
+    fn get_all_card_histories_filtered_by_ids() {
+        let s = store();
+        let v1a = Card::first(ID_A, "A1".into(), 1, vec![], false, ts(0), None);
+        s.push_card_versions(&[v1a]).unwrap();
+        let v1b = Card::first(ID_B, "B1".into(), 2, vec![], false, ts(0), None);
+        s.push_card_versions(&[v1b]).unwrap();
+
+        // Only request ID_B
+        let filtered = s.get_all_card_histories(None, Some(&[ID_B])).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered.contains_key(&ID_B));
+        assert!(!filtered.contains_key(&ID_A));
+    }
+
+    #[test]
+    fn get_all_card_histories_empty_ids_returns_empty() {
+        let s = store();
+        let v1 = Card::first(ID_A, "A1".into(), 1, vec![], false, ts(0), None);
+        s.push_card_versions(&[v1]).unwrap();
+
+        let result = s.get_all_card_histories(None, Some(&[])).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn get_all_tag_histories_returns_all() {
+        let s = store();
+        let tag_id2 = Uuid::from_bytes([
+            0xb1, 0xc2, 0xd3, 0xe4, 0xf5, 0x06, 0x17, 0x28, 0x39, 0x4a, 0x5b, 0x6c, 0x7d, 0x8e,
+            0x9f, 0xa0,
+        ]);
+        let t1 = Tag::first(TAG_ID, "Tag1".into(), None, ts(0));
+        s.push_tag_versions(&[t1.clone()]).unwrap();
+        let t2 = t1.next("Tag1-updated".into(), None, ts(1000));
+        s.push_tag_versions(&[t2]).unwrap();
+
+        let t3 = Tag::first(tag_id2, "Tag2".into(), None, ts(0));
+        s.push_tag_versions(&[t3]).unwrap();
+
+        let all = s.get_all_tag_histories(None, None).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[&TAG_ID].len(), 2);
+        assert_eq!(all[&tag_id2].len(), 1);
+    }
+
+    #[test]
+    fn get_all_tag_histories_with_limit() {
+        let s = store();
+        let t1 = Tag::first(TAG_ID, "T1".into(), None, ts(0));
+        s.push_tag_versions(&[t1.clone()]).unwrap();
+        let t2 = t1.next("T2".into(), None, ts(1000));
+        s.push_tag_versions(&[t2.clone()]).unwrap();
+        let t3 = t2.next("T3".into(), None, ts(2000));
+        s.push_tag_versions(&[t3]).unwrap();
+
+        let all = s.get_all_tag_histories(Some(1), None).unwrap();
+        assert_eq!(all[&TAG_ID].len(), 1);
+        assert_eq!(all[&TAG_ID][0].count(), p(1));
+    }
+
+    #[test]
+    fn get_all_tag_histories_filtered_by_ids() {
+        let s = store();
+        let tag_id2 = Uuid::from_bytes([
+            0xb1, 0xc2, 0xd3, 0xe4, 0xf5, 0x06, 0x17, 0x28, 0x39, 0x4a, 0x5b, 0x6c, 0x7d, 0x8e,
+            0x9f, 0xa0,
+        ]);
+        let t1 = Tag::first(TAG_ID, "Tag1".into(), None, ts(0));
+        s.push_tag_versions(&[t1]).unwrap();
+        let t2 = Tag::first(tag_id2, "Tag2".into(), None, ts(0));
+        s.push_tag_versions(&[t2]).unwrap();
+
+        let filtered = s.get_all_tag_histories(None, Some(&[tag_id2])).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered.contains_key(&tag_id2));
+        assert!(!filtered.contains_key(&TAG_ID));
+    }
+
+    // -- Tag implications ----------------------------------------------------
+
+    /// Two distinct tag ids beyond `TAG_ID` for implication graphs. These
+    /// land in different buckets so bucket-hash assertions don't collide
+    /// with other tests that share `TAG_ID`.
+    const IMP_PARENT: Uuid = Uuid::from_bytes([
+        0x21, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x47, 0x08, 0x89, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x11,
+    ]);
+    const IMP_GRAND: Uuid = Uuid::from_bytes([
+        0x31, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x47, 0x08, 0x89, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x12,
+    ]);
+
+    #[test]
+    fn card_push_rejected_when_missing_implied_tag() {
+        let s = store();
+        // Create parent tag first (no implies).
+        let parent = Tag::first(IMP_PARENT, "parent".into(), None, ts(0));
+        s.push_tag_versions(&[parent]).unwrap();
+        // Child tag implies parent.
+        let child = Tag::first_with_implies(TAG_ID, "child".into(), None, vec![IMP_PARENT], ts(0));
+        s.push_tag_versions(&[child]).unwrap();
+
+        // A card with only the child tag is missing the implied parent.
+        let card = Card::first(ID_A, "oops".into(), 1, vec![TAG_ID], false, ts(0), None);
+        match s.push_card_versions(&[card]) {
+            Err(PushOpError::Domain(PushError::TagImplicationViolation { card_id, missing })) => {
+                assert_eq!(card_id, ID_A);
+                assert_eq!(missing, vec![IMP_PARENT]);
+            }
+            other => panic!("expected TagImplicationViolation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn card_push_succeeds_when_closure_satisfied() {
+        let s = store();
+        let parent = Tag::first(IMP_PARENT, "parent".into(), None, ts(0));
+        s.push_tag_versions(&[parent]).unwrap();
+        let child = Tag::first_with_implies(TAG_ID, "child".into(), None, vec![IMP_PARENT], ts(0));
+        s.push_tag_versions(&[child]).unwrap();
+
+        let card = Card::first(
+            ID_A,
+            "ok".into(),
+            1,
+            vec![TAG_ID, IMP_PARENT],
+            false,
+            ts(0),
+            None,
+        );
+        s.push_card_versions(&[card]).unwrap();
+
+        let fetched = s.get_card(ID_A).unwrap().unwrap();
+        assert!(fetched.tags().contains(&TAG_ID));
+        assert!(fetched.tags().contains(&IMP_PARENT));
+    }
+
+    #[test]
+    fn tag_update_rejected_when_card_outside_batch_violates() {
+        let s = store();
+        let parent = Tag::first(IMP_PARENT, "parent".into(), None, ts(0));
+        s.push_tag_versions(&[parent]).unwrap();
+        let child = Tag::first(TAG_ID, "child".into(), None, ts(0));
+        s.push_tag_versions(&[child.clone()]).unwrap();
+
+        // Card references child only (legal at the time it was pushed).
+        let card = Card::first(ID_A, "c".into(), 1, vec![TAG_ID], false, ts(0), None);
+        s.push_card_versions(&[card]).unwrap();
+
+        // Later a client wants child to imply parent. The single-tag
+        // push path (with no co-pushed card update) must reject.
+        let child_v2 = child.next_with_implies("child".into(), None, vec![IMP_PARENT], ts(1000));
+        match s.push_tag_versions(&[child_v2]) {
+            Err(PushOpError::Domain(PushError::TagImplicationViolation { card_id, missing })) => {
+                assert_eq!(card_id, ID_A);
+                assert_eq!(missing, vec![IMP_PARENT]);
+            }
+            other => panic!("expected TagImplicationViolation, got {other:?}"),
+        }
+
+        // Ensure nothing was written: the live child still has no implies.
+        let still = s.get_tag(TAG_ID).unwrap().unwrap();
+        assert!(still.implies().is_empty());
+    }
+
+    #[test]
+    fn tag_update_succeeds_when_batch_includes_required_card_updates() {
+        use blazelist_protocol::PushItem;
+        let s = store();
+        let parent = Tag::first(IMP_PARENT, "parent".into(), None, ts(0));
+        s.push_tag_versions(&[parent]).unwrap();
+        let child = Tag::first(TAG_ID, "child".into(), None, ts(0));
+        s.push_tag_versions(&[child.clone()]).unwrap();
+        let card = Card::first(ID_A, "c".into(), 1, vec![TAG_ID], false, ts(0), None);
+        s.push_card_versions(&[card.clone()]).unwrap();
+
+        // Same change as above, but we include the updated card version
+        // (card now has [TAG_ID, IMP_PARENT]) in the same batch.
+        let child_v2 = child.next_with_implies("child".into(), None, vec![IMP_PARENT], ts(1000));
+        let card_v2 = card.next(
+            "c".into(),
+            1,
+            vec![TAG_ID, IMP_PARENT],
+            false,
+            ts(1000),
+            None,
+        );
+        s.push_batch(&[
+            PushItem::Cards(vec![card_v2]),
+            PushItem::Tags(vec![child_v2]),
+        ])
+        .unwrap();
+
+        let fetched = s.get_tag(TAG_ID).unwrap().unwrap();
+        assert_eq!(fetched.implies(), &[IMP_PARENT]);
+        let fetched_card = s.get_card(ID_A).unwrap().unwrap();
+        assert!(fetched_card.tags().contains(&IMP_PARENT));
+    }
+
+    #[test]
+    fn batch_rolls_back_on_one_violating_card() {
+        use blazelist_protocol::PushItem;
+        let s = store();
+        let parent = Tag::first(IMP_PARENT, "parent".into(), None, ts(0));
+        s.push_tag_versions(&[parent]).unwrap();
+        let child = Tag::first_with_implies(TAG_ID, "child".into(), None, vec![IMP_PARENT], ts(0));
+        s.push_tag_versions(&[child]).unwrap();
+
+        let root_before = s.get_root().unwrap();
+
+        // Card 1 is compliant. Card 2 is not.
+        let good = Card::first(
+            ID_A,
+            "ok".into(),
+            1,
+            vec![TAG_ID, IMP_PARENT],
+            false,
+            ts(0),
+            None,
+        );
+        let bad = Card::first(ID_B, "bad".into(), 2, vec![TAG_ID], false, ts(0), None);
+
+        let err = s
+            .push_batch(&[PushItem::Cards(vec![good]), PushItem::Cards(vec![bad])])
+            .unwrap_err();
+        // Whole-batch validation surfaces as index 0 (not per-item 1).
+        assert!(matches!(
+            err.error,
+            PushOpError::Domain(PushError::TagImplicationViolation { .. })
+        ));
+
+        // Neither card was persisted; root is unchanged.
+        assert!(s.get_card(ID_A).unwrap().is_none());
+        assert!(s.get_card(ID_B).unwrap().is_none());
+        let root_after = s.get_root().unwrap();
+        assert_eq!(root_before.hash, root_after.hash);
+        assert_eq!(root_before.sequence, root_after.sequence);
+    }
+
+    #[test]
+    fn tag_implication_cycle_rejected_self_loop() {
+        let s = store();
+        // Impossible to construct a "live" self-loop in one shot because
+        // the first version has no ancestor yet; use next_with_implies
+        // on a freshly pushed v1.
+        let v1 = Tag::first(TAG_ID, "loop".into(), None, ts(0));
+        s.push_tag_versions(&[v1.clone()]).unwrap();
+        let v2 = v1.next_with_implies("loop".into(), None, vec![TAG_ID], ts(1000));
+        match s.push_tag_versions(&[v2]) {
+            Err(PushOpError::Domain(PushError::TagImplicationCycle { cycle })) => {
+                assert!(cycle.contains(&TAG_ID));
+                assert_eq!(cycle.first(), cycle.last());
+            }
+            other => panic!("expected TagImplicationCycle, got {other:?}"),
+        }
+        let still = s.get_tag(TAG_ID).unwrap().unwrap();
+        assert!(still.implies().is_empty());
+    }
+
+    #[test]
+    fn tag_implication_cycle_rejected_two_tag_swap() {
+        let s = store();
+        // Create two tags, each with no implies.
+        let a_v1 = Tag::first(TAG_ID, "a".into(), None, ts(0));
+        s.push_tag_versions(&[a_v1.clone()]).unwrap();
+        let b_v1 = Tag::first(IMP_PARENT, "b".into(), None, ts(0));
+        s.push_tag_versions(&[b_v1.clone()]).unwrap();
+
+        // Now update A to imply B — that's fine.
+        let a_v2 = a_v1.next_with_implies("a".into(), None, vec![IMP_PARENT], ts(1000));
+        s.push_tag_versions(&[a_v2]).unwrap();
+
+        // Then try to update B to imply A — this creates a 2-cycle and
+        // must be rejected.
+        let b_v2 = b_v1.next_with_implies("b".into(), None, vec![TAG_ID], ts(1000));
+        match s.push_tag_versions(&[b_v2]) {
+            Err(PushOpError::Domain(PushError::TagImplicationCycle { .. })) => {}
+            other => panic!("expected TagImplicationCycle, got {other:?}"),
+        }
+        // B is unchanged in storage.
+        let still = s.get_tag(IMP_PARENT).unwrap().unwrap();
+        assert!(still.implies().is_empty());
+    }
+
+    #[test]
+    fn tag_implication_cycle_rejected_via_batch_collusion() {
+        use blazelist_protocol::PushItem;
+        let s = store();
+        let a_v1 = Tag::first(TAG_ID, "a".into(), None, ts(0));
+        let b_v1 = Tag::first(IMP_PARENT, "b".into(), None, ts(0));
+        s.push_tag_versions(&[a_v1.clone()]).unwrap();
+        s.push_tag_versions(&[b_v1.clone()]).unwrap();
+
+        // Two tag updates that together form a cycle: A→B and B→A.
+        // Each in isolation would be OK given the "live" state, but the
+        // post-batch graph contains a cycle and must be rejected.
+        let a_v2 = a_v1.next_with_implies("a".into(), None, vec![IMP_PARENT], ts(1000));
+        let b_v2 = b_v1.next_with_implies("b".into(), None, vec![TAG_ID], ts(1000));
+        let err = s
+            .push_batch(&[PushItem::Tags(vec![a_v2]), PushItem::Tags(vec![b_v2])])
+            .unwrap_err();
+        assert!(matches!(
+            err.error,
+            PushOpError::Domain(PushError::TagImplicationCycle { .. })
+        ));
+        // Neither tag got an updated implies.
+        let a_still = s.get_tag(TAG_ID).unwrap().unwrap();
+        let b_still = s.get_tag(IMP_PARENT).unwrap().unwrap();
+        assert!(a_still.implies().is_empty());
+        assert!(b_still.implies().is_empty());
+    }
+
+    #[test]
+    fn chain_closure_three_level_accepts_and_enforces() {
+        use blazelist_protocol::PushItem;
+        let s = store();
+        // Grand has no implies.
+        let grand = Tag::first(IMP_GRAND, "grand".into(), None, ts(0));
+        // Parent implies grand.
+        let parent =
+            Tag::first_with_implies(IMP_PARENT, "parent".into(), None, vec![IMP_GRAND], ts(0));
+        // Child implies parent (so transitively grand).
+        let child = Tag::first_with_implies(TAG_ID, "child".into(), None, vec![IMP_PARENT], ts(0));
+        s.push_batch(&[
+            PushItem::Tags(vec![grand]),
+            PushItem::Tags(vec![parent]),
+            PushItem::Tags(vec![child]),
+        ])
+        .unwrap();
+
+        // A card with [child, parent] is still missing grand.
+        let bad = Card::first(
+            ID_A,
+            "bad".into(),
+            1,
+            vec![TAG_ID, IMP_PARENT],
+            false,
+            ts(0),
+            None,
+        );
+        match s.push_card_versions(&[bad]) {
+            Err(PushOpError::Domain(PushError::TagImplicationViolation { card_id, missing })) => {
+                assert_eq!(card_id, ID_A);
+                assert_eq!(missing, vec![IMP_GRAND]);
+            }
+            other => panic!("expected TagImplicationViolation, got {other:?}"),
+        }
+
+        // With all three tags, it lands.
+        let good = Card::first(
+            ID_A,
+            "good".into(),
+            1,
+            vec![TAG_ID, IMP_PARENT, IMP_GRAND],
+            false,
+            ts(0),
+            None,
+        );
+        s.push_card_versions(&[good]).unwrap();
+    }
+
+    #[test]
+    fn migration_to_v3_populates_implies_column_with_empty_default() {
+        // The existing v0→current migration test (`major_upgrade_migrates_v0_to_current_atomically`)
+        // stores a card but no tags, so extend with a per-tag assertion
+        // here. Construct a legacy DB, insert a pre-implies tag, migrate
+        // all the way up, and verify the tag verifies and has an empty
+        // `implies` list.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("legacy.db");
+        let conn = create_v0_db_with_schema_version(&db_path);
+        let tag = Tag::first(TAG_ID, "legacy".into(), None, ts(0));
+        conn.execute(
+            "INSERT INTO tags (
+                id, title, color, created_at, modified_at, count, ancestor_hash, hash
+             ) VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                tag.id().as_bytes().as_slice(),
+                tag.title(),
+                tag.created_at().timestamp_millis(),
+                tag.modified_at().timestamp_millis(),
+                i64::from(tag.count()),
+                tag.ancestor_hash().as_bytes().as_slice(),
+                tag.hash().as_bytes().as_slice(),
+            ],
+        )
+        .unwrap();
+        drop(conn);
+
+        let s = SqliteStorage::open(&db_path, true).unwrap();
+        let fetched = s.get_tag(TAG_ID).unwrap().unwrap();
+        // Verification passes — this is the critical invariant for
+        // option (b): the stored hash (computed without implies) must
+        // continue to verify after the migration has added an empty
+        // implies list.
+        assert!(fetched.verify());
+        assert!(fetched.implies().is_empty());
+        assert_eq!(fetched.title(), "legacy");
+    }
+
+    /// Fresh-DB `init_schema` and migrated-DB `migrate_v2_to_v3` must
+    /// produce identical column layouts for `tags` and `tag_versions`,
+    /// so `PRAGMA table_info` output matches byte-for-byte regardless of
+    /// the DB's origin. Regression guard against silent schema drift.
+    #[test]
+    fn fresh_and_migrated_schemas_have_identical_table_info() {
+        fn table_info(conn: &rusqlite::Connection, table: &str) -> Vec<(i64, String, String)> {
+            let sql = format!("PRAGMA table_info({table})");
+            let mut stmt = conn.prepare(&sql).unwrap();
+            stmt.query_map([], |row| {
+                let cid: i64 = row.get(0)?;
+                let name: String = row.get(1)?;
+                let ty: String = row.get(2)?;
+                Ok((cid, name, ty))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+
+        // Fresh V3 database.
+        let fresh_path = dir.path().join("fresh.db");
+        {
+            let _ = SqliteStorage::open(&fresh_path, false).unwrap();
+        }
+        let fresh_conn = rusqlite::Connection::open(&fresh_path).unwrap();
+
+        // V0-populated database that gets migrated all the way to current.
+        let migrated_path = dir.path().join("migrated.db");
+        let _ = create_v0_db_with_schema_version(&migrated_path);
+        {
+            let _ = SqliteStorage::open(&migrated_path, true).unwrap();
+        }
+        let migrated_conn = rusqlite::Connection::open(&migrated_path).unwrap();
+
+        assert_eq!(
+            table_info(&fresh_conn, "tags"),
+            table_info(&migrated_conn, "tags"),
+            "tags table layout drift between fresh and migrated DBs"
+        );
+        assert_eq!(
+            table_info(&fresh_conn, "tag_versions"),
+            table_info(&migrated_conn, "tag_versions"),
+            "tag_versions table layout drift between fresh and migrated DBs"
+        );
+    }
+
+    #[test]
+    fn delete_tag_rejected_when_other_tag_implies_it() {
+        let s = store();
+        let parent = Tag::first(IMP_PARENT, "parent".into(), None, ts(0));
+        s.push_tag_versions(&[parent]).unwrap();
+        let child = Tag::first_with_implies(TAG_ID, "child".into(), None, vec![IMP_PARENT], ts(0));
+        s.push_tag_versions(&[child]).unwrap();
+
+        // Deleting the parent while the child still implies it would
+        // strand every card holding `child` — validator would demand
+        // IMP_PARENT, but it's in `deleted_entities`.
+        match s.delete_tag(IMP_PARENT) {
+            Err(StorageError::OrphanedTagImpliesReference {
+                tag_id,
+                referencing_tag_ids,
+            }) => {
+                assert_eq!(tag_id, IMP_PARENT);
+                assert_eq!(referencing_tag_ids, vec![TAG_ID]);
+            }
+            other => panic!("expected OrphanedTagImpliesReference, got {other:?}"),
+        }
+
+        // Both tags remain live.
+        assert!(s.get_tag(IMP_PARENT).unwrap().is_some());
+        assert!(s.get_tag(TAG_ID).unwrap().is_some());
+    }
+
+    #[test]
+    fn delete_tag_succeeds_after_implies_cleared() {
+        let s = store();
+        let parent = Tag::first(IMP_PARENT, "parent".into(), None, ts(0));
+        s.push_tag_versions(&[parent]).unwrap();
+        let child = Tag::first_with_implies(TAG_ID, "child".into(), None, vec![IMP_PARENT], ts(0));
+        s.push_tag_versions(&[child.clone()]).unwrap();
+
+        // Remove the implies edge on the child first.
+        let child_v2 = child.next_with_implies("child".into(), None, vec![], ts(1000));
+        s.push_tag_versions(&[child_v2]).unwrap();
+
+        // Now deleting the parent is safe.
+        s.delete_tag(IMP_PARENT).unwrap();
+        assert!(s.get_tag(IMP_PARENT).unwrap().is_none());
+    }
+
+    #[test]
+    fn push_tag_with_unknown_implies_rejected() {
+        use blazelist_protocol::PushItem;
+        let s = store();
+        // Push a single tag whose implies list points at an id that has
+        // never been seen. The batch overlay contains only this tag, so
+        // IMP_PARENT is unknown and the dangling-reference check must
+        // reject before cycle detection or the closure check runs.
+        let child = Tag::first_with_implies(TAG_ID, "child".into(), None, vec![IMP_PARENT], ts(0));
+        let err = s.push_batch(&[PushItem::Tags(vec![child])]).unwrap_err();
+        match err.error {
+            PushOpError::Domain(PushError::TagImpliesUnknown { tag_id, missing }) => {
+                assert_eq!(tag_id, TAG_ID);
+                assert_eq!(missing, vec![IMP_PARENT]);
+            }
+            other => panic!("expected TagImpliesUnknown, got {other:?}"),
+        }
+        assert!(s.get_tag(TAG_ID).unwrap().is_none());
+    }
+
+    #[test]
+    fn push_tag_with_deleted_implies_rejected() {
+        use blazelist_protocol::PushItem;
+        let s = store();
+        // Create IMP_PARENT, then delete it.
+        let parent = Tag::first(IMP_PARENT, "parent".into(), None, ts(0));
+        s.push_tag_versions(&[parent]).unwrap();
+        s.delete_tag(IMP_PARENT).unwrap();
+
+        // Now try to push a tag that implies the now-deleted parent.
+        // The snapshot excludes deleted tags, so this trips the same
+        // dangling-reference check as an unknown id.
+        let child = Tag::first_with_implies(TAG_ID, "child".into(), None, vec![IMP_PARENT], ts(0));
+        let err = s.push_batch(&[PushItem::Tags(vec![child])]).unwrap_err();
+        assert!(matches!(
+            err.error,
+            PushOpError::Domain(PushError::TagImpliesUnknown { .. })
+        ));
+        assert!(s.get_tag(TAG_ID).unwrap().is_none());
     }
 }

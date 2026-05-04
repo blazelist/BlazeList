@@ -70,7 +70,7 @@ impl Client {
         tracing::info!("Handshake response received");
 
         match result {
-            VersionResult::Ok => {}
+            VersionResult::Ok { .. } => {}
             VersionResult::Mismatch { server_version } => {
                 return Err(ClientError::VersionMismatch { server_version });
             }

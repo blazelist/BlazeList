@@ -1,45 +1,85 @@
+use crate::components::link_indicators::link_indicators_view;
 use crate::state::store::{
-    AppState, confirm_discard_changes, format_due_date_badge, format_relative_time,
+    AppState, SwipeToast, confirm_discard_changes, format_due_date_badge, format_relative_time,
     select_card_view, sync_query_params,
 };
 use crate::state::sync::push_card_or_queue;
+use blazelist_client_lib::display::LinkCounts;
 use blazelist_protocol::{Card, Entity, Utc};
 use leptos::prelude::*;
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
+use uuid::Uuid;
+use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_name = "setTimeout")]
+    fn set_timeout_js(handler: &js_sys::Function, timeout: i32) -> i32;
+    #[wasm_bindgen(js_name = "clearTimeout")]
+    fn clear_timeout_js(handle: i32);
+}
+
+fn show_swipe_toast(state: &AppState, message: String, original_card: Card) {
+    if let Some(prev) = state.swipe_toast.get_untracked() {
+        clear_timeout_js(prev.timeout_handle);
+    }
+    let s = *state;
+    let dismiss_cb = Closure::once_into_js(move || {
+        s.swipe_toast.set(None);
+    });
+    let timeout_ms = state.swipe_undo_timeout_ms.get_untracked() as i32;
+    let handle = set_timeout_js(dismiss_cb.unchecked_ref(), timeout_ms);
+    state.swipe_toast.set(Some(SwipeToast {
+        message,
+        original_card,
+        timeout_handle: handle,
+    }));
+}
 
 #[component]
 pub fn CardItem(
-    card: Card,
-    /// 1-based index of this card in the filtered list.
-    index: usize,
-    /// Total number of cards in the filtered list (for zero-padding width).
-    total: usize,
-    /// Number of forward links (this card → others).
-    #[prop(default = 0)]
-    link_forward: usize,
-    /// Number of back links (others → this card).
-    #[prop(default = 0)]
-    link_back: usize,
+    card_id: Uuid,
+    card_map: Memo<HashMap<Uuid, Arc<Card>>>,
+    card_positions: Memo<HashMap<Uuid, (usize, usize)>>,
+    link_counts: Memo<HashMap<Uuid, LinkCounts>>,
 ) -> impl IntoView {
     let state = use_context::<AppState>().expect("AppState not provided");
-    let card_id = card.id();
-    let is_blazed = card.blazed();
 
-    let modified_at = card.modified_at();
-    let due_date = card.due_date();
-    let preview_text =
-        blazelist_client_lib::display::card_preview(card.content(), 200).unwrap_or_default();
-    let has_content = !preview_text.is_empty();
+    let current_card: Memo<Option<Arc<Card>>> =
+        Memo::new(move |_| card_map.get().get(&card_id).cloned());
 
-    // Zero-padded number like TUI: width = digits in total count
-    let width = total.max(1).ilog10() as usize + 1;
-    let number = format!("{:0>width$}", index, width = width);
+    let is_blazed = move || current_card.get().map(|c| c.blazed()).unwrap_or(false);
+
+    let preview_data: Memo<(String, &'static str)> = Memo::new(move |_| {
+        let Some(card) = current_card.get() else {
+            return ("(empty)".to_string(), "card-preview empty");
+        };
+        let raw =
+            blazelist_client_lib::display::card_preview(card.content(), 200).unwrap_or_default();
+        if raw.is_empty() {
+            ("(empty)".to_string(), "card-preview empty")
+        } else {
+            (raw, "card-preview")
+        }
+    });
+
+    let number = Memo::new(move |_| {
+        let (index, total) = card_positions
+            .get()
+            .get(&card_id)
+            .copied()
+            .unwrap_or((0, 0));
+        let width = total.max(1).ilog10() as usize + 1;
+        format!("{index:0>width$}")
+    });
 
     let on_click = move |_| {
         let current = state.selected_card.get_untracked();
         if current == Some(card_id) {
-            // Toggle off — deselect the current card.
             if !confirm_discard_changes(&state) {
                 return;
             }
@@ -52,7 +92,7 @@ pub fn CardItem(
 
     let card_class = move || {
         let mut cls = String::from("card-item");
-        if is_blazed {
+        if is_blazed() {
             cls.push_str(" blazed");
         }
         if state.selected_card.get() == Some(card_id) {
@@ -61,101 +101,128 @@ pub fn CardItem(
         cls
     };
 
-    let preview_class = if has_content {
-        "card-preview"
-    } else {
-        "card-preview empty"
-    };
-    let preview_display = if has_content {
-        preview_text
-    } else {
-        "(empty)".to_string()
-    };
     let time_text = move || {
-        // Read tick to re-evaluate periodically
         let _ = state.tick.get();
-        format_relative_time(&modified_at)
+        current_card
+            .get()
+            .map(|c| format_relative_time(&c.modified_at()))
+            .unwrap_or_default()
     };
 
     let due_badge = move || {
         let _ = state.tick.get();
-        due_date.map(|d| {
+        current_card.get().and_then(|c| c.due_date()).map(|d| {
             let (text, class) = format_due_date_badge(&d);
             let cls = format!("card-due {class}");
             view! { <span class=cls>{text}</span> }
         })
     };
 
-    let task_progress = blazelist_client_lib::display::task_progress(card.content());
-
-    let has_links = link_forward > 0 || link_back > 0;
-    let link_indicators = has_links.then(|| {
-        let fwd = (link_forward > 0).then(|| {
-            let text = format!("\u{2192}{link_forward}");
-            view! { <span class="card-link-forward">{text}</span> }
-        });
-        let bck = (link_back > 0).then(|| {
-            let text = format!("\u{2190}{link_back}");
-            view! { <span class="card-link-back">{text}</span> }
-        });
-        view! { <span class="card-link-indicators">{fwd}{bck}</span> }
-    });
-
-    // Collect tag colors sorted alphabetically by tag title.
-    // Tags with a custom color use that color; others use the default accent.
-    let tag_colors: Vec<String> = {
-        let tags_state = state.tags.get_untracked();
-        let mut matched: Vec<_> = card
-            .tags()
-            .iter()
-            .filter_map(|tag_id| {
-                tags_state.iter().find(|t| t.id() == *tag_id).map(|t| {
-                    let color = t
-                        .color()
-                        .map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b))
-                        .unwrap_or_else(|| "var(--accent)".to_string());
-                    (t.title().to_lowercase(), color)
-                })
-            })
-            .collect();
-        matched.sort_by(|a, b| a.0.cmp(&b.0));
-        matched.into_iter().map(|(_, c)| c).collect()
+    let task_progress = move || {
+        current_card
+            .get()
+            .and_then(|c| blazelist_client_lib::display::task_progress(c.content()))
     };
 
-    let tag_dots = if tag_colors.is_empty() {
-        None
-    } else {
-        let total = tag_colors.len();
-        let max_visible = 9;
-        let overflow = if total > max_visible {
-            Some(total - max_visible)
+    let link_indicators = move || {
+        let lc = link_counts.get().get(&card_id).copied().unwrap_or_default();
+        // Read transitive count from background cache — tracked reads so the
+        // indicator updates as the cache fills progressively.
+        let transitive = if state.show_list_link_counts.get() {
+            state
+                .link_graph_cache
+                .get()
+                .get(&card_id)
+                .map(|(_, v)| v.len().saturating_sub(lc.forward + lc.back + lc.mutual))
+                .unwrap_or(0)
         } else {
-            None
+            0
         };
-        let visible: Vec<String> = tag_colors.into_iter().take(max_visible).collect();
-        Some(view! {
-            <div class="card-tag-dots">
-                <div class="card-tag-dots-grid">
-                    {visible.into_iter().map(|c| {
-                        let style = format!("background: {c};");
-                        view! { <span class="card-tag-dot" style=style></span> }
-                    }).collect::<Vec<_>>()}
-                </div>
-                {overflow.map(|n| view! {
-                    <span class="card-tag-overflow">{format!("+{n}")}</span>
-                })}
-            </div>
-        })
+        link_indicators_view(LinkCounts { transitive, ..lc })
     };
 
-    // --- Touch swipe state ---
+    let tag_dots = move || -> Option<leptos::prelude::AnyView> {
+        let card = current_card.get()?;
+        let tags_state = state.tags.get();
+
+        // Split into custom-colored (shown as dots) and default-accent
+        // (counted into the "+N" overflow only). A default-colored dot
+        // carries no visual information and just clutters the 2×2 grid,
+        // so we surface them as a compact count instead.
+        let mut colored: Vec<(String, String)> = Vec::new();
+        let mut uncolored_count: usize = 0;
+        for tag_id in card.tags() {
+            if let Some(t) = tags_state.iter().find(|t| t.id() == *tag_id) {
+                match t.color() {
+                    Some(c) => {
+                        let hex = format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
+                        colored.push((t.title().to_lowercase(), hex));
+                    }
+                    None => {
+                        uncolored_count += 1;
+                    }
+                }
+            }
+        }
+
+        if colored.is_empty() && uncolored_count == 0 {
+            return None;
+        }
+
+        colored.sort_by(|a, b| a.0.cmp(&b.0));
+        let max_visible = 4;
+        let visible_colors: Vec<String> = colored
+            .iter()
+            .take(max_visible)
+            .map(|(_, c)| c.clone())
+            .collect();
+        let extra_colored = colored.len().saturating_sub(max_visible);
+        let overflow_total = extra_colored + uncolored_count;
+        let overflow = (overflow_total > 0).then_some(overflow_total);
+
+        Some(
+            view! {
+                <div class="card-tag-dots">
+                    {(!visible_colors.is_empty()).then(|| view! {
+                        <div class="card-tag-dots-grid">
+                            {visible_colors.into_iter().map(|c| {
+                                let style = format!("background: {c};");
+                                view! { <span class="card-tag-dot" style=style></span> }
+                            }).collect::<Vec<_>>()}
+                        </div>
+                    })}
+                    {overflow.map(|n| view! {
+                        <span class="card-tag-overflow">{format!("+{n}")}</span>
+                    })}
+                </div>
+            }
+            .into_any(),
+        )
+    };
+
+    // --- Touch swipe ---
     let swipe_offset = RwSignal::new(0.0f64);
     let touch_start_x = Rc::new(Cell::new(0.0f64));
     let touch_start_y = Rc::new(Cell::new(0.0f64));
     let swiping = Rc::new(Cell::new(false));
 
-    let stored_card = StoredValue::new(card.clone());
-    let card_due = card.due_date();
+    fn read_card(
+        card_id: Uuid,
+        card_map: &Memo<HashMap<Uuid, Arc<Card>>>,
+        state: &AppState,
+    ) -> Option<Card> {
+        card_map
+            .get_untracked()
+            .get(&card_id)
+            .map(|arc| Card::clone(arc))
+            .or_else(|| {
+                state
+                    .cards
+                    .get_untracked()
+                    .into_iter()
+                    .find(|c| c.id() == card_id)
+            })
+    }
 
     let on_touchstart = {
         let tsx = touch_start_x.clone();
@@ -185,12 +252,9 @@ pub fn CardItem(
             if let Some(touch) = ev.touches().get(0) {
                 let dx = touch.client_x() as f64 - tsx.get();
                 let dy = touch.client_y() as f64 - tsy.get();
-                // Only start swiping if horizontal movement dominates
                 if !sw.get() {
                     if dx.abs() > 10.0 && dx.abs() > dy.abs() * 1.5 {
                         sw.set(true);
-                    } else if dy.abs() > 10.0 {
-                        return;
                     } else {
                         return;
                     }
@@ -199,7 +263,6 @@ pub fn CardItem(
                     ev.prevent_default();
                     let threshold_r = state.swipe_threshold_right.get_untracked() as f64;
                     let threshold_l = state.swipe_threshold_left.get_untracked() as f64;
-                    // Rubber-band: 1:1 until threshold, then diminishing returns
                     let offset = if dx > 0.0 {
                         if dx <= threshold_r {
                             dx
@@ -235,11 +298,18 @@ pub fn CardItem(
             swipe_offset.set(0.0);
             sw.set(false);
 
+            let Some(c) = read_card(card_id, &card_map, &state) else {
+                return;
+            };
             let threshold_r = state.swipe_threshold_right.get_untracked() as f64;
             let threshold_l = state.swipe_threshold_left.get_untracked() as f64;
             if offset > threshold_r {
-                // Swipe right → blaze/extinguish
-                let c = stored_card.get_value();
+                let msg = if c.blazed() {
+                    "Extinguished \u{1F680}".to_string()
+                } else {
+                    "Blazed \u{1F525}".to_string()
+                };
+                let original = c.clone();
                 let updated = c.next(
                     c.content().to_string(),
                     c.priority(),
@@ -252,20 +322,31 @@ pub fn CardItem(
                 leptos::task::spawn_local(async move {
                     push_card_or_queue(&state, updated).await;
                 });
+                show_swipe_toast(&state, msg, original);
             } else if offset < -threshold_l {
-                // Swipe left → set due date to today (or tomorrow if already today)
-                let c = stored_card.get_value();
-                let today = blazelist_protocol::Utc::now()
-                    .date_naive()
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap()
-                    .and_utc();
-                let new_due = if card_due == Some(today) {
-                    let tomorrow = today + chrono::Duration::days(1);
-                    Some(tomorrow)
+                let today_date = blazelist_protocol::Utc::now().date_naive();
+                let today = today_date.and_hms_opt(0, 0, 0).unwrap().and_utc();
+                let tomorrow = today + chrono::Duration::days(1);
+                let in_two = today + chrono::Duration::days(2);
+
+                // Toggle mode: cycle based on current due date.
+                let current_date = c.due_date().map(|d| d.date_naive());
+                let (new_due, msg) = if current_date == Some(today_date) {
+                    (Some(tomorrow), "Due: Tomorrow".to_string())
+                } else if current_date == Some(today_date + chrono::Days::new(1)) {
+                    (
+                        Some(in_two),
+                        format!(
+                            "Due: {}",
+                            (today_date + chrono::Days::new(2)).format("%Y-%m-%d")
+                        ),
+                    )
+                } else if current_date == Some(today_date + chrono::Days::new(2)) {
+                    (None, "Due: Cleared".to_string())
                 } else {
-                    Some(today)
+                    (Some(today), "Due: Today".to_string())
                 };
+                let original = c.clone();
                 let updated = c.next(
                     c.content().to_string(),
                     c.priority(),
@@ -278,6 +359,7 @@ pub fn CardItem(
                 leptos::task::spawn_local(async move {
                     push_card_or_queue(&state, updated).await;
                 });
+                show_swipe_toast(&state, msg, original);
             }
         }
     };
@@ -295,10 +377,21 @@ pub fn CardItem(
         let offset = swipe_offset.get();
         let threshold_r = state.swipe_threshold_right.get() as f64;
         let threshold_l = state.swipe_threshold_left.get() as f64;
+        let right_kind = if is_blazed() {
+            "swipe-bg-extinguish"
+        } else {
+            "swipe-bg-blaze"
+        };
         if offset >= threshold_r {
-            "swipe-bg swipe-bg-blaze swipe-commit"
+            match right_kind {
+                "swipe-bg-extinguish" => "swipe-bg swipe-bg-extinguish swipe-commit",
+                _ => "swipe-bg swipe-bg-blaze swipe-commit",
+            }
         } else if offset > 40.0 {
-            "swipe-bg swipe-bg-blaze"
+            match right_kind {
+                "swipe-bg-extinguish" => "swipe-bg swipe-bg-extinguish",
+                _ => "swipe-bg swipe-bg-blaze",
+            }
         } else if offset <= -threshold_l {
             "swipe-bg swipe-bg-due swipe-commit"
         } else if offset < -55.0 {
@@ -328,16 +421,19 @@ pub fn CardItem(
     let swipe_label = move || {
         let offset = swipe_offset.get();
         if offset > 40.0 {
-            if is_blazed { "Extinguish" } else { "Blaze" }
+            if is_blazed() { "Extinguish" } else { "Blaze" }
         } else if offset < -55.0 {
-            if card_due == Some(
-                blazelist_protocol::Utc::now()
-                    .date_naive()
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap()
-                    .and_utc(),
-            ) {
+            let today_date = blazelist_protocol::Utc::now().date_naive();
+            let current_date = current_card
+                .get()
+                .and_then(|c| c.due_date())
+                .map(|d| d.date_naive());
+            if current_date == Some(today_date) {
                 "Tomorrow"
+            } else if current_date == Some(today_date + chrono::Days::new(1)) {
+                "In 2 days"
+            } else if current_date == Some(today_date + chrono::Days::new(2)) {
+                "Clear due"
             } else {
                 "Today"
             }
@@ -348,7 +444,7 @@ pub fn CardItem(
 
     let wrapper_class = move || {
         let mut cls = String::from("card-item-wrapper");
-        if is_blazed {
+        if is_blazed() {
             cls.push_str(" blazed");
         }
         if state.selected_card.get() == Some(card_id) {
@@ -370,11 +466,13 @@ pub fn CardItem(
                 on:touchmove=on_touchmove
                 on:touchend=on_touchend
             >
-                <span class="card-number">{number}</span>
-                <div class=preview_class>{preview_display}</div>
+                <span class="card-number">{move || number.get()}</span>
+                <div class=move || preview_data.get().1>
+                    {move || preview_data.get().0}
+                </div>
                 {link_indicators}
                 {tag_dots}
-                {task_progress.map(|(done, total)| view! {
+                {move || task_progress().map(|(done, total)| view! {
                     <span class="card-tasks">{format!("{done}/{total}")}</span>
                 })}
                 {due_badge}

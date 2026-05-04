@@ -52,6 +52,15 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize structured logging. Controllable via `RUST_LOG`, defaults
+    // to `info` when not set.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     let cli = Cli::parse();
 
     let quic_addr: SocketAddr = format!("{}:{}", cli.bind, cli.quic_port).parse()?;
@@ -59,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let http_addr: SocketAddr = format!("{}:{}", cli.bind, cli.http_port).parse()?;
     let db_path = cli.db;
 
-    println!("Opening database at {}", db_path.display());
+    tracing::info!(path = %db_path.display(), "Opening database");
     let allow_migration = std::env::var("BLAZELIST_ALLOW_IRREVERSIBLE_AUTOMATIC_UPGRADE_MIGRATION")
         .map(|v| v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
@@ -73,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- QUIC server ---
     let quic_endpoint = Endpoint::server(quic_server_config, quic_addr)?;
-    println!("QUIC server listening on {quic_addr}");
+    tracing::info!(%quic_addr, "QUIC server listening");
 
     let quic_storage = Arc::clone(&storage);
     let quic_notify_tx = notify_tx.clone();
@@ -83,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- WebTransport server ---
     let wt = webtransport_server_config(&cert_material.cert_der, &cert_material.key_der, wt_addr)?;
-    println!("WebTransport server listening on {wt_addr}");
+    tracing::info!(%wt_addr, "WebTransport server listening");
 
     let wt_storage = Arc::clone(&storage);
     let wt_notify_tx = notify_tx.clone();
@@ -100,7 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let http_handle = tokio::spawn(async move {
         run_cert_hash_server(http_addr, cert_hash_hex, config_for_http).await;
     });
-    println!("Cert-hash HTTP endpoint on http://{http_addr}/cert-hash");
+    tracing::info!(url = %format!("http://{http_addr}/cert-hash"), "Cert-hash HTTP endpoint ready");
 
     // --- HTTPS static-file server (opt-in) ---
     let https_handle = if let Some(ref static_dir) = cli.static_dir {
@@ -110,13 +119,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let config_for_https = client_config.clone();
         let dir = static_dir.clone();
 
-        println!(
-            "HTTPS static-file server on https://{https_addr} (serving {})",
-            dir.display()
+        tracing::info!(
+            %https_addr,
+            static_dir = %dir.display(),
+            "HTTPS static-file server listening"
         );
         Some(tokio::spawn(async move {
-            run_https_server(https_addr, dir, cert_hash_for_https, config_for_https, acceptor)
-                .await;
+            run_https_server(
+                https_addr,
+                dir,
+                cert_hash_for_https,
+                config_for_https,
+                acceptor,
+            )
+            .await;
         }))
     } else {
         None
@@ -146,22 +162,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wait for shutdown signal or any server task to exit unexpectedly.
     tokio::select! {
         _ = shutdown_signal() => {},
-        _ = quic_handle => eprintln!("QUIC server exited unexpectedly"),
-        _ = wt_handle => eprintln!("WebTransport server exited unexpectedly"),
-        _ = http_handle => eprintln!("HTTP cert-hash server exited unexpectedly"),
+        _ = quic_handle => tracing::warn!("QUIC server exited unexpectedly"),
+        _ = wt_handle => tracing::warn!("WebTransport server exited unexpectedly"),
+        _ = http_handle => tracing::warn!("HTTP cert-hash server exited unexpectedly"),
         _ = async {
             match https_handle {
                 Some(h) => { let _ = h.await; }
                 None => std::future::pending().await,
             }
-        } => eprintln!("HTTPS static server exited unexpectedly"),
+        } => tracing::warn!("HTTPS static server exited unexpectedly"),
     }
 
     // --- Graceful shutdown ---
-    println!("Shutting down...");
+    tracing::info!("Shutting down");
     checkpoint_handle.abort();
     storage.checkpoint();
-    println!("Shutdown complete.");
+    tracing::info!("Shutdown complete");
 
     Ok(())
 }
@@ -181,7 +197,7 @@ async fn shutdown_signal() {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => println!("\nReceived SIGINT"),
-        _ = terminate => println!("\nReceived SIGTERM"),
+        _ = ctrl_c => tracing::info!("Received SIGINT"),
+        _ = terminate => tracing::info!("Received SIGTERM"),
     }
 }

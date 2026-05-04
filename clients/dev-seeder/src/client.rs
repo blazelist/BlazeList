@@ -48,7 +48,7 @@ impl Client {
             .open_bi()
             .await
             .map_err(|e| format!("version handshake: {e}"))?;
-        client_handshake(&mut send, &mut recv, &CLIENT_VERSION).await?;
+        let _server_version = client_handshake(&mut send, &mut recv, &CLIENT_VERSION).await?;
 
         Ok(Self { connection })
     }
@@ -74,10 +74,10 @@ impl Client {
         }
 
         self.send_request(Request::PushBatch(create_items)).await?;
-        println!(
-            "  Phase 1: created {} tags + {} cards (including doomed).",
-            data.tag_chains.len() + data.deleted_tag_chains.len(),
-            data.card_chains.len() + data.deleted_card_chains.len(),
+        tracing::info!(
+            tags = data.tag_chains.len() + data.deleted_tag_chains.len(),
+            cards = data.card_chains.len() + data.deleted_card_chains.len(),
+            "Phase 1: created entities (including doomed)"
         );
 
         // Phase 2: delete doomed entities in a separate batch so the server
@@ -97,10 +97,10 @@ impl Client {
             }
 
             self.send_request(Request::PushBatch(delete_items)).await?;
-            println!(
-                "  Phase 2: deleted {} tags + {} cards.",
-                data.deleted_tag_chains.len(),
-                data.deleted_card_chains.len(),
+            tracing::info!(
+                deleted_tags = data.deleted_tag_chains.len(),
+                deleted_cards = data.deleted_card_chains.len(),
+                "Phase 2: deleted entities"
             );
         }
 
@@ -110,10 +110,10 @@ impl Client {
             for (i, batch) in data.extra_ops.iter().enumerate() {
                 self.send_request(Request::PushBatch(batch.clone())).await?;
                 if (i + 1) % 30 == 0 || i + 1 == data.extra_ops.len() {
-                    println!(
-                        "  Phase 3: pushed {}/{} extra operations.",
-                        i + 1,
-                        data.extra_ops.len(),
+                    tracing::info!(
+                        pushed = i + 1,
+                        total = data.extra_ops.len(),
+                        "Phase 3: extra operations"
                     );
                 }
             }

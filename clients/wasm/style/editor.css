@@ -106,6 +106,8 @@
     line-height: 1.6;
     font-size: 0.85rem;
     overflow-y: auto;
+    overflow-wrap: break-word;
+    word-break: break-word;
 }
 
 .editor-preview img {

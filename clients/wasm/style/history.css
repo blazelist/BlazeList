@@ -4,8 +4,6 @@
     display: flex;
     flex-direction: column;
     gap: 1px;
-    overflow-y: auto;
-    flex: 1;
 }
 
 .version-loading {
@@ -86,6 +84,8 @@
     line-height: 1.6;
     font-size: 0.85rem;
     color: var(--text-primary);
+    overflow-wrap: break-word;
+    word-break: break-word;
 }
 
 .version-detail-meta {
@@ -129,20 +129,51 @@
     margin-bottom: 0.5rem;
 }
 
-.btn-fork {
-    padding: 0.2rem 0.5rem;
-    background: transparent;
-    color: var(--text-secondary);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 0.7rem;
-    font-weight: 500;
-    flex-shrink: 0;
-    transition: all 0.15s;
+/* The fork "New from this" group reuses the main new-card dropdown
+   classes (`btn-new-card-group`, `btn-new-card`, `btn-new-card-dropdown`,
+   `new-card-dropdown-menu`) for behaviour, but the version-history
+   expanded view needs them to sit at the same compact height as the
+   neighbouring `btn-restore` button. Scope the overrides to
+   `.version-expanded-actions` so the main new-card group in the card
+   list is untouched. */
+.version-expanded-actions .btn-new-card-group {
+    margin: 0;
 }
 
-.btn-fork:hover {
+.version-expanded-actions .btn-new-card,
+.version-expanded-actions .btn-new-card-dropdown {
+    padding: 0.2rem 0.5rem;
+    font-size: 0.7rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    border-style: solid;
+}
+
+/* Keep the dropdown toggle flush against the main button. Our
+   higher-specificity `border-style: solid` above sets
+   border-left-style: solid, which would otherwise re-expose the
+   middle seam between the two buttons. */
+.version-expanded-actions .btn-new-card-dropdown {
+    border-left: none;
+}
+
+/* Open the fork dropdown upward instead of downward. The fork
+   group lives at the bottom of `version-expanded-actions`, which
+   itself is at the bottom of a version-expanded view, so a
+   downward menu would almost always fall off the visible card
+   detail. Flipping it upward keeps the items inside the viewport.
+   Uses a brighter border colour and a 5 px margin so the menu is
+   clearly separated from the button underneath it. */
+.version-expanded-actions .new-card-dropdown-menu {
+    top: auto;
+    bottom: 100%;
+    margin-top: 0;
+    margin-bottom: 5px;
+    border-color: var(--border-hover);
+}
+
+.version-expanded-actions .btn-new-card:hover,
+.version-expanded-actions .btn-new-card-dropdown:hover {
     background: var(--action-subtle);
     color: var(--action-hover);
     border-color: var(--action);

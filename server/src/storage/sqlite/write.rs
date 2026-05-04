@@ -88,10 +88,7 @@ impl SqliteStorage {
         let dup: Option<(Vec<u8>, i64)> = conn
             .query_row(
                 "SELECT id, priority FROM cards WHERE priority = ?1 AND id != ?2 LIMIT 1",
-                params![
-                    latest.priority(),
-                    latest.id().as_bytes().as_slice()
-                ],
+                params![latest.priority(), latest.id().as_bytes().as_slice()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .ok();
@@ -181,9 +178,10 @@ impl SqliteStorage {
         }
 
         for v in versions {
+            let implies_bytes = Self::serialize_implies(v.implies());
             conn.execute(
                 "INSERT INTO tag_versions (tag_id, count, title, color, created_at, modified_at, \
-                 ancestor_hash, hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 ancestor_hash, hash, implies) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     v.id().as_bytes().as_slice(),
                     i64::from(v.count()),
@@ -193,14 +191,16 @@ impl SqliteStorage {
                     v.modified_at().timestamp_millis(),
                     v.ancestor_hash().as_bytes().as_slice(),
                     v.hash().as_bytes().as_slice(),
+                    implies_bytes,
                 ],
             )?;
         }
 
         let latest = versions.last().unwrap();
+        let implies_bytes = Self::serialize_implies(latest.implies());
         conn.execute(
             "INSERT OR REPLACE INTO tags (id, title, color, created_at, modified_at, count, \
-             ancestor_hash, hash, bucket) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             ancestor_hash, hash, implies, bucket) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 latest.id().as_bytes().as_slice(),
                 latest.title(),
@@ -210,6 +210,7 @@ impl SqliteStorage {
                 i64::from(latest.count()),
                 latest.ancestor_hash().as_bytes().as_slice(),
                 latest.hash().as_bytes().as_slice(),
+                implies_bytes,
                 Self::bucket_of(latest.id()) as i64,
             ],
         )?;
@@ -307,6 +308,40 @@ impl SqliteStorage {
             return Err(StorageError::OrphanedTagReference {
                 tag_id: id,
                 referencing_card_ids,
+            });
+        }
+
+        // Referential integrity: reject deletion if any other tag still
+        // declares this tag in its `implies` list. Without this guard,
+        // deleting A while B implies A would leave every card holding B
+        // permanently non-compliant with the implication invariant — the
+        // validator would demand A, but A is in `deleted_entities` and
+        // cannot be re-attached.
+        let mut stmt = conn
+            .prepare("SELECT id, implies FROM tags WHERE id != ?1")
+            .map_err(StorageError::from)?;
+        let referencing_tag_ids: Vec<Uuid> = stmt
+            .query_map(params![id.as_bytes().as_slice()], |row| {
+                let id_bytes: Vec<u8> = row.get(0)?;
+                let implies_bytes: Vec<u8> = row.get(1)?;
+                Ok((id_bytes, implies_bytes))
+            })
+            .map_err(StorageError::from)?
+            .filter_map(|r| r.ok())
+            .filter_map(|(id_bytes, implies_bytes)| {
+                let tag_id = Uuid::from_bytes(id_bytes.as_slice().try_into().ok()?);
+                let implies = Self::deserialize_implies(&implies_bytes);
+                if implies.contains(&id) {
+                    Some(tag_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !referencing_tag_ids.is_empty() {
+            return Err(StorageError::OrphanedTagImpliesReference {
+                tag_id: id,
+                referencing_tag_ids,
             });
         }
 

@@ -5,9 +5,10 @@ use crate::components::card_detail::CardDetail;
 use crate::components::card_list::CardList;
 use crate::components::filter_bar::FilterBar;
 use crate::components::header::Header;
-use crate::components::keyboard::ShortcutsPanel;
+use crate::components::keyboard::{ShortcutsPanel, SubMenuPopup};
 use crate::components::settings_panel::SettingsPanel;
 use crate::components::tag_sidebar::TagSidebar;
+use crate::components::toast::{CopyToast, ErrorToast, SwipeToastBar};
 use crate::state::store::AppState;
 
 /// Start a column resize drag operation.
@@ -35,7 +36,7 @@ fn start_resize(
     let up_cb: *mut Option<Closure<dyn FnMut(web_sys::MouseEvent)>> = Box::into_raw(Box::new(None));
 
     let on_move = Closure::wrap(Box::new(move |ev: web_sys::MouseEvent| {
-        let delta = ev.client_x() as f64 - start_x;
+        let delta = ev.client_x() - start_x;
         let new_width = if direction == "right" {
             start_width + delta
         } else {
@@ -97,20 +98,47 @@ pub fn Home() -> impl IntoView {
             state.sidebar_width.get() as i32
         )
     };
+    // When the detail panel is in expanded (fullscreen) mode it takes
+    // the full main-layout area via absolute positioning, so skip the
+    // fixed-width inline style entirely — otherwise it fights the CSS.
     let detail_style = move || {
-        format!(
-            "width:{}px;min-width:0;flex-shrink:0",
-            state.detail_width.get() as i32
-        )
+        if state.detail_expanded.get() {
+            String::new()
+        } else {
+            format!(
+                "width:{}px;min-width:0;flex-shrink:0",
+                state.detail_width.get() as i32
+            )
+        }
+    };
+    let detail_panel_class = move || {
+        if state.detail_expanded.get() {
+            "detail-panel expanded"
+        } else {
+            "detail-panel"
+        }
     };
 
     let close_sidebar_mobile = move |_| {
         state.sidebar_visible.set(false);
     };
 
+    // Only mark the container as "detail-expanded" when the detail panel
+    // is both visible AND in expanded mode. That way the sidebar toggle
+    // (which the `.detail-expanded` CSS rule hides) stays available
+    // whenever the user is on the card list with nothing open.
+    let app_container_class = move || {
+        if state.detail_expanded.get() && detail_open.get() {
+            "app-container detail-expanded"
+        } else {
+            "app-container"
+        }
+    };
+
     view! {
-        <div class="app-container">
+        <div class=app_container_class>
             <Header />
+            <SubMenuPopup />
             <div class="main-layout">
                 <div class=move || {
                     if sidebar_visible() { "sidebar-overlay visible" } else { "sidebar-overlay" }
@@ -142,19 +170,21 @@ pub fn Home() -> impl IntoView {
                     <CardList />
                 </main>
                 {move || detail_open.get().then(|| view! {
-                    <div class="resize-handle"
-                        on:mousedown=move |ev: web_sys::MouseEvent| {
-                            ev.prevent_default();
-                            start_resize(
-                                ev.client_x(),
-                                state.detail_width.get_untracked(),
-                                state.detail_width,
-                                200.0, 1400.0,
-                                "left",
-                            );
-                        }
-                    />
-                    <aside class="detail-panel" style=detail_style>
+                    {move || (!state.detail_expanded.get()).then(|| view! {
+                        <div class="resize-handle"
+                            on:mousedown=move |ev: web_sys::MouseEvent| {
+                                ev.prevent_default();
+                                start_resize(
+                                    ev.client_x(),
+                                    state.detail_width.get_untracked(),
+                                    state.detail_width,
+                                    200.0, 1400.0,
+                                    "left",
+                                );
+                            }
+                        />
+                    })}
+                    <aside class=detail_panel_class style=detail_style>
                         {move || if state.settings_open.get() {
                             view! { <SettingsPanel /> }.into_any()
                         } else if state.shortcuts_open.get() {
@@ -164,6 +194,9 @@ pub fn Home() -> impl IntoView {
                         }}
                     </aside>
                 })}
+                <SwipeToastBar />
+                <CopyToast />
+                <ErrorToast />
             </div>
         </div>
     }

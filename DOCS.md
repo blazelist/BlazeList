@@ -119,11 +119,16 @@ These override default values for WASM client settings. Served via the `/config`
 | `BLAZELIST_DEFAULT_TOUCH_SWIPE` | Enable touch swipe gestures on cards | `false` |
 | `BLAZELIST_DEFAULT_SWIPE_THRESHOLD_RIGHT` | Swipe right trigger distance in px | `100` |
 | `BLAZELIST_DEFAULT_SWIPE_THRESHOLD_LEFT` | Swipe left trigger distance in px | `90` |
+| `BLAZELIST_DEFAULT_SWIPE_UNDO_TIMEOUT_MS` | Swipe undo toast dismiss timeout in milliseconds | `4000` |
 | `BLAZELIST_DEFAULT_CLEAR_TAG_SEARCH` | Clear tag search input after selecting a tag | `true` |
 | `BLAZELIST_DEFAULT_OVERRIDE_SIDEBAR_WIDTH` | Enable sidebar width override | `false` |
 | `BLAZELIST_DEFAULT_SIDEBAR_WIDTH` | Default sidebar width in px (when override enabled) | `180` |
 | `BLAZELIST_DEFAULT_OVERRIDE_DETAIL_WIDTH` | Enable detail panel width override | `false` |
 | `BLAZELIST_DEFAULT_DETAIL_WIDTH` | Default detail panel width in px (when override enabled) | `0` |
+| `BLAZELIST_DEFAULT_RECURSIVE_LINKS` | Recursively expand all transitively linked cards | `true` |
+| `BLAZELIST_DEFAULT_SHOW_LIST_LINK_COUNTS` | Show transitive link counts in card list (computed in background) | `false` |
+| `BLAZELIST_DEFAULT_SHOW_DUE_TODAY_BUTTON` | Show Today quick-filter button beside due date dropdown | `true` |
+| `BLAZELIST_DEFAULT_SHOW_CARD_TIME` | Show the card-list relative-time label ("x ago") on each row | `false` |
 
 Boolean values are compared against `"true"` (case-sensitive). Numeric values must be valid unsigned integers.
 
@@ -152,6 +157,24 @@ services:
 > [!NOTE]
 > Values are validated to contain only `[a-zA-Z0-9_-]` before being used in PRAGMA statements.
 
+### Tag Implications
+
+Each tag carries an `implies` list of direct parent tag IDs. When a card is
+pushed, the server checks that its tag set is closed under the transitive
+closure of the implication relation — if any implied tag is missing, the
+push is rejected with `TagImplicationViolation`. When a tag's `implies`
+list changes, any existing cards that would fall out of compliance must be
+brought back into compliance in the **same** `PushBatch` as the tag update;
+the server rejects the whole batch otherwise. The server never fabricates
+card versions on its own.
+
+Cycles in the implication graph are rejected with `TagImplicationCycle`.
+
+The v2 → v3 schema migration adds an `implies BLOB` column to both
+`tags` and `tag_versions`. Pre-feature tag hashes continue to verify
+after upgrade because `canonical_tag_hash` appends the implies block
+only when the list is non-empty.
+
 ### Schema Migration
 
 | Variable | Description | Default |
@@ -175,6 +198,7 @@ The WASM PWA operates **offline-first**:
 3. **Offline editing** — Cards can be created and edited while offline. Changes are queued locally and pushed automatically when the connection is restored. The sync indicator shows a count of unsynced changes.
 4. **Automatic reconnection** — Connection attempts use exponential backoff (5s to 60s). Returning to the app (visibility change) or regaining network connectivity triggers an immediate reconnect, even if a stale connection attempt was in progress.
 5. **Automatic recovery** — If the local cache is evicted or corrupt, falls back to a full sync.
+6. **Version-aware caching** — On startup, the client compares the protocol version (client and server) against the stored fingerprint. If either version has changed (e.g. after an update), all local caches are evicted and rebuilt via a full sync. The offline queue is preserved so unsynced edits are not lost.
 
 ### Browser Requirements
 

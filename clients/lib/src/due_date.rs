@@ -66,19 +66,40 @@ pub enum DueDatePreset {
     Tomorrow,
     InTwoDays,
     NextMon,
+    NextTue,
+    NextWed,
+    NextThu,
     NextFri,
+    NextSat,
+    NextSun,
 }
 
 impl DueDatePreset {
-    pub const ALL: [Self; 5] = [Self::Today, Self::Tomorrow, Self::InTwoDays, Self::NextMon, Self::NextFri];
+    pub const ALL: [Self; 10] = [
+        Self::Today,
+        Self::Tomorrow,
+        Self::InTwoDays,
+        Self::NextMon,
+        Self::NextTue,
+        Self::NextWed,
+        Self::NextThu,
+        Self::NextFri,
+        Self::NextSat,
+        Self::NextSun,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Today => "Today",
             Self::Tomorrow => "Tomorrow",
-            Self::InTwoDays => "In 2 Days",
-            Self::NextMon => "Next Mon",
-            Self::NextFri => "Next Fri",
+            Self::InTwoDays => "In 2 days",
+            Self::NextMon => "Next monday",
+            Self::NextTue => "Next tuesday",
+            Self::NextWed => "Next wednesday",
+            Self::NextThu => "Next thursday",
+            Self::NextFri => "Next friday",
+            Self::NextSat => "Next saturday",
+            Self::NextSun => "Next sunday",
         }
     }
 
@@ -88,7 +109,12 @@ impl DueDatePreset {
             Self::Tomorrow => tomorrow_midnight(),
             Self::InTwoDays => in_two_days_midnight(),
             Self::NextMon => next_weekday(Weekday::Mon),
+            Self::NextTue => next_weekday(Weekday::Tue),
+            Self::NextWed => next_weekday(Weekday::Wed),
+            Self::NextThu => next_weekday(Weekday::Thu),
             Self::NextFri => next_weekday(Weekday::Fri),
+            Self::NextSat => next_weekday(Weekday::Sat),
+            Self::NextSun => next_weekday(Weekday::Sun),
         }
     }
 }

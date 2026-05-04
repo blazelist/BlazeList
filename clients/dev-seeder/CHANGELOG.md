@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.0.0] - 2026-05-04
+
+### Added
+
+- Environment size presets (`--preset small|medium|large`) for quick
+  switching between dataset sizes. Medium (400 cards, 18 tags) is the
+  new default — roughly a third of the previous 1200/50. `--cards` and
+  `--tags` flags still work as explicit overrides.
+- Seeded tag implications: `apply_seeded_implications` picks ~25% of
+  generated tags and appends a `next_with_implies` version pointing at
+  1–2 earlier-indexed (smaller-index) live tags, guaranteeing the
+  resulting implication graph is a DAG. Every card generator now
+  threads a `TagGraph` snapshot and closes its tag sets under that
+  graph before writing a card version, so the seeded batch passes the
+  server's new implication invariant validator even with non-empty
+  implies. Exercises both the "tag gained implies later" path and the
+  retroactive-closure code.
+
+### Changed
+
+- **Breaking:** Wire-compatible with protocol 3.0.0 only.
+- Phase progress diagnostics now use `tracing` instead of `println!`,
+  with `tracing-subscriber` initialised in `main()` and levels
+  controllable via `RUST_LOG` (default `info`).
+
 ## [2.1.0] - 2026-03-15
 
 ### Changed

@@ -30,6 +30,11 @@
     --danger: #c04040;
     --danger-subtle: rgba(192, 64, 64, 0.12);
 
+    /* Extinguish (cyan) — Unblaze/unarchive */
+    --extinguish: #2d8c9e;
+    --extinguish-hover: #38a8bc;
+    --extinguish-subtle: rgba(45, 140, 158, 0.12);
+
     /* Navigate (amber) — Move, Go */
     --nav: #c07830;
     --nav-subtle: rgba(192, 120, 48, 0.12);

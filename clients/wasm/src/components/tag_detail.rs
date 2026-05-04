@@ -1,43 +1,50 @@
-use crate::components::hooks::toggle_expanded;
+use crate::components::hooks::{ConfirmDeletePrompt, TagColorPicker, parse_hex_color};
+use crate::components::timestamp::Timestamp;
+use crate::components::toast::show_error_toast;
+use crate::components::version_history::TagVersionHistory;
 use crate::state::store::{
-    AppState, confirm_discard_changes, format_relative_time, get_client, sync_query_params,
+    AppState, confirm_discard_changes, get_client, sync_query_params, tag_chip_style,
 };
-use crate::storage;
 use blazelist_client_lib::client::Client as _;
+use blazelist_client_lib::error::ClientError;
+use blazelist_client_lib::tag_graph::{TagGraph, affected_cards_for_change};
 use blazelist_protocol::{Card, Entity, PushItem, Tag, Utc};
 use leptos::prelude::*;
-use rgb::RGB8;
 use uuid::Uuid;
+use wasm_bindgen::JsCast;
 
 #[component]
 pub fn TagDetail() -> impl IntoView {
     let state = use_context::<AppState>().expect("AppState not provided");
-    let versions: RwSignal<Vec<Tag>> = RwSignal::new(Vec::new());
-    let loading = RwSignal::new(true);
-    let error_msg: RwSignal<Option<String>> = RwSignal::new(None);
-    let expanded: RwSignal<Option<i64>> = RwSignal::new(None);
     let prev_tag: RwSignal<Option<Uuid>> = RwSignal::new(None);
 
-    // Unified editing state for title + color
+    // Unified editing state for title + color + implies.
     let editing = RwSignal::new(false);
     let title_input = RwSignal::new(String::new());
     let color_input = RwSignal::new(String::from("#808080"));
     let use_color = RwSignal::new(false);
+    let implies_input: RwSignal<Vec<Uuid>> = RwSignal::new(Vec::new());
     let confirm_delete = RwSignal::new(0u8);
 
     // Originals captured when editing starts, for dirty comparison.
     let orig_title = RwSignal::new(String::new());
     let orig_use_color = RwSignal::new(false);
     let orig_color = RwSignal::new(String::from("#808080"));
+    let orig_implies: RwSignal<Vec<Uuid>> = RwSignal::new(Vec::new());
 
     // Track dirty state — compare current inputs against originals.
     Effect::new(move |_| {
         if !editing.get() {
             return;
         }
+        let mut cur_implies = implies_input.get();
+        cur_implies.sort();
+        let mut orig = orig_implies.get();
+        orig.sort();
         let dirty = title_input.get() != orig_title.get()
             || use_color.get() != orig_use_color.get()
-            || (use_color.get() && color_input.get() != orig_color.get());
+            || (use_color.get() && color_input.get() != orig_color.get())
+            || cur_implies != orig;
         state.has_unsaved_changes.set(dirty);
     });
 
@@ -57,27 +64,25 @@ pub fn TagDetail() -> impl IntoView {
             orig_use_color.set(false);
         }
         orig_title.set(tag.title().to_string());
+        let implies = tag.implies().to_vec();
+        implies_input.set(implies.clone());
+        orig_implies.set(implies);
     };
 
-    // Fetch tag history on mount — show cached data first, then refresh from server.
-    // Also re-trigger when connection status changes so that history is fetched
-    // after the client connects on page reload.
+    // Reset editing state when the selected tag changes.
     Effect::new(move |_| {
         let tag_id = match state.selected_card.get() {
             Some(id) => id,
             None => return,
         };
-        let _ = state.connection_status.get(); // re-trigger on connect
-        // Only fetch if this UUID is actually a tag
+        // Only run if this UUID is actually a tag
         if !state.tags.get_untracked().iter().any(|t| t.id() == tag_id) {
             return;
         }
 
         // Only reset UI state when the selected tag changes,
-        // not on every connection status transition.
+        // not on every re-render with the same tag.
         if prev_tag.get_untracked() != Some(tag_id) {
-            error_msg.set(None);
-            expanded.set(None);
             editing.set(false);
             state.has_unsaved_changes.set(false);
             confirm_delete.set(0);
@@ -87,35 +92,6 @@ pub fn TagDetail() -> impl IntoView {
             }
             prev_tag.set(Some(tag_id));
         }
-
-        // Load from cache immediately
-        let cached = storage::get_cached_tag_history(tag_id);
-        if !cached.is_empty() {
-            versions.set(cached);
-            loading.set(false);
-        } else {
-            loading.set(true);
-        }
-
-        // Fetch fresh data from server in background
-        leptos::task::spawn_local(async move {
-            if let Some(client) = get_client() {
-                match client.get_tag_history(tag_id).await {
-                    Ok(mut history) => {
-                        history.sort_by(|a, b| b.count().cmp(&a.count()));
-                        versions.set(history.clone());
-                        storage::update_cached_tag_history(tag_id, history);
-                        storage::save_history_cache().await;
-                    }
-                    Err(e) => {
-                        if versions.get_untracked().is_empty() {
-                            error_msg.set(Some(format!("Failed to load history: {e}")));
-                        }
-                    }
-                }
-            }
-            loading.set(false);
-        });
     });
 
     let on_close = move |_| {
@@ -130,12 +106,12 @@ pub fn TagDetail() -> impl IntoView {
     };
 
     let start_editing = move || {
-        if let Some(tag_id) = state.selected_card.get_untracked() {
-            if let Some(tag) = state.tags.get_untracked().iter().find(|t| t.id() == tag_id) {
-                init_inputs(tag);
-                confirm_delete.set(0);
-                editing.set(true);
-            }
+        if let Some(tag_id) = state.selected_card.get_untracked()
+            && let Some(tag) = state.tags.get_untracked().iter().find(|t| t.id() == tag_id)
+        {
+            init_inputs(tag);
+            confirm_delete.set(0);
+            editing.set(true);
         }
     };
 
@@ -147,6 +123,129 @@ pub fn TagDetail() -> impl IntoView {
         state.has_unsaved_changes.set(false);
     };
 
+    // Apply a new tag version + any required card updates via `push_batch`,
+    // then refresh local state on success. Shared by the "no affected cards"
+    // fast path and the "user confirmed the update" path.
+    //
+    // Rebuilds the tag + affected card versions from the freshest local
+    // state inside the async task so stale-base-version races with
+    // auto-sync are avoided.
+    let commit_tag_update = move |title: String,
+                                  color: Option<rgb::RGB8>,
+                                  implies: Vec<Uuid>,
+                                  affected: Vec<(Uuid, Vec<Uuid>)>| {
+        let state = state;
+        leptos::task::spawn_local(async move {
+            let Some(client) = get_client() else {
+                show_error_toast(state, "Can't edit tags while offline", 3000);
+                editing.set(true);
+                return;
+            };
+
+            let tag_id = match state.selected_card.get_untracked() {
+                Some(id) => id,
+                None => return,
+            };
+
+            // Re-fetch the tag from the freshest local state to build on
+            // the latest version and avoid hash-chain breaks.
+            let tag = match state
+                .tags
+                .get_untracked()
+                .into_iter()
+                .find(|t| t.id() == tag_id)
+            {
+                Some(t) => t,
+                None => return,
+            };
+            let new_tag = tag.next_with_implies(title, color, implies, Utc::now());
+
+            // Build the affected card updates from the freshest snapshot.
+            let current_cards = state.cards.get_untracked();
+            let mut updated_cards: Vec<Card> = Vec::with_capacity(affected.len());
+            for (card_id, missing) in &affected {
+                let Some(card) = current_cards.iter().find(|c| c.id() == *card_id) else {
+                    continue;
+                };
+                let mut new_tags = card.tags().to_vec();
+                for m in missing {
+                    if !new_tags.contains(m) {
+                        new_tags.push(*m);
+                    }
+                }
+                let next = card.next(
+                    card.content().to_string(),
+                    card.priority(),
+                    new_tags,
+                    card.blazed(),
+                    Utc::now(),
+                    card.due_date(),
+                );
+                updated_cards.push(next);
+            }
+
+            let mut items: Vec<PushItem> = updated_cards
+                .iter()
+                .cloned()
+                .map(|c| PushItem::Cards(vec![c]))
+                .collect();
+            items.push(PushItem::Tags(vec![new_tag.clone()]));
+
+            match client.push_batch(items).await {
+                Ok(_) => {}
+                Err(ClientError::ConnectionLost) => {
+                    show_error_toast(state, "Can't edit tags while offline", 3000);
+                    editing.set(true);
+                    return;
+                }
+                Err(e) => {
+                    tracing::error!(%e, "Failed to save tag");
+                    show_error_toast(state, &format!("Failed to save tag: {e}"), 3000);
+                    editing.set(true);
+                    return;
+                }
+            }
+
+            // Success: update local state and exit editing mode.
+            editing.set(false);
+            state.has_unsaved_changes.set(false);
+            for card in updated_cards {
+                state.upsert_card(card);
+            }
+            state.tags.update(|tags| {
+                if let Some(t) = tags.iter_mut().find(|t| t.id() == tag_id) {
+                    *t = new_tag.clone();
+                }
+            });
+        });
+    };
+
+    // Reactive preview of cards that would need updating under the
+    // current implies edits — recomputes whenever implies_input changes.
+    let affected_preview: Memo<Vec<(Uuid, Vec<Uuid>)>> = Memo::new(move |_| {
+        if !editing.get() {
+            return Vec::new();
+        }
+        let tag_id = match state.selected_card.get() {
+            Some(id) => id,
+            None => return Vec::new(),
+        };
+        let current_tags = state.tags.get();
+        let mut new_implies = implies_input.get();
+        new_implies.sort();
+        new_implies.dedup();
+
+        let mut next_graph = TagGraph::from_tags(&current_tags);
+        next_graph.upsert(tag_id, new_implies);
+
+        if next_graph.detect_cycle().is_some() {
+            return Vec::new();
+        }
+
+        let current_cards = state.cards.get();
+        affected_cards_for_change(&next_graph, &current_cards)
+    });
+
     let save_changes = move || {
         let tag_id = match state.selected_card.get_untracked() {
             Some(id) => id,
@@ -157,67 +256,49 @@ pub fn TagDetail() -> impl IntoView {
             return;
         }
         let new_color = if use_color.get_untracked() {
-            let hex = color_input.get_untracked();
-            let hex = hex.trim_start_matches('#');
-            if hex.len() == 6 {
-                match (
-                    u8::from_str_radix(&hex[0..2], 16),
-                    u8::from_str_radix(&hex[2..4], 16),
-                    u8::from_str_radix(&hex[4..6], 16),
-                ) {
-                    (Ok(r), Ok(g), Ok(b)) => Some(RGB8::new(r, g, b)),
-                    _ => None,
-                }
-            } else {
-                None
-            }
+            parse_hex_color(&color_input.get_untracked())
         } else {
             None
         };
-        let tag = state
-            .tags
-            .get_untracked()
-            .into_iter()
-            .find(|t| t.id() == tag_id);
-        let tag = match tag {
-            Some(t) => t,
-            None => return,
-        };
-        let updated = tag.next(new_title, new_color, Utc::now());
-        editing.set(false);
-        state.has_unsaved_changes.set(false);
-        let state = state;
-        leptos::task::spawn_local(async move {
-            if let Some(client) = get_client() {
-                if let Err(e) = client.push_tag(updated.clone()).await {
-                    tracing::error!(%e, "Failed to save tag");
-                    return;
-                }
-                state.tags.update(|tags| {
-                    if let Some(t) = tags.iter_mut().find(|t| t.id() == tag_id) {
-                        *t = updated.clone();
-                    }
-                });
-                versions.update(|v| v.insert(0, updated));
-            }
-        });
+        let mut new_implies = implies_input.get_untracked();
+        new_implies.sort();
+        new_implies.dedup();
+
+        // Local cycle check before sending anything to the server — this
+        // gives immediate feedback without a round-trip.
+        let current_tags = state.tags.get_untracked();
+        let mut next_graph = TagGraph::from_tags(&current_tags);
+        next_graph.upsert(tag_id, new_implies.clone());
+        if next_graph.detect_cycle().is_some() {
+            show_error_toast(
+                state,
+                "Tag implication cycle detected — please fix before saving",
+                3500,
+            );
+            return;
+        }
+
+        // Compute which cards need new versions under the new graph.
+        let current_cards = state.cards.get_untracked();
+        let affected = affected_cards_for_change(&next_graph, &current_cards);
+
+        commit_tag_update(new_title, new_color, new_implies, affected);
     };
 
     let deleting = RwSignal::new(false);
 
-    let on_delete = move |_| {
+    let do_delete = move || {
         let tag_id = match state.selected_card.get_untracked() {
             Some(id) => id,
             None => return,
         };
         deleting.set(true);
-        error_msg.set(None);
         let state = state;
         leptos::task::spawn_local(async move {
             let client = match get_client() {
                 Some(c) => c,
                 None => {
-                    error_msg.set(Some("Not connected to server".to_string()));
+                    show_error_toast(state, "Can't delete tags while offline", 3000);
                     deleting.set(false);
                     return;
                 }
@@ -249,12 +330,21 @@ pub fn TagDetail() -> impl IntoView {
                 .collect();
             items.push(PushItem::DeleteTag { id: tag_id });
 
-            if let Err(e) = client.push_batch(items).await {
-                tracing::error!(%e, "Failed to delete tag");
-                error_msg.set(Some(format!("Delete failed: {e}")));
-                confirm_delete.set(0);
-                deleting.set(false);
-                return;
+            match client.push_batch(items).await {
+                Ok(_) => {}
+                Err(ClientError::ConnectionLost) => {
+                    show_error_toast(state, "Can't delete tags while offline", 3000);
+                    confirm_delete.set(0);
+                    deleting.set(false);
+                    return;
+                }
+                Err(e) => {
+                    tracing::error!(%e, "Failed to delete tag");
+                    show_error_toast(state, &format!("Failed to delete tag: {e}"), 3000);
+                    confirm_delete.set(0);
+                    deleting.set(false);
+                    return;
+                }
             }
 
             // Update local state for affected cards
@@ -269,10 +359,6 @@ pub fn TagDetail() -> impl IntoView {
             deleting.set(false);
             sync_query_params(&state);
         });
-    };
-
-    let on_toggle_expand = move |count: i64| {
-        toggle_expanded(expanded, count);
     };
 
     view! {
@@ -331,42 +417,14 @@ pub fn TagDetail() -> impl IntoView {
         }}
 
         // Color section
+        <div class="detail-section">
         {move || {
             let tag_id = state.selected_card.get()?;
             let editing_now = editing.get();
 
             if editing_now {
                 Some(view! {
-                    <div class="tag-color-section">
-                        <span class="tag-color-label">"Color"</span>
-                    </div>
-                    <div class="tag-color-row">
-                        <input
-                            class="tag-color-input"
-                            type="color"
-                            prop:value=move || color_input.get()
-                            on:input=move |ev| {
-                                color_input.set(event_target_value(&ev));
-                                use_color.set(true);
-                            }
-                        />
-                        <span
-                            class=move || if use_color.get() { "tag-color-preview" } else { "tag-color-preview tag-color-placeholder" }
-                            style=move || format!("background: {};", color_input.get())
-                        ></span>
-                        {move || use_color.get().then(|| {
-                            let hex = color_input.get();
-                            view! {
-                                <span class="tag-color-hex">{hex}</span>
-                            }
-                        })}
-                        {move || use_color.get().then(|| view! {
-                            <button class="btn-cancel tag-color-btn" on:click=move |_| {
-                                use_color.set(false);
-                                color_input.set(String::from("#808080"));
-                            }>"Clear"</button>
-                        })}
-                    </div>
+                    <TagColorPicker color_input=color_input use_color=use_color />
                 }.into_any())
             } else {
                 let tag = state.tags.get().into_iter().find(|t| t.id() == tag_id)?;
@@ -392,13 +450,271 @@ pub fn TagDetail() -> impl IntoView {
                 }.into_any())
             }
         }}
+        </div>
 
-        // Error message
-        {move || error_msg.get().map(|msg| view! {
-            <div class="error">{msg}</div>
-        })}
+        // Implies section — direct implies only (editable in edit mode).
+        <div class="detail-section">
+        {move || {
+            let tag_id = state.selected_card.get()?;
+            let editing_now = editing.get();
+            let all_tags = state.tags.get();
+
+            if editing_now {
+                let current = implies_input.get();
+                let prev_graph = TagGraph::from_tags(&all_tags);
+                let mut candidates: Vec<(Uuid, String)> = all_tags
+                    .iter()
+                    .filter(|t| t.id() != tag_id && !current.contains(&t.id()))
+                    .filter(|t| {
+                        let reachable_from_candidate = prev_graph.closure_of(&[t.id()]);
+                        !reachable_from_candidate.contains(&tag_id)
+                    })
+                    .map(|t| (t.id(), t.title().to_string()))
+                    .collect();
+                candidates.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+
+                let on_add = move |ev: web_sys::Event| {
+                    let val = event_target_value(&ev);
+                    if val.is_empty() {
+                        return;
+                    }
+                    if let Ok(new_id) = val.parse::<Uuid>() {
+                        implies_input.update(|v| {
+                            if !v.contains(&new_id) {
+                                v.push(new_id);
+                            }
+                        });
+                    }
+                    // Reset dropdown back to placeholder.
+                    if let Some(select) = ev.target().and_then(|t| t.dyn_ref::<web_sys::HtmlSelectElement>().cloned()) {
+                        select.set_selected_index(0);
+                    }
+                };
+
+                Some(view! {
+                    <div class="tag-color-section">
+                        <span class="tag-color-label">"\u{2192} Implies"</span>
+                    </div>
+                    <div class="tag-implies-row">
+                        {move || {
+                            let all = all_tags.clone();
+                            let mut items: Vec<_> = implies_input.get().into_iter().map(|imp_id| {
+                                let title = all.iter()
+                                    .find(|t| t.id() == imp_id)
+                                    .map(|t| t.title().to_string())
+                                    .unwrap_or_else(|| "unknown".to_string());
+                                (imp_id, title)
+                            }).collect();
+                            items.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+                            items.into_iter().map(|(imp_id, title)| {
+                                let color = all.iter()
+                                    .find(|t| t.id() == imp_id)
+                                    .and_then(|t| t.color());
+                                let style = tag_chip_style(&color);
+                                let remove = move |_| {
+                                    implies_input.update(|v| v.retain(|x| *x != imp_id));
+                                };
+                                view! {
+                                    <span class="tag-chip" style=style>
+                                        {title}
+                                        <button class="chip-remove" on:click=remove>"x"</button>
+                                    </span>
+                                }
+                            }).collect::<Vec<_>>()
+                        }}
+                    </div>
+                    <div class="tag-implies-add">
+                        <select class="settings-select" on:change=on_add>
+                            <option value="">"+ Add implies\u{2026}"</option>
+                            {candidates.into_iter().map(|(id, title)| {
+                                let val = id.to_string();
+                                view! { <option value=val>{title}</option> }
+                            }).collect::<Vec<_>>()}
+                        </select>
+                    </div>
+                }.into_any())
+            } else {
+                // Read mode: direct implies only.
+                let tag = all_tags.iter().find(|t| t.id() == tag_id)?;
+                let mut direct: Vec<_> = tag.implies().iter().filter_map(|id| {
+                    let t = all_tags.iter().find(|t| t.id() == *id)?;
+                    Some((*id, t.title().to_string(), t.color()))
+                }).collect();
+                direct.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+                let chips: Vec<_> = direct.into_iter().map(|(id, title, color)| {
+                    let style = tag_chip_style(&color);
+                    let on_click = move |_| {
+                        state.selected_card.set(Some(id));
+                        state.creating_new_tag.set(false);
+                        state.editing.set(false);
+                        state.creating_new.set(false);
+                        sync_query_params(&state);
+                    };
+                    view! { <span class="tag-chip detail-tag-chip-link" style=style on:click=on_click>{title}</span> }
+                }).collect();
+                Some(view! {
+                    <div class="tag-color-section">
+                        <span class="tag-color-label">"\u{2192} Implies"</span>
+                    </div>
+                    <div class="tag-implies-row detail-tag-chips">
+                        {if chips.is_empty() {
+                            view! { <span class="tag-color-hex due-not-set">"None"</span> }.into_any()
+                        } else {
+                            chips.into_any()
+                        }}
+                    </div>
+                }.into_any())
+            }
+        }}
+        </div>
+
+        // Also-implies section — transitive (inherited) implies,
+        // read-only, visible in both read and edit mode.
+        <div class="detail-section">
+        {move || {
+            let tag_id = state.selected_card.get()?;
+            let all_tags = state.tags.get();
+            let tag = all_tags.iter().find(|t| t.id() == tag_id)?;
+            let direct_ids: std::collections::HashSet<Uuid> =
+                tag.implies().iter().copied().collect();
+            let graph = TagGraph::from_tags(&all_tags);
+            let full_closure = graph.closure_of(&[tag_id]);
+            let mut transitive: Vec<_> = full_closure
+                .iter()
+                .filter(|id| **id != tag_id && !direct_ids.contains(id))
+                .filter_map(|id| {
+                    let t = all_tags.iter().find(|t| t.id() == *id)?;
+                    Some((*id, t.title().to_string(), t.color()))
+                })
+                .collect();
+            transitive.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+            let editing_now = editing.get();
+            let chips: Vec<_> = transitive.into_iter().map(|(id, title, color)| {
+                let style = tag_chip_style(&color);
+                let on_click = move |_| {
+                    if editing.get_untracked() {
+                        return;
+                    }
+                    state.selected_card.set(Some(id));
+                    state.creating_new_tag.set(false);
+                    state.editing.set(false);
+                    state.creating_new.set(false);
+                    sync_query_params(&state);
+                };
+                view! { <span class="tag-chip detail-tag-chip-link" style=style on:click=on_click>{title}</span> }
+            }).collect();
+            let container_class = if editing_now { "tag-implies-row" } else { "tag-implies-row detail-tag-chips" };
+            Some(view! {
+                <div class="tag-color-section">
+                    <span class="tag-color-label">"\u{2192} Transitively implies"</span>
+                </div>
+                <div class=container_class>
+                    {if chips.is_empty() {
+                        view! { <span class="tag-color-hex due-not-set">"None"</span> }.into_any()
+                    } else {
+                        chips.into_any()
+                    }}
+                </div>
+            })
+        }}
+        </div>
+
+        // Implied-by section — read-only, visible in both modes.
+        <div class="detail-section">
+        {move || {
+            let tag_id = state.selected_card.get()?;
+            let all_tags = state.tags.get();
+            let graph = TagGraph::from_tags(&all_tags);
+            let mut parents: Vec<_> = all_tags
+                .iter()
+                .filter(|t| t.id() != tag_id && graph.closure_of(&[t.id()]).contains(&tag_id))
+                .map(|t| (t.id(), t.title().to_string(), t.color()))
+                .collect();
+            parents.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+            let editing_now = editing.get();
+            let chips: Vec<_> = parents.into_iter().map(|(id, title, color)| {
+                let style = tag_chip_style(&color);
+                let on_click = move |_| {
+                    if editing.get_untracked() {
+                        return;
+                    }
+                    state.selected_card.set(Some(id));
+                    state.creating_new_tag.set(false);
+                    state.editing.set(false);
+                    state.creating_new.set(false);
+                    sync_query_params(&state);
+                };
+                view! { <span class="tag-chip detail-tag-chip-link" style=style on:click=on_click>{title}</span> }
+            }).collect();
+            let container_class = if editing_now { "tag-implies-row" } else { "tag-implies-row detail-tag-chips" };
+            Some(view! {
+                <div class="tag-color-section">
+                    <span class="tag-color-label">"\u{2190} Implied by"</span>
+                </div>
+                <div class=container_class>
+                    {if chips.is_empty() {
+                        view! { <span class="tag-color-hex due-not-set">"None"</span> }.into_any()
+                    } else {
+                        chips.into_any()
+                    }}
+                </div>
+            })
+        }}
+        </div>
+
+        // Inline affected-cards preview (shown while editing implies).
+        {move || {
+            if !editing.get() {
+                return None;
+            }
+            let affected = affected_preview.get();
+            if affected.is_empty() {
+                return None;
+            }
+            let cards = state.cards.get();
+            let all_tags = state.tags.get();
+            let count = affected.len();
+            let items: Vec<_> = affected.into_iter().filter_map(|(card_id, missing)| {
+                let card = cards.iter().find(|c| c.id() == card_id)?;
+                let preview = blazelist_client_lib::display::card_preview(card.content(), 40)
+                    .unwrap_or_else(|| "Untitled".to_string());
+                let full_title = blazelist_client_lib::display::card_preview(card.content(), 200)
+                    .unwrap_or_else(|| "Untitled".to_string());
+                let tag_chips: Vec<_> = missing.iter().filter_map(|tid| {
+                    let tag = all_tags.iter().find(|t| t.id() == *tid)?;
+                    Some((tag.title().to_string(), tag.color()))
+                }).collect();
+                Some((preview, full_title, tag_chips))
+            }).collect();
+
+            Some(view! {
+                <div class="detail-section">
+                    <div class="tag-color-section">
+                        <span class="tag-color-label affected-label">
+                            {format!("Saving will update {} card{}", count, if count == 1 { "" } else { "s" })}
+                        </span>
+                    </div>
+                    <div class="affected-cards-preview">
+                        {items.into_iter().map(|(preview, full_title, tags)| {
+                            view! {
+                                <div class="affected-card-row">
+                                    <span class="affected-card-title" title=full_title>{preview}</span>
+                                    <span class="affected-card-tags">
+                                        {tags.into_iter().map(|(name, color)| {
+                                            let style = tag_chip_style(&color);
+                                            view! { <span class="tag-chip affected-tag-chip" style=style>{"+"}{name}</span> }
+                                        }).collect::<Vec<_>>()}
+                                    </span>
+                                </div>
+                            }
+                        }).collect::<Vec<_>>()}
+                    </div>
+                </div>
+            })
+        }}
 
         // Actions
+        <div class="detail-section">
         <div class="card-actions">
             <div class="action-row cmd-row">
                 {move || {
@@ -413,48 +729,42 @@ pub fn TagDetail() -> impl IntoView {
                             <span class="confirm-text">"Deleting\u{2026}"</span>
                         }.into_any();
                     }
-                    let step = confirm_delete.get();
-                    if step == 2 {
-                        let tag_id = state.selected_card.get();
-                        let tag_title = tag_id
-                            .and_then(|id| state.tags.get().into_iter().find(|t| t.id() == id))
-                            .map(|t| t.title().to_string())
-                            .unwrap_or_else(|| "Unknown".to_string());
-                        view! {
-                            <div class="confirm-delete-permanent">
-                                <span class="confirm-text-permanent">"This action is permanent and cannot be undone."</span>
-                                <span class="confirm-entity-info">{format!("Tag: {tag_title}")}</span>
-                                <div class="confirm-permanent-buttons">
-                                    <button class="btn-confirm-permanent" on:click=on_delete>"Delete permanently"</button>
-                                    <button class="btn-confirm-no" on:click=move |_| confirm_delete.set(0)>"Cancel"</button>
-                                </div>
-                            </div>
-                        }.into_any()
-                    } else if step == 1 {
-                        view! {
-                            <div class="confirm-delete">
-                                <span class="confirm-text">"Delete tag?"</span>
-                                <button class="btn-confirm-yes" on:click=move |_| confirm_delete.set(2)>"Yes"</button>
-                                <button class="btn-confirm-no" on:click=move |_| confirm_delete.set(0)>"No"</button>
-                            </div>
-                        }.into_any()
-                    } else {
-                        view! {
-                            <button class="btn-save" on:click=move |_| start_editing()>"Edit"</button>
-                            <button class="btn-delete" on:click=move |_| confirm_delete.set(1)>"Delete"</button>
-                        }.into_any()
+                    if confirm_delete.get() > 0 {
+                        let tag_title = move || {
+                            let tag_id = state.selected_card.get_untracked();
+                            let title = tag_id
+                                .and_then(|id| state.tags.get_untracked().into_iter().find(|t| t.id() == id))
+                                .map(|t| t.title().to_string())
+                                .unwrap_or_else(|| "Unknown".to_string());
+                            format!("Tag: {title}")
+                        };
+                        return view! {
+                            <ConfirmDeletePrompt
+                                step=confirm_delete
+                                first_prompt=|| "Delete tag?".to_string()
+                                entity_label=tag_title
+                                on_confirm=do_delete
+                                on_cancel=move || confirm_delete.set(0)
+                            />
+                        }.into_any();
                     }
+                    view! {
+                        <button class="btn-save" on:click=move |_| start_editing()>"Edit"</button>
+                        <button class="btn-delete" on:click=move |_| confirm_delete.set(1)>"Delete"</button>
+                    }.into_any()
                 }}
             </div>
         </div>
+        </div>
 
         // Metadata
+        <div class="detail-section">
         {move || {
             let tag_id = state.selected_card.get()?;
             let tag = state.tags.get().into_iter().find(|t| t.id() == tag_id)?;
             let id_str = tag_id.to_string();
-            let created = tag.created_at().format("%Y-%m-%d %H:%M:%S UTC").to_string();
-            let modified = tag.modified_at().format("%Y-%m-%d %H:%M:%S UTC").to_string();
+            let created = tag.created_at();
+            let modified = tag.modified_at();
             let count = tag.count().to_string();
             Some(view! {
                 <div class="detail-meta">
@@ -468,118 +778,21 @@ pub fn TagDetail() -> impl IntoView {
                     </div>
                     <div class="meta-row">
                         <span class="meta-label">"Created"</span>
-                        <span class="meta-value">{created}</span>
+                        <Timestamp datetime=created class="meta-value" />
                     </div>
                     <div class="meta-row">
                         <span class="meta-label">"Modified"</span>
-                        <span class="meta-value">{modified}</span>
+                        <Timestamp datetime=modified class="meta-value" />
                     </div>
                 </div>
             })
         }}
+        </div>
 
         // Version history
-        <div class="tag-history-section">
-            <span class="tag-history-label">"History"</span>
-            {move || {
-                if loading.get() {
-                    return view! {
-                        <div class="version-list">
-                            <p class="version-loading">"Loading history\u{2026}"</p>
-                        </div>
-                    }.into_any();
-                }
-                if let Some(err) = error_msg.get() {
-                    return view! {
-                        <div class="version-list">
-                            <p class="error">{err}</p>
-                        </div>
-                    }.into_any();
-                }
-                let items = versions.get();
-                if items.is_empty() {
-                    return view! {
-                        <div class="version-list">
-                            <p class="version-loading">"No history available."</p>
-                        </div>
-                    }.into_any();
-                }
-                let expanded_count = expanded.get();
-                let total = items.len();
-                let num_width = total.max(1).ilog10() as usize + 1;
-                let max_count = items.first().map(|v| i64::from(v.count()));
-                view! {
-                    <div class="version-list">
-                        {items.into_iter().map(|v| {
-                            let count = i64::from(v.count());
-                            let number = format!("{:0>width$}", count, width = num_width);
-                            let time_str = format_relative_time(&v.modified_at());
-                            let title = v.title().to_string();
-                            let is_current = max_count == Some(count);
-                            let is_expanded = expanded_count == Some(count);
-                            let item_class = if is_expanded {
-                                "version-item expanded"
-                            } else {
-                                "version-item"
-                            };
-                            let expanded_view = if is_expanded {
-                                let created = v.created_at().format("%Y-%m-%d %H:%M:%S UTC").to_string();
-                                let modified = v.modified_at().format("%Y-%m-%d %H:%M:%S UTC").to_string();
-                                let version_color = v.color().map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b));
-                                Some(view! {
-                                    <div class="version-expanded">
-                                        <div class="version-detail-meta">
-                                            <div class="meta-row">
-                                                <span class="meta-label">"Title"</span>
-                                                <span class="meta-value">{v.title().to_string()}</span>
-                                            </div>
-                                            <div class="meta-row">
-                                                <span class="meta-label">"Color"</span>
-                                                {match version_color {
-                                                    Some(c) => {
-                                                        let style = format!("background: {c};");
-                                                        let hex = c.clone();
-                                                        view! {
-                                                            <span class="tag-color-preview" style=style></span>
-                                                            <span class="meta-value">{hex}</span>
-                                                        }.into_any()
-                                                    }
-                                                    None => view! {
-                                                        <span class="meta-value due-not-set">"None"</span>
-                                                    }.into_any(),
-                                                }}
-                                            </div>
-                                            <div class="meta-row">
-                                                <span class="meta-label">"Modified"</span>
-                                                <span class="meta-value">{modified}</span>
-                                            </div>
-                                            <div class="meta-row">
-                                                <span class="meta-label">"Created"</span>
-                                                <span class="meta-value">{created}</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                })
-                            } else {
-                                None
-                            };
-                            view! {
-                                <div class=item_class>
-                                    <div class="version-row" on:click=move |_| on_toggle_expand(count)>
-                                        <span class="version-number">{number.clone()}</span>
-                                        <span class="version-preview-text">{title}</span>
-                                        {is_current.then(|| view! {
-                                            <span class="version-current-badge">"current"</span>
-                                        })}
-                                        <span class="version-time">{time_str.clone()}</span>
-                                    </div>
-                                    {expanded_view}
-                                </div>
-                            }
-                        }).collect::<Vec<_>>()}
-                    </div>
-                }.into_any()
-            }}
-        </div>
+        {move || {
+            let tag_id = state.selected_card.get()?;
+            Some(view! { <TagVersionHistory tag_id=tag_id /> })
+        }}
     }
 }

@@ -9,13 +9,12 @@ use crate::{VersionCheck, VersionResult};
 /// Perform the client side of the version handshake.
 ///
 /// Sends a [`VersionCheck`] with the given `client_version`, reads the
-/// server's [`VersionResult`], and returns `Ok(())` if the versions are
-/// compatible.
+/// server's [`VersionResult`], and returns the server's version on success.
 pub async fn client_handshake<S, R>(
     send: &mut S,
     recv: &mut R,
     client_version: &Version,
-) -> Result<(), HandshakeError>
+) -> Result<Version, HandshakeError>
 where
     S: AsyncWriteExt + Unpin,
     R: AsyncReadExt + Unpin,
@@ -26,7 +25,7 @@ where
     write_message(send, &check).await?;
     let result: VersionResult = read_message(recv).await?;
     match result {
-        VersionResult::Ok => Ok(()),
+        VersionResult::Ok { server_version } => Ok(server_version),
         VersionResult::Mismatch { server_version } => Err(HandshakeError::VersionMismatch {
             local: client_version.clone(),
             remote: server_version,
@@ -50,14 +49,16 @@ where
 {
     let check: VersionCheck = read_message(recv).await?;
     let result = if is_compatible(&check.version, server_version) {
-        VersionResult::Ok
+        VersionResult::Ok {
+            server_version: server_version.clone(),
+        }
     } else {
         VersionResult::Mismatch {
             server_version: server_version.clone(),
         }
     };
     write_message(send, &result).await?;
-    if !matches!(result, VersionResult::Ok) {
+    if !matches!(result, VersionResult::Ok { .. }) {
         return Err(HandshakeError::VersionMismatch {
             local: server_version.clone(),
             remote: check.version,

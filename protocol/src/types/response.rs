@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use crate::{Card, DeletedEntity, RootState, Tag};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use super::change_set::ChangeSet;
 use super::protocol_error::ProtocolError;
@@ -52,6 +55,12 @@ pub enum Response {
 
     /// Full sequence history.
     SequenceHistory(Vec<SequenceHistoryEntry>),
+
+    /// Bulk card version histories keyed by card UUID.
+    AllCardHistories(HashMap<Uuid, Vec<Card>>),
+
+    /// Bulk tag version histories keyed by tag UUID.
+    AllTagHistories(HashMap<Uuid, Vec<Tag>>),
 }
 
 /// Generate a `Response` extraction method that unwraps a specific variant
@@ -123,5 +132,13 @@ impl Response {
     extract!(
         /// Extract the sequence history from this response.
         into_sequence_history -> SequenceHistory => Vec<SequenceHistoryEntry>
+    );
+    extract!(
+        /// Extract bulk card version histories from this response.
+        into_all_card_histories -> AllCardHistories => HashMap<Uuid, Vec<Card>>
+    );
+    extract!(
+        /// Extract bulk tag version histories from this response.
+        into_all_tag_histories -> AllTagHistories => HashMap<Uuid, Vec<Tag>>
     );
 }

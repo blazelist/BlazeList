@@ -1,6 +1,7 @@
 //! SQLite-backed storage implementation.
 
 mod helpers;
+mod implications;
 mod root;
 mod schema;
 mod write;
@@ -13,7 +14,7 @@ use blazelist_protocol::{
     Card, CardFilter, ChangeSet, DateTime, DeletedEntity, Entity, NonNegativeI64, PushItem,
     RootState, SequenceHistoryEntry, SequenceOperation, SequenceOperationKind, Tag,
 };
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, params};
 use uuid::Uuid;
 
 use crate::storage::error::{BatchError, PushError, PushOpError, StorageError};
@@ -98,6 +99,10 @@ impl Storage for SqliteStorage {
         let mut conn = self.writer.lock().unwrap();
         let tx = conn.transaction()?;
         Self::push_card_versions_inner(&tx, versions)?;
+        // Funnel through the same tag-implication validator that batch
+        // pushes use, so single-card pushes can't bypass the invariant.
+        let synthetic = [PushItem::Cards(versions.to_vec())];
+        Self::validate_batch_implications(&tx, &synthetic)?;
         let seq = Self::recompute_root_for_ids(&tx, &[card_id])?;
         Self::stamp_card_sequence(&tx, card_id, seq)?;
         tx.commit()?;
@@ -171,6 +176,11 @@ impl Storage for SqliteStorage {
         let mut conn = self.writer.lock().unwrap();
         let tx = conn.transaction()?;
         Self::push_tag_versions_inner(&tx, versions)?;
+        // Funnel through the same tag-implication validator that batch
+        // pushes use. For tag-only pushes this catches both new cycles
+        // and retroactive card violations that other clients missed.
+        let synthetic = [PushItem::Tags(versions.to_vec())];
+        Self::validate_batch_implications(&tx, &synthetic)?;
         let seq = Self::recompute_root_for_ids(&tx, &[tag_id])?;
         Self::stamp_tag_sequence(&tx, tag_id, seq)?;
         tx.commit()?;
@@ -374,6 +384,13 @@ impl Storage for SqliteStorage {
             result.map_err(|error| BatchError { index, error })?;
         }
 
+        // Implication invariant check over the full post-batch state.
+        // Runs after every per-item write has succeeded but before
+        // `recompute_root`, so a violation rolls back the whole
+        // transaction and the root stays unchanged.
+        Self::validate_batch_implications(&tx, items)
+            .map_err(|error| BatchError { index: 0, error })?;
+
         let all_affected_ids: Vec<Uuid> = affected_card_ids
             .iter()
             .chain(affected_tag_ids.iter())
@@ -527,5 +544,105 @@ impl Storage for SqliteStorage {
             .collect();
 
         Ok(entries)
+    }
+
+    fn get_all_card_histories(
+        &self,
+        limit_per_card: Option<u32>,
+        card_ids: Option<&[Uuid]>,
+    ) -> Result<HashMap<Uuid, Vec<Card>>, StorageError> {
+        let conn = self.reader.lock().unwrap();
+
+        // Build SQL depending on whether we're filtering by card_ids.
+        let rows: Vec<Card> = if let Some(ids) = card_ids {
+            if ids.is_empty() {
+                return Ok(HashMap::new());
+            }
+            let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
+            let sql = format!(
+                "SELECT {CARD_VERSION_COLS} FROM card_versions \
+                 WHERE card_id IN ({}) ORDER BY card_id, count ASC",
+                placeholders.join(", ")
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let params: Vec<&[u8]> = ids.iter().map(|id| id.as_bytes().as_slice()).collect();
+            let params_ref: Vec<&dyn rusqlite::types::ToSql> = params
+                .iter()
+                .map(|b| b as &dyn rusqlite::types::ToSql)
+                .collect();
+            stmt.query_map(params_ref.as_slice(), Self::card_from_row)?
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            let sql = format!(
+                "SELECT {CARD_VERSION_COLS} FROM card_versions \
+                 ORDER BY card_id, count ASC"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            stmt.query_map([], Self::card_from_row)?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+
+        // Group by card ID, applying the per-card limit.
+        let mut result: HashMap<Uuid, Vec<Card>> = HashMap::new();
+        for card in rows {
+            let entry = result.entry(card.id()).or_default();
+            if let Some(limit) = limit_per_card
+                && entry.len() >= limit as usize
+            {
+                continue;
+            }
+            entry.push(card);
+        }
+
+        Ok(result)
+    }
+
+    fn get_all_tag_histories(
+        &self,
+        limit_per_tag: Option<u32>,
+        tag_ids: Option<&[Uuid]>,
+    ) -> Result<HashMap<Uuid, Vec<Tag>>, StorageError> {
+        let conn = self.reader.lock().unwrap();
+
+        let rows: Vec<Tag> = if let Some(ids) = tag_ids {
+            if ids.is_empty() {
+                return Ok(HashMap::new());
+            }
+            let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
+            let sql = format!(
+                "SELECT {TAG_VERSION_COLS} FROM tag_versions \
+                 WHERE tag_id IN ({}) ORDER BY tag_id, count ASC",
+                placeholders.join(", ")
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let params: Vec<&[u8]> = ids.iter().map(|id| id.as_bytes().as_slice()).collect();
+            let params_ref: Vec<&dyn rusqlite::types::ToSql> = params
+                .iter()
+                .map(|b| b as &dyn rusqlite::types::ToSql)
+                .collect();
+            stmt.query_map(params_ref.as_slice(), Self::tag_from_row)?
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            let sql = format!(
+                "SELECT {TAG_VERSION_COLS} FROM tag_versions \
+                 ORDER BY tag_id, count ASC"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            stmt.query_map([], Self::tag_from_row)?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+
+        let mut result: HashMap<Uuid, Vec<Tag>> = HashMap::new();
+        for tag in rows {
+            let entry = result.entry(tag.id()).or_default();
+            if let Some(limit) = limit_per_tag
+                && entry.len() >= limit as usize
+            {
+                continue;
+            }
+            entry.push(tag);
+        }
+
+        Ok(result)
     }
 }

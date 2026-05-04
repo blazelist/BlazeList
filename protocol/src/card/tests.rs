@@ -42,14 +42,7 @@ fn first_verifies() {
 #[test]
 fn next_chains_correctly() {
     let c1 = sample_card();
-    let c2 = c1.next(
-        "Updated content".into(),
-        100,
-        vec![],
-        false,
-        ts(2000),
-        None,
-    );
+    let c2 = c1.next("Updated content".into(), 100, vec![], false, ts(2000), None);
 
     expect!["fc58274bbf070dbc559b6ca207d7e6267d4296dc108f3c9effc00df21eee18b2"]
         .assert_eq(&c1.hash().to_string());
@@ -63,24 +56,8 @@ fn next_chains_correctly() {
 
 #[test]
 fn different_content_produces_different_hash() {
-    let c1 = Card::first(
-        ID,
-        "Content A".into(),
-        100,
-        vec![],
-        false,
-        ts(1000),
-        None,
-    );
-    let c2 = Card::first(
-        ID,
-        "Content B".into(),
-        100,
-        vec![],
-        false,
-        ts(1000),
-        None,
-    );
+    let c1 = Card::first(ID, "Content A".into(), 100, vec![], false, ts(1000), None);
+    let c2 = Card::first(ID, "Content B".into(), 100, vec![], false, ts(1000), None);
     assert_ne!(c1.hash(), c2.hash());
 }
 
@@ -181,15 +158,7 @@ fn from_parts_with_tampered_hash_fails() {
 #[test]
 fn due_date_affects_hash() {
     let c1 = Card::first(ID, "C".into(), 100, vec![], false, ts(1000), None);
-    let c2 = Card::first(
-        ID,
-        "C".into(),
-        100,
-        vec![],
-        false,
-        ts(1000),
-        Some(ts(5000)),
-    );
+    let c2 = Card::first(ID, "C".into(), 100, vec![], false, ts(1000), Some(ts(5000)));
     assert_ne!(c1.hash(), c2.hash());
     assert_eq!(c1.due_date(), None);
     assert_eq!(c2.due_date(), Some(ts(5000)));

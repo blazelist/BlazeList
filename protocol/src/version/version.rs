@@ -45,6 +45,10 @@ macro_rules! pkg_version {
 /// **protocol** version, not the application crate's version.
 pub const PROTOCOL_VERSION: Version = crate::pkg_version!();
 
+/// Full version string including pre-release suffix (e.g. "2.2.0-dev").
+/// Use this for display; use [`PROTOCOL_VERSION`] for compatibility checks.
+pub const PROTOCOL_VERSION_STR: &str = env!("CARGO_PKG_VERSION");
+
 /// Returns `true` if two versions are compatible.
 ///
 /// Compatibility requires the same major version (standard semver rules).

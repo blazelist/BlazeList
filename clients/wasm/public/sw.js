@@ -2,34 +2,71 @@
 const CACHE_NAME = 'blazelist-dev';
 const PRECACHE_URLS = ['/', '/index.html'];
 
+// Track whether precache was fully successful (used in activate handler).
+let precacheSucceeded = false;
+
+// Hard per-asset timeout for precache fetches so a hanging network (e.g.
+// half-working mobile signal) can't leave the SW stuck in "installing"
+// forever, which would block `activate` and prevent `clients.claim()`.
+const PRECACHE_TIMEOUT_MS = 15000;
+
+function fetchWithTimeout(url, ms) {
+    return new Promise((resolve, reject) => {
+        const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const timer = setTimeout(() => {
+            if (ctrl) ctrl.abort();
+            reject(new Error(`Timeout after ${ms}ms fetching ${url}`));
+        }, ms);
+        fetch(url, ctrl ? { signal: ctrl.signal, cache: 'reload' } : { cache: 'reload' })
+            .then((r) => { clearTimeout(timer); resolve(r); })
+            .catch((err) => { clearTimeout(timer); reject(err); });
+    });
+}
+
 // ── Install: precache all assets (resilient to partial failures) ─────────────
 self.addEventListener('install', (event) => {
     event.waitUntil(
         caches.open(CACHE_NAME).then((cache) =>
             Promise.allSettled(
                 PRECACHE_URLS.map((url) =>
-                    cache.add(url).catch((err) => {
+                    fetchWithTimeout(url, PRECACHE_TIMEOUT_MS).then((response) => {
+                        if (!response || !response.ok) {
+                            throw new Error(`Bad response ${response && response.status} for ${url}`);
+                        }
+                        return cache.put(url, response);
+                    }).catch((err) => {
                         console.warn(`[SW] Failed to precache ${url}:`, err);
                         throw err;
                     })
                 )
             ).then((results) => {
-                if (results.every((r) => r.status === 'fulfilled')) {
-                    self.skipWaiting();
+                precacheSucceeded = results.every((r) => r.status === 'fulfilled');
+                if (!precacheSucceeded) {
+                    console.warn('[SW] Partial precache — keeping old caches as fallback');
                 }
+                // Always skip waiting so the new SW activates promptly instead
+                // of getting stuck in "waiting" and later activating at an
+                // unexpected time (e.g. when the user reopens the app offline).
+                self.skipWaiting();
             })
         )
     );
 });
 
-// ── Activate: purge stale caches ─────────────────────────────────────────────
+// ── Activate: purge stale caches only when precache was fully successful ─────
 self.addEventListener('activate', (event) => {
     event.waitUntil(
-        caches.keys().then((names) =>
-            Promise.all(
-                names.filter((n) => n !== CACHE_NAME).map((n) => caches.delete(n))
-            )
-        )
+        caches.keys().then((names) => {
+            const stale = names.filter((n) => n !== CACHE_NAME);
+            if (stale.length === 0) return;
+            // Only purge old caches when precache was fully successful.
+            // On partial failure the old caches still contain working assets
+            // that caches.match() can find transparently.
+            if (precacheSucceeded) {
+                return Promise.all(stale.map((n) => caches.delete(n)));
+            }
+            console.warn('[SW] Keeping stale caches because precache was incomplete:', stale);
+        })
     );
     self.clients.claim();
 });
@@ -62,32 +99,72 @@ const OFFLINE_PAGE = `<!DOCTYPE html>
 </body>
 </html>`;
 
-// ── Fetch: cache-first for hashed assets, network-first for everything else ──
+// ── Fetch: cache-first for navigation + hashed assets, network-first otherwise ──
 self.addEventListener('fetch', (event) => {
     const url = new URL(event.request.url);
 
     // Ignore cross-origin requests (e.g. analytics, external APIs).
     if (url.origin !== self.location.origin) return;
 
-    // Navigation requests: network-first, fall back to cached page or offline page.
+    // Navigation requests: cache-first with stale-while-revalidate.
+    //
+    // Previously this was network-first with a catch() fallback to cache.
+    // That looks correct but breaks catastrophically when the network
+    // *hangs* rather than fails: `fetch()` neither resolves nor rejects,
+    // so the `.catch()` never fires and the browser waits forever on the
+    // navigation. Symptom: Android PWA stuck on the system splash screen
+    // (never even reaches the in-HTML "Loading…"), desktop Chrome spins
+    // indefinitely. This happens whenever the BlazeList server is
+    // unreachable but the OS still has a (dead) connection open — common
+    // on mobile with flaky signal, captive portals, VPN transitions, etc.
+    //
+    // Cache-first is safe because:
+    //   - The precache contains `/` and `/index.html` on every install.
+    //   - All asset refs inside the cached HTML are content-hashed, so a
+    //     stale HTML can only reference assets that are still in the
+    //     same cache generation (activate only purges old caches after
+    //     a fully successful precache).
+    //   - The background revalidate fetch keeps the cache fresh when
+    //     online, and a visible update still takes effect on the next
+    //     navigation / reload.
     if (event.request.mode === 'navigate') {
         event.respondWith(
-            fetch(event.request)
-                .then((response) => {
-                    if (response.ok) {
-                        const clone = response.clone();
-                        caches.open(CACHE_NAME).then((c) => c.put(event.request, clone));
+            caches.match(event.request)
+                .then((r) => r || caches.match('/index.html'))
+                .then((r) => r || caches.match('/'))
+                .then((cached) => {
+                    if (cached) {
+                        // Stale-while-revalidate: refresh cache in the
+                        // background, but never block the response on it.
+                        // Errors (offline, hang, 5xx) are ignored — the
+                        // user already has a working page.
+                        fetch(event.request).then((response) => {
+                            if (response && response.ok) {
+                                const clone = response.clone();
+                                caches.open(CACHE_NAME).then((c) =>
+                                    c.put(event.request, clone)
+                                ).catch(() => {});
+                            }
+                        }).catch(() => {});
+                        return cached;
                     }
-                    return response;
-                })
-                .catch(() =>
-                    caches.match(event.request)
-                        .then((r) => r || caches.match('/index.html'))
-                        .then((r) => r || caches.match('/'))
-                        .then((r) => r || new Response(OFFLINE_PAGE, {
+                    // Nothing cached (first-ever visit while offline, or
+                    // cache was wiped). Try the network, fall back to
+                    // the inline offline page on failure.
+                    return fetch(event.request)
+                        .then((response) => {
+                            if (response.ok) {
+                                const clone = response.clone();
+                                caches.open(CACHE_NAME).then((c) =>
+                                    c.put(event.request, clone)
+                                ).catch(() => {});
+                            }
+                            return response;
+                        })
+                        .catch(() => new Response(OFFLINE_PAGE, {
                             headers: { 'Content-Type': 'text/html' },
-                        }))
-                )
+                        }));
+                })
         );
         return;
     }
@@ -103,13 +180,20 @@ self.addEventListener('fetch', (event) => {
                         caches.open(CACHE_NAME).then((c) => c.put(event.request, clone));
                     }
                     return response;
-                });
+                }).catch(() =>
+                    new Response('', { status: 503, statusText: 'Offline' })
+                );
             })
         );
         return;
     }
 
-    // Everything else: network-first, fall back to cache.
+    // Everything else: network-first, fall back to cache, then to
+    // a synthetic offline response. Returning `undefined` from a
+    // fetch handler (e.g. when `caches.match` finds no entry) makes
+    // the service worker throw `TypeError: Failed to convert value
+    // to 'Response'`, which was showing up in the console on every
+    // cert-hash / config fetch while offline.
     event.respondWith(
         fetch(event.request)
             .then((response) => {
@@ -119,7 +203,11 @@ self.addEventListener('fetch', (event) => {
                 }
                 return response;
             })
-            .catch(() => caches.match(event.request))
+            .catch(() =>
+                caches.match(event.request).then((cached) =>
+                    cached || new Response('', { status: 503, statusText: 'Offline' })
+                )
+            )
     );
 });
 

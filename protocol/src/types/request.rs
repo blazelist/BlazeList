@@ -98,6 +98,26 @@ pub enum Request {
         after_sequence: Option<NonNegativeI64>,
         limit: Option<u32>,
     },
+
+    /// Get version histories for all cards in bulk.
+    ///
+    /// If `card_ids` is `Some`, only histories for those cards are returned.
+    /// If `limit_per_card` is `Some`, each card's history is capped to that
+    /// many versions (oldest first).
+    GetAllCardHistories {
+        limit_per_card: Option<u32>,
+        card_ids: Option<Vec<Uuid>>,
+    },
+
+    /// Get version histories for all tags in bulk.
+    ///
+    /// If `tag_ids` is `Some`, only histories for those tags are returned.
+    /// If `limit_per_tag` is `Some`, each tag's history is capped to that
+    /// many versions (oldest first).
+    GetAllTagHistories {
+        limit_per_tag: Option<u32>,
+        tag_ids: Option<Vec<Uuid>>,
+    },
 }
 
 impl Request {

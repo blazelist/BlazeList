@@ -14,6 +14,7 @@ use blazelist_protocol::{Card, Entity, RootState, Tag, Utc};
 use chrono::DateTime;
 use leptos::prelude::*;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use uuid::Uuid;
 use wasm_bindgen::prelude::*;
@@ -23,7 +24,7 @@ pub use crate::state::query_params::{restore_from_query_params, sync_query_param
 pub use blazelist_client_lib::color::tag_chip_style;
 pub use blazelist_client_lib::display::format_relative_time;
 pub use blazelist_client_lib::due_date::{
-    DueDatePreset, format_due_date_badge, format_due_date_display,
+    DueDatePreset, DueDateStatus, due_date_status, format_due_date_badge, format_due_date_display,
 };
 
 #[wasm_bindgen]
@@ -91,7 +92,7 @@ pub fn select_card_view(state: &AppState, card_id: Uuid) -> bool {
 }
 
 thread_local! {
-    static CLIENT: RefCell<Option<Rc<Client>>> = RefCell::new(None);
+    static CLIENT: RefCell<Option<Rc<Client>>> = const { RefCell::new(None) };
 }
 
 pub fn set_client(client: Rc<Client>) {
@@ -100,6 +101,19 @@ pub fn set_client(client: Rc<Client>) {
 
 pub fn clear_client() {
     CLIENT.with(|c| *c.borrow_mut() = None);
+}
+
+/// Initial value for `AppState::detail_expanded` on mount. Narrow
+/// viewports (≤ 768 px) start expanded so a phone user lands on the
+/// same full-screen detail experience as before; wider viewports
+/// start collapsed so desktop users keep the familiar side-panel
+/// layout. Falls back to `false` if the window isn't available.
+fn initial_detail_expanded_from_viewport() -> bool {
+    web_sys::window()
+        .and_then(|w| w.inner_width().ok())
+        .and_then(|v| v.as_f64())
+        .map(|width| width <= 768.0)
+        .unwrap_or(false)
 }
 
 pub fn get_client() -> Option<Rc<Client>> {
@@ -134,6 +148,42 @@ pub enum NewCardPosition {
     Below(Uuid),
 }
 
+/// Type alias for the link graph cache: card ID → (blake3 content hash, reachable card IDs).
+pub type LinkGraphCache = HashMap<Uuid, ([u8; 32], Vec<Uuid>)>;
+
+/// Which keyboard sub-menu is currently open. When `Some`, the next keypress
+/// is dispatched to the sub-menu handler instead of the normal shortcut map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubMenu {
+    /// Due-date filter sub-menu.
+    DueDateFilter,
+    /// Sort order sub-menu.
+    Sort,
+    /// Linked-cards filter sub-menu.
+    LinkedCards,
+}
+
+/// Toast notification shown after a swipe action, allowing the user to undo.
+#[derive(Clone)]
+pub struct SwipeToast {
+    /// Human-readable description of the action, e.g. "Blazed 🔥".
+    pub message: String,
+    /// Card state *before* the swipe action, used to revert on undo.
+    pub original_card: Card,
+    /// JS `setTimeout` handle so the timer can be cleared on undo.
+    pub timeout_handle: i32,
+}
+
+/// Initial values for a *new* card, prefilled from another source (e.g. the
+/// "New from this" version-history action). Consumed by the card editor
+/// when `creating_new` becomes true.
+#[derive(Clone, Debug)]
+pub struct NewCardPrefill {
+    pub content: String,
+    pub tags: Vec<Uuid>,
+    pub due_date: Option<DateTime<Utc>>,
+}
+
 /// Global application state, provided via Leptos context.
 #[derive(Clone, Copy)]
 pub struct AppState {
@@ -156,6 +206,9 @@ pub struct AppState {
     pub server_url: RwSignal<String>,
     pub creating_new: RwSignal<bool>,
     pub creating_new_tag: RwSignal<bool>,
+    /// Optional prefilled values for the next new card. Cleared when the
+    /// creating_new flag is lowered (save or cancel).
+    pub new_card_prefill: RwSignal<Option<NewCardPrefill>>,
     pub editing: RwSignal<bool>,
     pub has_unsaved_changes: RwSignal<bool>,
     pub last_synced: RwSignal<Option<DateTime<Utc>>>,
@@ -219,6 +272,8 @@ pub struct AppState {
     pub swipe_threshold_right: RwSignal<u32>,
     /// Device-local setting: swipe left trigger threshold in px.
     pub swipe_threshold_left: RwSignal<u32>,
+    /// Device-local setting: swipe undo toast dismiss timeout in milliseconds.
+    pub swipe_undo_timeout_ms: RwSignal<u32>,
     /// Last sync error message, displayed in the sync indicator.
     pub last_sync_error: RwSignal<Option<String>>,
     /// Device-local setting: clear tag search input after selecting a tag.
@@ -231,6 +286,45 @@ pub struct AppState {
     pub override_sidebar_width: RwSignal<bool>,
     /// Device-local setting: whether to override the default detail panel width.
     pub override_detail_width: RwSignal<bool>,
+    /// Active swipe-action toast (message + undo state). `None` = hidden.
+    pub swipe_toast: RwSignal<Option<SwipeToast>>,
+    /// Device-local setting: show the Today quick-filter button.
+    pub show_due_today_button: RwSignal<bool>,
+    /// Device-local setting: expand linked cards recursively.
+    pub recursive_links: RwSignal<bool>,
+    /// Show transitive link count indicators in the card list.
+    pub show_list_link_counts: RwSignal<bool>,
+    /// Device-local setting: show the card-list relative-time label
+    /// ("x ago") at all. Defaults to off — users who want it can
+    /// opt in via settings.
+    pub show_card_time: RwSignal<bool>,
+    /// Session-only UI mode: detail panel takes the full main-layout
+    /// area when true, otherwise sits as a side panel on the right.
+    /// Default derives from viewport width at startup — phones get
+    /// expanded, desktop gets collapsed — but the user can flip it
+    /// at any time via the header toggle. Not persisted.
+    pub detail_expanded: RwSignal<bool>,
+    /// Background-computed link graph cache: card ID → (content_hash, reachable_ids).
+    /// blake3 hash of content at computation time, used for selective invalidation.
+    pub link_graph_cache: RwSignal<LinkGraphCache>,
+    /// Progress of the background link computation: (processed, total). (0,0) = idle.
+    pub link_cache_progress: RwSignal<(usize, usize)>,
+    /// Active keyboard sub-menu (None = normal shortcut mode).
+    pub sub_menu: RwSignal<Option<SubMenu>>,
+    /// Set to `true` by the `d` keyboard shortcut to trigger delete confirmation
+    /// in the CardDetail component. The component resets it to `false` after handling.
+    pub delete_requested: RwSignal<bool>,
+    /// Brief toast message (e.g. "Copied!") that auto-dismisses. `None` = hidden.
+    pub copy_toast: RwSignal<Option<String>>,
+    /// Handle for the copy-toast auto-dismiss timeout so repeated copies reset the timer.
+    pub copy_toast_timeout: RwSignal<Option<i32>>,
+    /// Error toast message (e.g. "Can't delete while offline") that
+    /// auto-dismisses. Rendered with a distinct, more prominent style
+    /// than `copy_toast` so the user actually notices failed actions.
+    pub error_toast: RwSignal<Option<String>>,
+    /// Raw server config values from `/config` endpoint, keyed by config name.
+    /// Used by the settings panel to show server-override layer.
+    pub server_config: RwSignal<HashMap<String, String>>,
 }
 
 /// Reset all filter/view state to defaults and clear query params.
@@ -277,9 +371,13 @@ impl AppState {
         };
         let initial_detail_width = if override_detail {
             let w = settings::load_default_detail_width();
-            if w > 0 { (w as f64).clamp(280.0, 1200.0) } else { (viewport_width * 0.5).min(800.0).max(280.0) }
+            if w > 0 {
+                (w as f64).clamp(280.0, 1200.0)
+            } else {
+                (viewport_width * 0.5).clamp(280.0, 800.0)
+            }
         } else {
-            (viewport_width * 0.5).min(800.0).max(280.0)
+            (viewport_width * 0.5).clamp(280.0, 800.0)
         };
 
         // Hide sidebar by default on small viewports (matches the 768px CSS breakpoint)
@@ -321,6 +419,7 @@ impl AppState {
             server_url: RwSignal::new(derive_wt_url()),
             creating_new: RwSignal::new(false),
             creating_new_tag: RwSignal::new(false),
+            new_card_prefill: RwSignal::new(None),
             editing: RwSignal::new(false),
             has_unsaved_changes: RwSignal::new(false),
             last_synced: RwSignal::new(None),
@@ -354,12 +453,27 @@ impl AppState {
             touch_swipe_enabled: RwSignal::new(settings::load_touch_swipe()),
             swipe_threshold_right: RwSignal::new(settings::load_swipe_threshold_right()),
             swipe_threshold_left: RwSignal::new(settings::load_swipe_threshold_left()),
+            swipe_undo_timeout_ms: RwSignal::new(settings::load_swipe_undo_timeout_ms()),
             last_sync_error: RwSignal::new(None),
             clear_tag_search: RwSignal::new(settings::load_clear_tag_search()),
             default_sidebar_width: RwSignal::new(settings::load_default_sidebar_width()),
             default_detail_width: RwSignal::new(settings::load_default_detail_width()),
             override_sidebar_width: RwSignal::new(settings::load_override_sidebar_width()),
             override_detail_width: RwSignal::new(settings::load_override_detail_width()),
+            swipe_toast: RwSignal::new(None),
+            show_due_today_button: RwSignal::new(settings::load_show_due_today_button()),
+            recursive_links: RwSignal::new(settings::load_recursive_links()),
+            show_list_link_counts: RwSignal::new(settings::load_show_list_link_counts()),
+            show_card_time: RwSignal::new(settings::load_show_card_time()),
+            detail_expanded: RwSignal::new(initial_detail_expanded_from_viewport()),
+            link_graph_cache: RwSignal::new(HashMap::new()),
+            link_cache_progress: RwSignal::new((0, 0)),
+            sub_menu: RwSignal::new(None),
+            delete_requested: RwSignal::new(false),
+            copy_toast: RwSignal::new(None),
+            copy_toast_timeout: RwSignal::new(None),
+            error_toast: RwSignal::new(None),
+            server_config: RwSignal::new(HashMap::new()),
         }
     }
 
@@ -411,7 +525,11 @@ impl AppState {
                 search_tags.get(),
                 &all_tags,
             );
-            filter::apply_due_date_filter(&mut result, due_date_filter.get(), include_overdue.get());
+            filter::apply_due_date_filter(
+                &mut result,
+                due_date_filter.get(),
+                include_overdue.get(),
+            );
             filter::sort_cards(&mut result, sort_order.get());
             result
         })

@@ -16,7 +16,8 @@ async fn compatible_versions_succeed() {
         server_handshake(&mut server_write, &mut server_read, &server_version),
     );
 
-    client_result.unwrap();
+    let received_server_version = client_result.unwrap();
+    assert_eq!(received_server_version, server_version);
     server_result.unwrap();
 }
 

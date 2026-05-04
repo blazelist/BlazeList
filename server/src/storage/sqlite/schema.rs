@@ -3,7 +3,7 @@
 use std::env;
 
 use blazelist_protocol::ZERO_HASH;
-use rusqlite::{params, Connection, Transaction};
+use rusqlite::{Connection, Transaction, params};
 use uuid::Uuid;
 
 use super::SqliteStorage;
@@ -109,7 +109,8 @@ impl SqliteStorage {
                 ancestor_hash       BLOB    NOT NULL,
                 hash                BLOB    NOT NULL,
                 root_sequence_at    INTEGER NOT NULL DEFAULT 0,
-                bucket              INTEGER NOT NULL DEFAULT 0
+                bucket              INTEGER NOT NULL DEFAULT 0,
+                implies             BLOB    NOT NULL DEFAULT X'00'
             );
 
             CREATE TABLE IF NOT EXISTS tag_versions (
@@ -122,6 +123,7 @@ impl SqliteStorage {
                 ancestor_hash   BLOB    NOT NULL,
                 hash            BLOB    NOT NULL,
                 root_sequence_at INTEGER NOT NULL DEFAULT 0,
+                implies         BLOB    NOT NULL DEFAULT X'00',
                 PRIMARY KEY (tag_id, count)
             );
 
@@ -285,11 +287,24 @@ impl SqliteStorage {
             // v1→v2: Card.priority widened from NonNegativeI64 to i64.
             // SQLite stores both as INTEGER; existing values are valid. No-op.
             (1, 2) => Ok(()),
+            // v2→v3: Tag.implies field added. New column with an empty
+            // postcard Vec<Uuid> default (the single byte 0x00) so existing
+            // rows deserialize as `[]` with no backfill. Because
+            // `canonical_tag_hash` only appends the implies block when
+            // non-empty, existing stored tag hashes continue to verify
+            // without rewriting any tag_versions rows.
+            (2, 3) => Self::migrate_v2_to_v3(tx),
             _ => Err(StorageError::MigrationNotImplemented {
                 stored: blazelist_protocol::Version::new(from_major, 0, 0),
                 current: blazelist_protocol::Version::new(to_major, 0, 0),
             }),
         }
+    }
+
+    fn migrate_v2_to_v3(tx: &Transaction<'_>) -> Result<(), StorageError> {
+        Self::ensure_column(tx, "tags", "implies", "BLOB NOT NULL DEFAULT X'00'")?;
+        Self::ensure_column(tx, "tag_versions", "implies", "BLOB NOT NULL DEFAULT X'00'")?;
+        Ok(())
     }
 
     fn migrate_v0_to_v1(tx: &Transaction<'_>) -> Result<(), StorageError> {

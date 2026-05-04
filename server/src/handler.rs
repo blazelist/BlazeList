@@ -107,6 +107,22 @@ pub fn handle_request<S: Storage>(storage: &S, request: Request) -> Response {
             Ok(entries) => Response::SequenceHistory(entries),
             Err(e) => Response::Error(storage_error_to_protocol(e)),
         },
+
+        Request::GetAllCardHistories {
+            limit_per_card,
+            card_ids,
+        } => match storage.get_all_card_histories(limit_per_card, card_ids.as_deref()) {
+            Ok(histories) => Response::AllCardHistories(histories),
+            Err(e) => Response::Error(storage_error_to_protocol(e)),
+        },
+
+        Request::GetAllTagHistories {
+            limit_per_tag,
+            tag_ids,
+        } => match storage.get_all_tag_histories(limit_per_tag, tag_ids.as_deref()) {
+            Ok(histories) => Response::AllTagHistories(histories),
+            Err(e) => Response::Error(storage_error_to_protocol(e)),
+        },
     }
 }
 
@@ -129,6 +145,13 @@ fn storage_error_to_protocol(e: StorageError) -> ProtocolError {
         } => ProtocolError::PushFailed(PushError::OrphanedTagReference {
             tag_id,
             referencing_card_ids,
+        }),
+        StorageError::OrphanedTagImpliesReference {
+            tag_id,
+            referencing_tag_ids,
+        } => ProtocolError::PushFailed(PushError::OrphanedTagImpliesReference {
+            tag_id,
+            referencing_tag_ids,
         }),
         StorageError::RootHashMismatch {
             sequence,

@@ -1,4 +1,5 @@
 use blazelist_client_lib::filter::{DueDateFilter, SortOrder, TagFilterMode};
+use blazelist_client_lib::tag_graph::TagGraph;
 use blazelist_protocol::CardFilter;
 use uuid::Uuid;
 
@@ -23,8 +24,7 @@ pub fn parse_due_date_filter_from_params(params: &web_sys::UrlSearchParams) -> D
     match params.get("f.due").as_deref() {
         Some("overdue") => DueDateFilter::Overdue,
         Some("today") => DueDateFilter::Today,
-        Some("today-upcoming") => DueDateFilter::TodayAndUpcoming,
-        Some("upcoming") => DueDateFilter::Upcoming,
+        Some("today-upcoming") | Some("upcoming") => DueDateFilter::TodayAndUpcoming,
         Some("upcoming-tomorrow") => DueDateFilter::UpcomingTomorrow,
         Some("upcoming-week") => DueDateFilter::UpcomingWeek,
         Some("upcoming-2weeks") => DueDateFilter::UpcomingTwoWeeks,
@@ -38,7 +38,6 @@ fn due_date_filter_to_str(f: DueDateFilter) -> &'static str {
         DueDateFilter::Overdue => "overdue",
         DueDateFilter::Today => "today",
         DueDateFilter::TodayAndUpcoming => "today-upcoming",
-        DueDateFilter::Upcoming => "upcoming",
         DueDateFilter::UpcomingTomorrow => "upcoming-tomorrow",
         DueDateFilter::UpcomingWeek => "upcoming-week",
         DueDateFilter::UpcomingTwoWeeks => "upcoming-2weeks",
@@ -56,10 +55,10 @@ pub fn parse_tags_from_params(params: &web_sys::UrlSearchParams) -> Vec<Uuid> {
     let all = params.get_all("f.tag");
     let mut tags = Vec::new();
     for i in 0..all.length() {
-        if let Some(s) = all.get(i).as_string() {
-            if let Ok(id) = s.parse::<Uuid>() {
-                tags.push(id);
-            }
+        if let Some(s) = all.get(i).as_string()
+            && let Ok(id) = s.parse::<Uuid>()
+        {
+            tags.push(id);
         }
     }
     tags
@@ -77,10 +76,10 @@ pub fn parse_linked_cards_from_params(params: &web_sys::UrlSearchParams) -> Vec<
     let all = params.get_all("f.linked");
     let mut links = Vec::new();
     for i in 0..all.length() {
-        if let Some(s) = all.get(i).as_string() {
-            if let Ok(id) = s.parse::<Uuid>() {
-                links.push(id);
-            }
+        if let Some(s) = all.get(i).as_string()
+            && let Ok(id) = s.parse::<Uuid>()
+        {
+            links.push(id);
         }
     }
     links
@@ -206,14 +205,32 @@ pub fn restore_from_query_params(state: &AppState) {
     let params = get_query_params();
 
     state.filter.set(parse_filter_from_params(&params));
-    state.due_date_filter.set(parse_due_date_filter_from_params(&params));
-    state.include_overdue.set(params.get("f.inc_overdue").as_deref() == Some("1"));
+    state
+        .due_date_filter
+        .set(parse_due_date_filter_from_params(&params));
+    state
+        .include_overdue
+        .set(params.get("f.inc_overdue").as_deref() == Some("1"));
     state.sort_order.set(parse_sort_from_params(&params));
-    state.tag_filter_mode.set(parse_tag_mode_from_params(&params));
+    state
+        .tag_filter_mode
+        .set(parse_tag_mode_from_params(&params));
     state.no_tags_filter.set(parse_no_tags_from_params(&params));
-    state.tag_filter.set(parse_tags_from_params(&params));
-    state.selected_card.set(parse_selected_card_from_params(&params));
-    state.linked_card_filter.set(parse_linked_cards_from_params(&params));
+    // Close the tag filter under the implication graph so URL-driven
+    // filter state always satisfies the implies invariant.
+    let mut url_tags = parse_tags_from_params(&params);
+    if !url_tags.is_empty() {
+        let graph = TagGraph::from_tags(&state.tags.get_untracked());
+        let closed = graph.closure_of(&url_tags);
+        url_tags = closed.into_iter().collect();
+    }
+    state.tag_filter.set(url_tags);
+    state
+        .selected_card
+        .set(parse_selected_card_from_params(&params));
+    state
+        .linked_card_filter
+        .set(parse_linked_cards_from_params(&params));
     state.creating_new.set(false);
     state.creating_new_tag.set(false);
     state.editing.set(false);

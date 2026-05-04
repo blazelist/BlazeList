@@ -36,8 +36,50 @@
 }
 
 .sidebar-toggle-btn:hover {
-    color: var(--text-secondary);
-    border-color: var(--border-hover);
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+/* When the detail panel is in fullscreen (expanded) mode, hide
+   sibling elements and let .main-layout overflow so the page scrolls
+   naturally with the browser's native scrollbar. */
+.app-container.detail-expanded .sidebar-toggle-btn,
+.app-container.detail-expanded .sidebar-overlay,
+.app-container.detail-expanded .tag-sidebar,
+.app-container.detail-expanded .content,
+.app-container.detail-expanded .resize-handle {
+    display: none !important;
+}
+
+.app-container.detail-expanded .main-layout {
+    /* Clip horizontally to contain the negative horizontal margins used
+       inside .card-detail (e.g. .detail-section, .linked-card-list) —
+       on phones .card-detail's horizontal padding is 0.875rem while
+       those margins are -1rem, so the sections otherwise bleed past
+       the panel edge and the page gains a small horizontal scrollbar.
+       overflow-y stays `visible` so content taller than the viewport
+       flows up to the body and is scrolled by the browser's native
+       page scrollbar. `clip` is the one non-visible value that doesn't
+       coerce the other axis's `visible` to `auto`. */
+    overflow-x: clip;
+    overflow-y: visible;
+}
+
+.detail-expand-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.85rem;
+    padding: 0.2rem 0.4rem;
+    border-radius: 4px;
+    line-height: 1;
+    transition: all 0.15s;
+}
+
+.detail-expand-btn:hover {
+    color: var(--accent);
+    border-color: var(--accent);
 }
 
 .app-title {
@@ -115,8 +157,8 @@
 }
 
 .settings-btn:hover {
-    color: var(--text-secondary);
-    border-color: var(--border-hover);
+    color: var(--accent);
+    border-color: var(--accent);
 }
 
 .settings-page {
@@ -130,10 +172,64 @@
     color: var(--accent);
 }
 
+.settings-section-title {
+    font-size: 0.6rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0.75rem 1rem 0.375rem;
+    margin: 0 -1rem;
+    border-top: 1px solid var(--border);
+}
+
+.settings-page > .settings-section-title:first-of-type {
+    border-top: none;
+    padding-top: 0.25rem;
+}
+
 .settings-section {
     margin-bottom: 0;
-    padding-bottom: 0.75rem;
-    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.625rem;
+}
+
+.settings-env {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.2rem 0.5rem;
+    font-size: 0.5rem;
+    margin-top: 0.25rem;
+    opacity: 0.45;
+}
+
+.settings-env-var {
+    font-family: monospace;
+    color: var(--text-muted);
+}
+
+.settings-env-detail {
+    color: var(--text-muted);
+}
+
+.settings-env code {
+    font-family: monospace;
+    background: rgba(255, 255, 255, 0.06);
+    padding: 0.05rem 0.25rem;
+    border-radius: 2px;
+}
+
+.settings-env-server {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.settings-env-user {
+    color: var(--accent);
+}
+
+.settings-env-user code {
+    background: rgba(var(--accent-rgb, 255, 165, 0), 0.1);
 }
 
 .settings-item {
@@ -166,6 +262,10 @@
     font-style: italic;
 }
 
+.settings-sub-hint {
+    padding-left: 0.25rem;
+}
+
 .settings-sub-item {
     display: flex;
     align-items: center;
@@ -173,6 +273,16 @@
     gap: 0.5rem;
     margin-top: 0.5rem;
     padding-left: 0.25rem;
+}
+
+.settings-sub-env {
+    padding-left: 0.25rem;
+}
+
+.settings-disabled {
+    opacity: 0.35;
+    pointer-events: none;
+    user-select: none;
 }
 
 .settings-number {

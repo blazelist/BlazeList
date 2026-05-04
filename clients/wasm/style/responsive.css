@@ -41,27 +41,25 @@
         display: none;
     }
 
-    .detail-panel {
-        position: fixed;
-        top: 0;
-        right: 0;
-        bottom: 0;
-        left: 0;
-        width: 100% !important;
-        min-width: 0 !important;
-        z-index: 50;
-    }
-
     .content {
         width: 100%;
     }
 
-    body:has(.detail-panel) {
-        overflow: hidden;
+    /* Side-by-side view on narrow viewports: rather than honouring
+       the saved detail_width pixel value (which almost always
+       squeezes one side to near-zero), split the available space
+       50/50 between the list and the detail panel. The `.expanded`
+       case bypasses this because it uses absolute positioning and
+       doesn't participate in the flex layout. */
+    .main-layout > .content {
+        flex: 1 1 0 !important;
+        min-width: 0 !important;
     }
 
-    .detail-panel {
-        overscroll-behavior: contain;
+    .main-layout > .detail-panel:not(.expanded) {
+        flex: 1 1 0 !important;
+        width: auto !important;
+        min-width: 0 !important;
     }
 
     .search-controls {
@@ -219,9 +217,26 @@
         font-size: 0.72rem;
     }
 
+    .detail-header-nav {
+        gap: 0.35rem;
+        margin-right: 0.5rem;
+    }
+
+    .detail-nav-btn {
+        font-size: 1.1rem;
+        padding: 0.3rem 0.55rem;
+        min-width: 2rem;
+        min-height: 2rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
     .detail-close {
-        font-size: 1rem;
+        font-size: 1.1rem;
         padding: 0.4rem 0.55rem;
+        min-width: 2rem;
+        min-height: 2rem;
     }
 
     .card-detail .card-content {
@@ -394,4 +409,43 @@
     .tag-rename-input {
         font-size: 0.92rem;
     }
+
+    /* Swipe undo toast: larger touch targets and text on phone.
+       The toast is `display: flex` and content-sized, capped by
+       `max-width: calc(100vw - 1rem)`. `.swipe-toast-msg` keeps
+       the base `white-space: nowrap` so the toast simply grows to
+       fit the message — every message currently shown here
+       ("Blazed 🔥", "Due: Today", "Due: 2026-12-31", etc.) is
+       short enough to stay well under the cap on any real phone
+       viewport, so wrapping is never desirable in practice. */
+    .swipe-toast {
+        padding: 0.55rem 0.7rem;
+        gap: 0.5rem;
+        bottom: 1rem;
+        border-radius: 10px;
+        max-width: calc(100vw - 1rem);
+    }
+
+    .swipe-toast-msg {
+        font-size: 0.9rem;
+    }
+
+    .swipe-toast-undo {
+        font-size: 0.86rem;
+        padding: 0.45rem 0.7rem;
+        border-radius: 6px;
+    }
+
+    .swipe-toast-close {
+        font-size: 0.95rem;
+        min-width: 1.8rem;
+        min-height: 1.8rem;
+    }
+
+    /* Error toast: widen on phone (base is 90vw) for the same reason
+       — avoid early wrapping on long failure messages. */
+    .error-toast {
+        max-width: calc(100vw - 1rem);
+    }
 }
+

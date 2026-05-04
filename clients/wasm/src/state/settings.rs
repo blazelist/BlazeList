@@ -1,6 +1,6 @@
-/// Device-local settings persisted in `localStorage`.
-///
-/// These settings are not synced to the server — they stay on the device.
+// Device-local settings persisted in `localStorage`.
+//
+// These settings are not synced to the server — they stay on the device.
 
 const STORAGE_KEY_SHOW_PREVIEW: &str = "blazelist_show_preview";
 const STORAGE_KEY_AUTO_SAVE: &str = "blazelist_auto_save";
@@ -16,11 +16,17 @@ const STORAGE_KEY_UI_DENSITY: &str = "blazelist_ui_density";
 const STORAGE_KEY_TOUCH_SWIPE: &str = "blazelist_touch_swipe";
 const STORAGE_KEY_SWIPE_THRESHOLD_RIGHT: &str = "blazelist_swipe_threshold_right";
 const STORAGE_KEY_SWIPE_THRESHOLD_LEFT: &str = "blazelist_swipe_threshold_left";
+const STORAGE_KEY_SWIPE_UNDO_TIMEOUT_MS: &str = "blazelist_swipe_undo_timeout_ms";
 const STORAGE_KEY_CLEAR_TAG_SEARCH: &str = "blazelist_clear_tag_search";
 const STORAGE_KEY_DEFAULT_SIDEBAR_WIDTH: &str = "blazelist_default_sidebar_width";
 const STORAGE_KEY_DEFAULT_DETAIL_WIDTH: &str = "blazelist_default_detail_width";
 const STORAGE_KEY_OVERRIDE_SIDEBAR_WIDTH: &str = "blazelist_override_sidebar_width";
 const STORAGE_KEY_OVERRIDE_DETAIL_WIDTH: &str = "blazelist_override_detail_width";
+const STORAGE_KEY_SHOW_DUE_TODAY_BUTTON: &str = "blazelist_show_due_today_button";
+const STORAGE_KEY_RECURSIVE_LINKS: &str = "blazelist_recursive_links";
+const STORAGE_KEY_SHOW_LIST_LINK_COUNTS: &str = "blazelist_show_list_link_counts";
+const STORAGE_KEY_SHOW_CARD_TIME: &str = "blazelist_show_card_time";
+const STORAGE_KEY_CACHE_SCHEMA: &str = "blazelist_cache_schema";
 
 /// Default values (used when localStorage has no value and no server override).
 pub const DEFAULT_SHOW_PREVIEW: bool = false;
@@ -35,13 +41,18 @@ pub const DEFAULT_SEARCH_TAGS: bool = true;
 pub const DEFAULT_UI_SCALE: u32 = 100;
 pub const DEFAULT_UI_DENSITY: &str = "compact";
 pub const DEFAULT_TOUCH_SWIPE: bool = false;
-pub const DEFAULT_SWIPE_THRESHOLD_RIGHT: u32 = 100;
-pub const DEFAULT_SWIPE_THRESHOLD_LEFT: u32 = 90;
+pub const DEFAULT_SWIPE_THRESHOLD_RIGHT: u32 = 135;
+pub const DEFAULT_SWIPE_THRESHOLD_LEFT: u32 = 115;
+pub const DEFAULT_SWIPE_UNDO_TIMEOUT_MS: u32 = 4_000;
 pub const DEFAULT_CLEAR_TAG_SEARCH: bool = true;
 pub const DEFAULT_SIDEBAR_WIDTH: u32 = 180;
 pub const DEFAULT_DETAIL_WIDTH: u32 = 0;
 pub const DEFAULT_OVERRIDE_SIDEBAR_WIDTH: bool = false;
 pub const DEFAULT_OVERRIDE_DETAIL_WIDTH: bool = false;
+pub const DEFAULT_SHOW_DUE_TODAY_BUTTON: bool = true;
+pub const DEFAULT_RECURSIVE_LINKS: bool = true;
+pub const DEFAULT_SHOW_LIST_LINK_COUNTS: bool = true;
+pub const DEFAULT_SHOW_CARD_TIME: bool = false;
 
 fn local_storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok()?
@@ -89,25 +100,78 @@ fn save_string(key: &str, value: &str) {
 
 // -- "has" checks: true if the user has explicitly set a value in localStorage --
 
-pub fn has_show_preview() -> bool { load_bool(STORAGE_KEY_SHOW_PREVIEW).is_some() }
-pub fn has_auto_save() -> bool { load_bool(STORAGE_KEY_AUTO_SAVE).is_some() }
-pub fn has_auto_save_delay() -> bool { load_u32(STORAGE_KEY_AUTO_SAVE_DELAY).is_some() }
-pub fn has_auto_sync() -> bool { load_bool(STORAGE_KEY_AUTO_SYNC).is_some() }
-pub fn has_auto_sync_interval() -> bool { load_u32(STORAGE_KEY_AUTO_SYNC_INTERVAL).is_some() }
-pub fn has_debounce_enabled() -> bool { load_bool(STORAGE_KEY_DEBOUNCE_ENABLED).is_some() }
-pub fn has_debounce_delay() -> bool { load_u32(STORAGE_KEY_DEBOUNCE_DELAY).is_some() }
-pub fn has_keyboard_shortcuts() -> bool { load_bool(STORAGE_KEY_KEYBOARD_SHORTCUTS).is_some() }
-pub fn has_search_tags() -> bool { load_bool(STORAGE_KEY_SEARCH_TAGS).is_some() }
-pub fn has_ui_scale() -> bool { load_u32(STORAGE_KEY_UI_SCALE).is_some() }
-pub fn has_ui_density() -> bool { load_string(STORAGE_KEY_UI_DENSITY).is_some() }
-pub fn has_touch_swipe() -> bool { load_bool(STORAGE_KEY_TOUCH_SWIPE).is_some() }
-pub fn has_swipe_threshold_right() -> bool { load_u32(STORAGE_KEY_SWIPE_THRESHOLD_RIGHT).is_some() }
-pub fn has_swipe_threshold_left() -> bool { load_u32(STORAGE_KEY_SWIPE_THRESHOLD_LEFT).is_some() }
-pub fn has_clear_tag_search() -> bool { load_bool(STORAGE_KEY_CLEAR_TAG_SEARCH).is_some() }
-pub fn has_default_sidebar_width() -> bool { load_u32(STORAGE_KEY_DEFAULT_SIDEBAR_WIDTH).is_some() }
-pub fn has_default_detail_width() -> bool { load_u32(STORAGE_KEY_DEFAULT_DETAIL_WIDTH).is_some() }
-pub fn has_override_sidebar_width() -> bool { load_bool(STORAGE_KEY_OVERRIDE_SIDEBAR_WIDTH).is_some() }
-pub fn has_override_detail_width() -> bool { load_bool(STORAGE_KEY_OVERRIDE_DETAIL_WIDTH).is_some() }
+pub fn has_show_preview() -> bool {
+    load_bool(STORAGE_KEY_SHOW_PREVIEW).is_some()
+}
+pub fn has_auto_save() -> bool {
+    load_bool(STORAGE_KEY_AUTO_SAVE).is_some()
+}
+pub fn has_auto_save_delay() -> bool {
+    load_u32(STORAGE_KEY_AUTO_SAVE_DELAY).is_some()
+}
+pub fn has_auto_sync() -> bool {
+    load_bool(STORAGE_KEY_AUTO_SYNC).is_some()
+}
+pub fn has_auto_sync_interval() -> bool {
+    load_u32(STORAGE_KEY_AUTO_SYNC_INTERVAL).is_some()
+}
+pub fn has_debounce_enabled() -> bool {
+    load_bool(STORAGE_KEY_DEBOUNCE_ENABLED).is_some()
+}
+pub fn has_debounce_delay() -> bool {
+    load_u32(STORAGE_KEY_DEBOUNCE_DELAY).is_some()
+}
+pub fn has_keyboard_shortcuts() -> bool {
+    load_bool(STORAGE_KEY_KEYBOARD_SHORTCUTS).is_some()
+}
+pub fn has_search_tags() -> bool {
+    load_bool(STORAGE_KEY_SEARCH_TAGS).is_some()
+}
+pub fn has_ui_scale() -> bool {
+    load_u32(STORAGE_KEY_UI_SCALE).is_some()
+}
+pub fn has_ui_density() -> bool {
+    load_string(STORAGE_KEY_UI_DENSITY).is_some()
+}
+pub fn has_touch_swipe() -> bool {
+    load_bool(STORAGE_KEY_TOUCH_SWIPE).is_some()
+}
+pub fn has_swipe_threshold_right() -> bool {
+    load_u32(STORAGE_KEY_SWIPE_THRESHOLD_RIGHT).is_some()
+}
+pub fn has_swipe_threshold_left() -> bool {
+    load_u32(STORAGE_KEY_SWIPE_THRESHOLD_LEFT).is_some()
+}
+pub fn has_swipe_undo_timeout_ms() -> bool {
+    load_u32(STORAGE_KEY_SWIPE_UNDO_TIMEOUT_MS).is_some()
+}
+pub fn has_clear_tag_search() -> bool {
+    load_bool(STORAGE_KEY_CLEAR_TAG_SEARCH).is_some()
+}
+pub fn has_default_sidebar_width() -> bool {
+    load_u32(STORAGE_KEY_DEFAULT_SIDEBAR_WIDTH).is_some()
+}
+pub fn has_default_detail_width() -> bool {
+    load_u32(STORAGE_KEY_DEFAULT_DETAIL_WIDTH).is_some()
+}
+pub fn has_override_sidebar_width() -> bool {
+    load_bool(STORAGE_KEY_OVERRIDE_SIDEBAR_WIDTH).is_some()
+}
+pub fn has_override_detail_width() -> bool {
+    load_bool(STORAGE_KEY_OVERRIDE_DETAIL_WIDTH).is_some()
+}
+pub fn has_show_due_today_button() -> bool {
+    load_bool(STORAGE_KEY_SHOW_DUE_TODAY_BUTTON).is_some()
+}
+pub fn has_recursive_links() -> bool {
+    load_bool(STORAGE_KEY_RECURSIVE_LINKS).is_some()
+}
+pub fn has_show_list_link_counts() -> bool {
+    load_bool(STORAGE_KEY_SHOW_LIST_LINK_COUNTS).is_some()
+}
+pub fn has_show_card_time() -> bool {
+    load_bool(STORAGE_KEY_SHOW_CARD_TIME).is_some()
+}
 
 pub fn load_show_preview() -> bool {
     load_bool(STORAGE_KEY_SHOW_PREVIEW).unwrap_or(DEFAULT_SHOW_PREVIEW)
@@ -221,6 +285,14 @@ pub fn save_swipe_threshold_left(px: u32) {
     save_u32(STORAGE_KEY_SWIPE_THRESHOLD_LEFT, px);
 }
 
+pub fn load_swipe_undo_timeout_ms() -> u32 {
+    load_u32(STORAGE_KEY_SWIPE_UNDO_TIMEOUT_MS).unwrap_or(DEFAULT_SWIPE_UNDO_TIMEOUT_MS)
+}
+
+pub fn save_swipe_undo_timeout_ms(ms: u32) {
+    save_u32(STORAGE_KEY_SWIPE_UNDO_TIMEOUT_MS, ms);
+}
+
 pub fn load_clear_tag_search() -> bool {
     load_bool(STORAGE_KEY_CLEAR_TAG_SEARCH).unwrap_or(DEFAULT_CLEAR_TAG_SEARCH)
 }
@@ -261,6 +333,52 @@ pub fn save_override_detail_width(enabled: bool) {
     save_bool(STORAGE_KEY_OVERRIDE_DETAIL_WIDTH, enabled);
 }
 
+pub fn load_show_due_today_button() -> bool {
+    load_bool(STORAGE_KEY_SHOW_DUE_TODAY_BUTTON).unwrap_or(DEFAULT_SHOW_DUE_TODAY_BUTTON)
+}
+
+pub fn save_show_due_today_button(enabled: bool) {
+    save_bool(STORAGE_KEY_SHOW_DUE_TODAY_BUTTON, enabled);
+}
+
+pub fn load_recursive_links() -> bool {
+    load_bool(STORAGE_KEY_RECURSIVE_LINKS).unwrap_or(DEFAULT_RECURSIVE_LINKS)
+}
+
+pub fn save_recursive_links(enabled: bool) {
+    save_bool(STORAGE_KEY_RECURSIVE_LINKS, enabled);
+}
+
+pub fn load_show_list_link_counts() -> bool {
+    load_bool(STORAGE_KEY_SHOW_LIST_LINK_COUNTS).unwrap_or(DEFAULT_SHOW_LIST_LINK_COUNTS)
+}
+
+pub fn save_show_list_link_counts(enabled: bool) {
+    save_bool(STORAGE_KEY_SHOW_LIST_LINK_COUNTS, enabled);
+}
+
+pub fn load_show_card_time() -> bool {
+    load_bool(STORAGE_KEY_SHOW_CARD_TIME).unwrap_or(DEFAULT_SHOW_CARD_TIME)
+}
+
+pub fn save_show_card_time(enabled: bool) {
+    save_bool(STORAGE_KEY_SHOW_CARD_TIME, enabled);
+}
+
+/// Load the stored cache schema stamp (client-only, e.g. "2.14.0-dev+2.2.0-dev").
+///
+/// Written by `save_local_state` after a successful write to `blazelist.db`
+/// and checked at load time to detect client upgrades that broke the cache
+/// format — independently of any server connection.
+pub fn load_cache_schema() -> Option<String> {
+    load_string(STORAGE_KEY_CACHE_SCHEMA)
+}
+
+/// Save the cache schema stamp.
+pub fn save_cache_schema(stamp: &str) {
+    save_string(STORAGE_KEY_CACHE_SCHEMA, stamp);
+}
+
 /// Remove all BlazeList settings from localStorage, restoring defaults.
 pub fn clear_all_settings() {
     if let Some(storage) = local_storage() {
@@ -279,11 +397,16 @@ pub fn clear_all_settings() {
             STORAGE_KEY_TOUCH_SWIPE,
             STORAGE_KEY_SWIPE_THRESHOLD_RIGHT,
             STORAGE_KEY_SWIPE_THRESHOLD_LEFT,
+            STORAGE_KEY_SWIPE_UNDO_TIMEOUT_MS,
             STORAGE_KEY_CLEAR_TAG_SEARCH,
             STORAGE_KEY_DEFAULT_SIDEBAR_WIDTH,
             STORAGE_KEY_DEFAULT_DETAIL_WIDTH,
             STORAGE_KEY_OVERRIDE_SIDEBAR_WIDTH,
             STORAGE_KEY_OVERRIDE_DETAIL_WIDTH,
+            STORAGE_KEY_SHOW_DUE_TODAY_BUTTON,
+            STORAGE_KEY_RECURSIVE_LINKS,
+            STORAGE_KEY_SHOW_LIST_LINK_COUNTS,
+            STORAGE_KEY_SHOW_CARD_TIME,
         ];
         for key in keys {
             let _ = storage.remove_item(key);

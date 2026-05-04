@@ -22,13 +22,11 @@ pub enum DueDateFilter {
     Today,
     /// Show cards due today and all future due dates.
     TodayAndUpcoming,
-    /// Show only cards with due date after today (all future).
-    Upcoming,
     /// Show only cards due tomorrow.
     UpcomingTomorrow,
-    /// Show only cards due within 7 days (exclusive of today).
+    /// Show only cards due within the next 7 days (inclusive of today).
     UpcomingWeek,
-    /// Show only cards due within 14 days (exclusive of today).
+    /// Show only cards due within the next 14 days (inclusive of today).
     UpcomingTwoWeeks,
 }
 
@@ -39,7 +37,6 @@ impl DueDateFilter {
             Self::Overdue => "Overdue",
             Self::Today => "Today",
             Self::TodayAndUpcoming => "Today & upcoming",
-            Self::Upcoming => "All upcoming",
             Self::UpcomingTomorrow => "Tomorrow",
             Self::UpcomingWeek => "Next 7 days",
             Self::UpcomingTwoWeeks => "Next 14 days",
@@ -51,7 +48,6 @@ impl DueDateFilter {
         matches!(
             self,
             Self::TodayAndUpcoming
-                | Self::Upcoming
                 | Self::UpcomingTomorrow
                 | Self::UpcomingWeek
                 | Self::UpcomingTwoWeeks
@@ -126,10 +122,10 @@ pub fn apply_search_filter(
         }
         if search_tags {
             for tag_id in c.tags() {
-                if let Some(tag) = all_tags.iter().find(|t| t.id() == *tag_id) {
-                    if tag.title().to_lowercase().contains(&q) {
-                        return true;
-                    }
+                if let Some(tag) = all_tags.iter().find(|t| t.id() == *tag_id)
+                    && tag.title().to_lowercase().contains(&q)
+                {
+                    return true;
                 }
             }
         }
@@ -175,11 +171,7 @@ pub fn apply_tag_filter(
 /// No-op if `filter` is [`DueDateFilter::All`].
 /// When `include_overdue` is `true` and `filter` is not `All` or `Overdue`,
 /// cards with a due date before today are also included.
-pub fn apply_due_date_filter(
-    cards: &mut Vec<Card>,
-    filter: DueDateFilter,
-    include_overdue: bool,
-) {
+pub fn apply_due_date_filter(cards: &mut Vec<Card>, filter: DueDateFilter, include_overdue: bool) {
     let today = Utc::now().date_naive();
     apply_due_date_filter_with_today(cards, filter, today, include_overdue);
 }
@@ -224,16 +216,6 @@ pub fn apply_due_date_filter_with_today(
                     .unwrap_or(false)
             });
         }
-        DueDateFilter::Upcoming => {
-            cards.retain(|c| {
-                c.due_date()
-                    .map(|d| {
-                        let date = d.date_naive();
-                        date > today || overdue_ok(date)
-                    })
-                    .unwrap_or(false)
-            });
-        }
         DueDateFilter::UpcomingTomorrow => {
             let tomorrow = today + chrono::Days::new(1);
             cards.retain(|c| {
@@ -251,7 +233,7 @@ pub fn apply_due_date_filter_with_today(
                 c.due_date()
                     .map(|d| {
                         let date = d.date_naive();
-                        (date > today && date <= end) || overdue_ok(date)
+                        (date >= today && date < end) || overdue_ok(date)
                     })
                     .unwrap_or(false)
             });
@@ -262,7 +244,7 @@ pub fn apply_due_date_filter_with_today(
                 c.due_date()
                     .map(|d| {
                         let date = d.date_naive();
-                        (date > today && date <= end) || overdue_ok(date)
+                        (date >= today && date < end) || overdue_ok(date)
                     })
                     .unwrap_or(false)
             });
@@ -1064,39 +1046,94 @@ mod tests {
 
     fn due_date_cards(today: NaiveDate) -> Vec<Card> {
         use chrono::Days;
-        let to_dt = |d: NaiveDate| -> DateTime<Utc> {
-            d.and_hms_opt(12, 0, 0)
-                .unwrap()
-                .and_utc()
-        };
+        let to_dt = |d: NaiveDate| -> DateTime<Utc> { d.and_hms_opt(12, 0, 0).unwrap().and_utc() };
         vec![
-            Card::first(fixed_uuid(1), "yesterday".into(), priority(100), vec![], false, fixed_time(), Some(to_dt(today - Days::new(1)))),
-            Card::first(fixed_uuid(2), "today".into(), priority(100), vec![], false, fixed_time(), Some(to_dt(today))),
-            Card::first(fixed_uuid(3), "tomorrow".into(), priority(100), vec![], false, fixed_time(), Some(to_dt(today + Days::new(1)))),
-            Card::first(fixed_uuid(4), "in3days".into(), priority(100), vec![], false, fixed_time(), Some(to_dt(today + Days::new(3)))),
-            Card::first(fixed_uuid(5), "in7days".into(), priority(100), vec![], false, fixed_time(), Some(to_dt(today + Days::new(7)))),
-            Card::first(fixed_uuid(6), "in10days".into(), priority(100), vec![], false, fixed_time(), Some(to_dt(today + Days::new(10)))),
-            Card::first(fixed_uuid(7), "in14days".into(), priority(100), vec![], false, fixed_time(), Some(to_dt(today + Days::new(14)))),
-            Card::first(fixed_uuid(8), "in20days".into(), priority(100), vec![], false, fixed_time(), Some(to_dt(today + Days::new(20)))),
-            Card::first(fixed_uuid(9), "no_due".into(), priority(100), vec![], false, fixed_time(), None),
+            Card::first(
+                fixed_uuid(1),
+                "yesterday".into(),
+                priority(100),
+                vec![],
+                false,
+                fixed_time(),
+                Some(to_dt(today - Days::new(1))),
+            ),
+            Card::first(
+                fixed_uuid(2),
+                "today".into(),
+                priority(100),
+                vec![],
+                false,
+                fixed_time(),
+                Some(to_dt(today)),
+            ),
+            Card::first(
+                fixed_uuid(3),
+                "tomorrow".into(),
+                priority(100),
+                vec![],
+                false,
+                fixed_time(),
+                Some(to_dt(today + Days::new(1))),
+            ),
+            Card::first(
+                fixed_uuid(4),
+                "in3days".into(),
+                priority(100),
+                vec![],
+                false,
+                fixed_time(),
+                Some(to_dt(today + Days::new(3))),
+            ),
+            Card::first(
+                fixed_uuid(5),
+                "in7days".into(),
+                priority(100),
+                vec![],
+                false,
+                fixed_time(),
+                Some(to_dt(today + Days::new(7))),
+            ),
+            Card::first(
+                fixed_uuid(6),
+                "in10days".into(),
+                priority(100),
+                vec![],
+                false,
+                fixed_time(),
+                Some(to_dt(today + Days::new(10))),
+            ),
+            Card::first(
+                fixed_uuid(7),
+                "in14days".into(),
+                priority(100),
+                vec![],
+                false,
+                fixed_time(),
+                Some(to_dt(today + Days::new(14))),
+            ),
+            Card::first(
+                fixed_uuid(8),
+                "in20days".into(),
+                priority(100),
+                vec![],
+                false,
+                fixed_time(),
+                Some(to_dt(today + Days::new(20))),
+            ),
+            Card::first(
+                fixed_uuid(9),
+                "no_due".into(),
+                priority(100),
+                vec![],
+                false,
+                fixed_time(),
+                None,
+            ),
         ]
     }
 
     fn names(cards: &[Card]) -> Vec<&str> {
         cards.iter().map(|c| c.content()).collect()
-    }
-
-    #[test]
-    fn due_filter_upcoming_all() {
-        let today = NaiveDate::from_ymd_opt(2025, 6, 15).unwrap();
-        let mut cards = due_date_cards(today);
-        apply_due_date_filter_with_today(&mut cards, DueDateFilter::Upcoming, today, false);
-        let n = names(&cards);
-        assert!(n.contains(&"tomorrow"));
-        assert!(n.contains(&"in20days"));
-        assert!(!n.contains(&"today"));
-        assert!(!n.contains(&"yesterday"));
-        assert!(!n.contains(&"no_due"));
     }
 
     #[test]
@@ -1114,11 +1151,12 @@ mod tests {
         let mut cards = due_date_cards(today);
         apply_due_date_filter_with_today(&mut cards, DueDateFilter::UpcomingWeek, today, false);
         let n = names(&cards);
+        assert!(n.contains(&"today"));
         assert!(n.contains(&"tomorrow"));
         assert!(n.contains(&"in3days"));
-        assert!(n.contains(&"in7days"));
-        assert!(!n.contains(&"today"));
+        assert!(!n.contains(&"in7days")); // day 7 is outside the 7-day window
         assert!(!n.contains(&"in10days"));
+        assert!(!n.contains(&"yesterday"));
         assert!(!n.contains(&"no_due"));
     }
 
@@ -1128,13 +1166,14 @@ mod tests {
         let mut cards = due_date_cards(today);
         apply_due_date_filter_with_today(&mut cards, DueDateFilter::UpcomingTwoWeeks, today, false);
         let n = names(&cards);
+        assert!(n.contains(&"today"));
         assert!(n.contains(&"tomorrow"));
         assert!(n.contains(&"in3days"));
         assert!(n.contains(&"in7days"));
         assert!(n.contains(&"in10days"));
-        assert!(n.contains(&"in14days"));
-        assert!(!n.contains(&"today"));
+        assert!(!n.contains(&"in14days")); // day 14 is outside the 14-day window
         assert!(!n.contains(&"in20days"));
+        assert!(!n.contains(&"yesterday"));
         assert!(!n.contains(&"no_due"));
     }
 
@@ -1157,10 +1196,10 @@ mod tests {
         apply_due_date_filter_with_today(&mut cards, DueDateFilter::UpcomingWeek, today, true);
         let n = names(&cards);
         assert!(n.contains(&"yesterday"));
+        assert!(n.contains(&"today"));
         assert!(n.contains(&"tomorrow"));
         assert!(n.contains(&"in3days"));
-        assert!(n.contains(&"in7days"));
-        assert!(!n.contains(&"today"));
+        assert!(!n.contains(&"in7days")); // day 7 is outside the 7-day window
         assert!(!n.contains(&"in10days"));
         assert!(!n.contains(&"no_due"));
     }
@@ -1197,7 +1236,6 @@ mod tests {
         assert!(!DueDateFilter::Overdue.is_upcoming());
         assert!(!DueDateFilter::Today.is_upcoming());
         assert!(DueDateFilter::TodayAndUpcoming.is_upcoming());
-        assert!(DueDateFilter::Upcoming.is_upcoming());
         assert!(DueDateFilter::UpcomingTomorrow.is_upcoming());
         assert!(DueDateFilter::UpcomingWeek.is_upcoming());
         assert!(DueDateFilter::UpcomingTwoWeeks.is_upcoming());
@@ -1210,7 +1248,6 @@ mod tests {
             DueDateFilter::Overdue,
             DueDateFilter::Today,
             DueDateFilter::TodayAndUpcoming,
-            DueDateFilter::Upcoming,
             DueDateFilter::UpcomingTomorrow,
             DueDateFilter::UpcomingWeek,
             DueDateFilter::UpcomingTwoWeeks,

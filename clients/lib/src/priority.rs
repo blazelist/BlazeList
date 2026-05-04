@@ -155,23 +155,14 @@ pub fn move_card(cards: &[Card], card_id: Uuid, target: InsertPosition) -> Place
 }
 
 /// Determine (upper, lower, insert_idx) for an insert position.
-fn bounds_for_position<C: CardRef>(
-    cards: &[C],
-    position: &InsertPosition,
-) -> (i64, i64, usize) {
+fn bounds_for_position<C: CardRef>(cards: &[C], position: &InsertPosition) -> (i64, i64, usize) {
     match position {
         InsertPosition::Top => {
-            let lower = cards
-                .first()
-                .map(|c| c.card_priority())
-                .unwrap_or(i64::MIN);
+            let lower = cards.first().map(|c| c.card_priority()).unwrap_or(i64::MIN);
             (i64::MAX, lower, 0)
         }
         InsertPosition::Bottom => {
-            let upper = cards
-                .last()
-                .map(|c| c.card_priority())
-                .unwrap_or(i64::MAX);
+            let upper = cards.last().map(|c| c.card_priority()).unwrap_or(i64::MAX);
             (upper, i64::MIN, cards.len())
         }
         InsertPosition::At(idx) => {
@@ -193,12 +184,7 @@ fn bounds_for_position<C: CardRef>(
 
 /// Try to place at the given bounds. If the gap is sufficient, return Simple.
 /// Otherwise, rebalance the packed range.
-fn try_place<C: CardRef>(
-    cards: &[C],
-    upper: i64,
-    lower: i64,
-    insert_idx: usize,
-) -> Placement {
+fn try_place<C: CardRef>(cards: &[C], upper: i64, lower: i64, insert_idx: usize) -> Placement {
     let upper_val = upper as i128;
     let lower_val = lower as i128;
 
@@ -396,10 +382,7 @@ mod tests {
         let result = place_card(&cards, InsertPosition::At(1));
         match result {
             Placement::Simple(p) => {
-                assert!(
-                    p > 500 && p < 1000,
-                    "should be between 500 and 1000: {p}"
-                );
+                assert!(p > 500 && p < 1000, "should be between 500 and 1000: {p}");
             }
             Placement::Rebalanced { .. } => panic!("expected Simple"),
         }
@@ -447,10 +430,7 @@ mod tests {
             match result {
                 Placement::Simple(p) => {
                     assert!(p > 0, "should be above card: {p}");
-                    assert!(
-                        p <= MAX_EDGE_GAP as i64,
-                        "should be within cap range: {p}"
-                    );
+                    assert!(p <= MAX_EDGE_GAP as i64, "should be within cap range: {p}");
                 }
                 Placement::Rebalanced { .. } => panic!("expected Simple"),
             }
@@ -738,9 +718,15 @@ mod tests {
             Placement::Rebalanced { priority, shifted } => (*priority, shifted),
             _ => unreachable!(),
         };
-        assert!(new_p > -1000 && new_p < 1000, "new priority {new_p} outside neighbor bounds");
+        assert!(
+            new_p > -1000 && new_p < 1000,
+            "new priority {new_p} outside neighbor bounds"
+        );
         for &(_, p) in shifted {
-            assert!(p > -1000 && p < 1000, "shifted priority {p} outside neighbor bounds");
+            assert!(
+                p > -1000 && p < 1000,
+                "shifted priority {p} outside neighbor bounds"
+            );
         }
     }
 
@@ -782,9 +768,7 @@ mod tests {
     #[test]
     fn rebalance_long_chain_at_boundary() {
         // 10 consecutive cards packed right at i64::MAX.
-        let cards: Vec<Card> = (0..10)
-            .map(|i| make_card(i64::MAX - 1 - i))
-            .collect();
+        let cards: Vec<Card> = (0..10).map(|i| make_card(i64::MAX - 1 - i)).collect();
         let result = place_card(&cards, InsertPosition::Top);
         assert!(matches!(result, Placement::Rebalanced { .. }));
         assert_valid_placement("chain at MAX", &cards, &result);
@@ -813,7 +797,13 @@ mod tests {
 
     #[test]
     fn rebalance_spanning_zero() {
-        let cards = vec![make_card(2), make_card(1), make_card(0), make_card(-1), make_card(-2)];
+        let cards = vec![
+            make_card(2),
+            make_card(1),
+            make_card(0),
+            make_card(-1),
+            make_card(-2),
+        ];
         let result = place_card(&cards, InsertPosition::At(2));
         assert!(matches!(result, Placement::Rebalanced { .. }));
         assert_valid_placement("span zero", &cards, &result);

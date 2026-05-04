@@ -1,19 +1,29 @@
 use crate::components::card_editor::CardEditor;
-use crate::components::hooks::{handle_code_copy_click, use_click_outside_close};
+use crate::components::hooks::{
+    ConfirmDeletePrompt, TagColorPicker, handle_code_copy_click, parse_hex_color,
+    use_click_outside_close,
+};
+use crate::components::keyboard::{copy_to_clipboard, show_copy_toast};
+use crate::components::link_indicators::link_indicators_view;
 use crate::components::tag_detail::TagDetail;
+use crate::components::timestamp::Timestamp;
+use crate::components::toast::show_error_toast;
 use crate::components::version_history::VersionHistory;
 use crate::state::store::{
-    AppState, DueDatePreset, NewCardPosition, confirm_discard_changes, format_due_date_badge,
-    format_due_date_display, get_client, sync_query_params, tag_chip_style,
+    AppState, DueDatePreset, DueDateStatus, NewCardPosition, confirm_discard_changes,
+    due_date_status, format_due_date_badge, format_due_date_display, get_client, select_card_view,
+    sync_query_params, tag_chip_style,
 };
 use crate::state::sync::{push_card_or_queue, push_versions_or_queue};
 use blazelist_client_lib::client::Client as _;
+use blazelist_client_lib::display::LinkCounts;
+use blazelist_client_lib::error::ClientError;
 use blazelist_client_lib::priority::{
     InsertPosition, Placement, build_shifted_versions, move_card,
 };
+use blazelist_client_lib::tag_graph::TagGraph;
 use blazelist_protocol::{Card, CardFilter, Entity, PushItem, Tag, Utc};
 use leptos::prelude::*;
-use rgb::RGB8;
 use uuid::Uuid;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -38,7 +48,12 @@ fn render_markdown(
         comrak::markdown_to_html(content, &blazelist_client_lib::display::markdown_options());
     // comrak renders checkboxes with disabled="" — remove it so clicks fire
     let html = html.replace(" disabled=\"\"", "");
-    let html = blazelist_client_lib::display::linkify_card_uuids_with_previews(&html, card_ids, card_previews, blazed_ids);
+    let html = blazelist_client_lib::display::linkify_card_uuids_with_previews(
+        &html,
+        card_ids,
+        card_previews,
+        blazed_ids,
+    );
     blazelist_client_lib::display::wrap_code_blocks_with_copy_button(&html)
 }
 
@@ -217,6 +232,20 @@ pub fn CardDetail() -> impl IntoView {
         state.pending_versions.set(Vec::new());
     });
 
+    // Watch for keyboard-triggered delete request.
+    Effect::new(move |_| {
+        if state.delete_requested.get() {
+            state.delete_requested.set(false);
+            // Only trigger if a card (not tag) is selected and not editing.
+            if state.selected_card.get_untracked().is_some()
+                && !state.editing.get_untracked()
+                && !state.creating_new.get_untracked()
+            {
+                confirm_delete.set(1);
+            }
+        }
+    });
+
     let close_action = move || {
         if !confirm_discard_changes(&state) {
             return;
@@ -267,10 +296,14 @@ pub fn CardDetail() -> impl IntoView {
                 // so the editor survives a potential DynChild re-render.
                 let existing_card = state.selected_card.get_untracked()
                     .and_then(|id| state.cards.get_untracked().into_iter().find(|c| c.id() == id));
-                let on_save_cb = move || state.creating_new.set(false);
+                let on_save_cb = move || {
+                    state.creating_new.set(false);
+                    state.new_card_prefill.set(None);
+                };
                 let on_cancel_cb = Callback::new(move |_: ()| {
                     if !confirm_discard_changes(&state) { return; }
                     state.creating_new.set(false);
+                    state.new_card_prefill.set(None);
                 });
                 let editor_view = if let Some(card) = existing_card {
                     view! { <CardEditor editing_card=card on_save=on_save_cb on_cancel=on_cancel_cb /> }.into_any()
@@ -311,9 +344,7 @@ pub fn CardDetail() -> impl IntoView {
 
             // --- Selected card ---
             let selected_id = state.selected_card.get();
-            if selected_id.is_none() {
-                return None;
-            }
+            selected_id?;
             let selected_id = selected_id.unwrap();
 
             // Check if the selected ID is a tag — render TagDetail without
@@ -419,40 +450,26 @@ pub fn CardDetail() -> impl IntoView {
             let priority_raw = card.priority();
             let priority_pct = blazelist_client_lib::priority::priority_percentage(priority_raw);
             let count = i64::from(card.count());
-            let created = card.created_at().format("%Y-%m-%d %H:%M:%S UTC").to_string();
-            let modified = card.modified_at().format("%Y-%m-%d %H:%M:%S UTC").to_string();
+            let created = card.created_at();
+            let modified = card.modified_at();
             let id_str = card_id.to_string();
             let id_str_copy = id_str.clone();
+            let copy_toast_msg = {
+                let id_preview: String = id_str.chars().take(8).collect();
+                let card_preview = blazelist_client_lib::display::card_preview(&content_raw, 30);
+                match card_preview {
+                    Some(p) => format!("Copied {id_preview}\u{2026} \u{2014} {p}"),
+                    None => format!("Copied {id_preview}\u{2026}"),
+                }
+            };
 
             let card_tag_ids = card.tags().to_vec();
             let all_tags = state.tags.get_untracked();
             let mut card_tags_with_ids: Vec<(uuid::Uuid, String, Option<rgb::RGB8>)> = card_tag_ids.iter().filter_map(|tid| {
-                all_tags.iter().find(|t| t.id() == *tid).map(|t| {
-                    (*tid, t.title().to_string(), t.color())
-                })
+                let tag = all_tags.iter().find(|t| t.id() == *tid)?;
+                Some((*tid, tag.title().to_string(), tag.color()))
             }).collect();
             card_tags_with_ids.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
-
-            // Extract forward links (this card mentions other cards) and
-            // back links (other cards mention this card) for bidirectional display.
-            let forward_ids = blazelist_client_lib::display::extract_card_links(&content_raw, card_id);
-            let back_ids = blazelist_client_lib::display::extract_back_links(card_id, &all_cards_snapshot);
-
-            // Merge forward + back links, deduplicating (forward takes precedence).
-            let mut all_linked_ids = forward_ids.clone();
-            let forward_set: std::collections::HashSet<uuid::Uuid> = forward_ids.iter().copied().collect();
-            for id in &back_ids {
-                if !forward_set.contains(id) {
-                    all_linked_ids.push(*id);
-                }
-            }
-            let back_set: std::collections::HashSet<uuid::Uuid> = back_ids.iter().copied().collect();
-            let linked_cards_with_preview = blazelist_client_lib::display::resolve_linked_cards(&all_linked_ids, &all_cards_snapshot, 500);
-
-            // Compute summary counts for the linked cards header.
-            let forward_only_count = forward_ids.iter().filter(|id| !back_set.contains(id)).count();
-            let back_only_count = back_ids.iter().filter(|id| !forward_set.contains(id)).count();
-            let mutual_count = forward_ids.iter().filter(|id| back_set.contains(id)).count();
 
             let reorder_disabled;
             let filtered;
@@ -500,7 +517,7 @@ pub fn CardDetail() -> impl IntoView {
                     new_due,
                 );
                 state.upsert_card(next.clone());
-                let state = state.clone();
+                let state = state;
                 leptos::task::spawn_local(async move {
                     push_card_or_queue(&state, next).await;
                 });
@@ -519,7 +536,7 @@ pub fn CardDetail() -> impl IntoView {
                     current.due_date(),
                 );
                 state.upsert_card(next.clone());
-                let state = state.clone();
+                let state = state;
                 leptos::task::spawn_local(async move {
                     if !pending.is_empty() {
                         push_versions_or_queue(&state, pending).await;
@@ -532,23 +549,38 @@ pub fn CardDetail() -> impl IntoView {
                 confirm_delete.set(1);
             };
 
-            let on_confirm_delete = move |_| {
+            let do_confirm_delete = move || {
                 let pending = drain_pending(&state);
-                let state = state.clone();
+                let state = state;
                 confirm_delete.set(0);
                 leptos::task::spawn_local(async move {
                     if !pending.is_empty() {
                         push_versions_or_queue(&state, pending).await;
                     }
                     // Delete requires a live connection (not queued offline).
-                    if let Some(client) = get_client() {
-                        if let Err(e) = client.delete_card(card_id).await {
-                            tracing::error!(%e, "Failed to delete card");
+                    let Some(client) = get_client() else {
+                        show_error_toast(state, "Can't delete cards while offline", 3000);
+                        return;
+                    };
+                    match client.delete_card(card_id).await {
+                        Ok(_) => {}
+                        Err(ClientError::ConnectionLost) => {
+                            show_error_toast(
+                                state,
+                                "Can't delete cards while offline",
+                                3000,
+                            );
                             return;
                         }
-                    } else {
-                        tracing::warn!("Cannot delete card while offline");
-                        return;
+                        Err(e) => {
+                            tracing::error!(%e, "Failed to delete card");
+                            show_error_toast(
+                                state,
+                                &format!("Failed to delete card: {e}"),
+                                3000,
+                            );
+                            return;
+                        }
                     }
                     state.cards.update(|cards| cards.retain(|c| c.id() != card_id));
                     state.selected_card.set(None);
@@ -556,7 +588,7 @@ pub fn CardDetail() -> impl IntoView {
                 });
             };
 
-            let on_cancel_delete = move |_| {
+            let do_cancel_delete = move || {
                 confirm_delete.set(0);
             };
 
@@ -640,8 +672,8 @@ pub fn CardDetail() -> impl IntoView {
                 };
 
                 // Check for card UUID link click.
-                if let Ok(el) = target.clone().dyn_into::<web_sys::HtmlElement>() {
-                    if let Ok(Some(link_el)) = el.closest(".card-uuid-link")
+                if let Ok(el) = target.clone().dyn_into::<web_sys::HtmlElement>()
+                    && let Ok(Some(link_el)) = el.closest(".card-uuid-link")
                         && let Some(card_id_str) = link_el.get_attribute("data-card-id")
                         && let Ok(target_id) = card_id_str.parse::<uuid::Uuid>()
                     {
@@ -654,7 +686,6 @@ pub fn CardDetail() -> impl IntoView {
                         sync_query_params(&state);
                         return;
                     }
-                }
 
                 // Check for code-block copy button click.
                 if handle_code_copy_click(&ev) {
@@ -702,12 +733,11 @@ pub fn CardDetail() -> impl IntoView {
                 let mut cb_index = None;
                 let input_node: &web_sys::Node = input.as_ref();
                 for i in 0..node_list.length() {
-                    if let Some(node) = node_list.item(i) {
-                        if node == *input_node {
+                    if let Some(node) = node_list.item(i)
+                        && node == *input_node {
                             cb_index = Some(i as usize);
                             break;
                         }
-                    }
                 }
                 let cb_index = match cb_index {
                     Some(i) => i,
@@ -742,6 +772,202 @@ pub fn CardDetail() -> impl IntoView {
             };
             let card_for_editor = card.clone();
 
+            // Reactive closure for the linked cards section: reads
+            // recursive_links.get() so only this section re-renders
+            // when the setting is toggled — not the whole DynChild.
+            // Captures are untracked snapshots — same staleness trade-off
+            // as the rest of the detail panel (intentional for editor
+            // isolation; refreshed when selected_card changes).
+            let linked_cards_section = {
+                let content_raw_links = content_raw.clone();
+                let all_cards_links = all_cards_snapshot.clone();
+                let blazed_ids_links = blazed_card_ids.clone();
+                move || {
+                    let recursive = state.recursive_links.get();
+
+                    let forward_ids = blazelist_client_lib::display::extract_card_links(&content_raw_links, card_id);
+                    let back_ids = blazelist_client_lib::display::extract_back_links(card_id, &all_cards_links);
+
+                    let mut all_linked_ids = forward_ids.clone();
+                    let forward_set: std::collections::HashSet<uuid::Uuid> = forward_ids.iter().copied().collect();
+                    for id in &back_ids {
+                        if !forward_set.contains(id) {
+                            all_linked_ids.push(*id);
+                        }
+                    }
+
+                    if recursive {
+                        let expanded = state
+                            .link_graph_cache
+                            .get_untracked()
+                            .get(&card_id)
+                            .map(|(_, v)| v.clone())
+                            .unwrap_or_else(|| {
+                                let result = blazelist_client_lib::display::expand_linked_cards(
+                                    card_id,
+                                    &all_cards_links,
+                                );
+                                let hash = *blake3::hash(content_raw_links.as_bytes()).as_bytes();
+                                state.link_graph_cache.update(|cache| {
+                                    cache.insert(card_id, (hash, result.clone()));
+                                });
+                                result
+                            });
+                        let direct_set: std::collections::HashSet<uuid::Uuid> =
+                            all_linked_ids.iter().copied().collect();
+                        all_linked_ids
+                            .extend(expanded.into_iter().filter(|id| !direct_set.contains(id)));
+                    }
+
+                    let back_set: std::collections::HashSet<uuid::Uuid> = back_ids.iter().copied().collect();
+
+                    // Sort so the linked-cards list mirrors the indicator
+                    // order: mutual → forward-only → back-only → transitive.
+                    // Within each group, preserve the original ordering.
+                    let direction_rank = |id: &uuid::Uuid| -> u8 {
+                        let is_fwd = forward_set.contains(id);
+                        let is_bck = back_set.contains(id);
+                        match (is_fwd, is_bck) {
+                            (true, true) => 0,
+                            (true, false) => 1,
+                            (false, true) => 2,
+                            (false, false) => 3,
+                        }
+                    };
+                    let mut sorted_ids = all_linked_ids.clone();
+                    sorted_ids.sort_by_key(direction_rank);
+
+                    let linked_cards_with_preview = blazelist_client_lib::display::resolve_linked_cards(&sorted_ids, &all_cards_links, 500);
+
+                    let forward_only_count = forward_ids.iter().filter(|id| !back_set.contains(id)).count();
+                    let back_only_count = back_ids.iter().filter(|id| !forward_set.contains(id)).count();
+                    let mutual_count = forward_ids.iter().filter(|id| back_set.contains(id)).count();
+                    let transitive_count = all_linked_ids.len() - forward_ids.len() - back_only_count;
+
+                    (!linked_cards_with_preview.is_empty()).then(|| {
+                        let links = linked_cards_with_preview.clone();
+                        let all_linked_ids_for_filter = all_linked_ids.clone();
+                        let forward_ids_for_filter = forward_ids.clone();
+                        let back_ids_for_filter = back_ids.clone();
+                        let back_set_clone = back_set.clone();
+                        let forward_set_clone = forward_set.clone();
+                        let filter_dropdown_open = RwSignal::new(false);
+                        let summary = link_indicators_view(LinkCounts {
+                            forward: forward_only_count,
+                            back: back_only_count,
+                            mutual: mutual_count,
+                            transitive: transitive_count,
+                        });
+                        view! {
+                            <div class="detail-section">
+                                <div class="detail-linked-cards">
+                                    <div class="linked-cards-header">
+                                        <span class="meta-label">"Linked Cards"</span>
+                                        {summary}
+                                    </div>
+                                    <ul class="linked-card-list">
+                                        {links.into_iter().map(|(lid, preview)| {
+                                            let short_id = format!("{}\u{2026}", &lid.to_string()[..8]);
+                                            let is_forward = forward_set_clone.contains(&lid);
+                                            let is_back = back_set_clone.contains(&lid);
+                                            let is_lid_blazed = blazed_ids_links.contains(&lid);
+                                            let (direction, dir_class, dir_tip) = match (is_forward, is_back) {
+                                                (true, true) => ("\u{2194}", "linked-card-direction dir-mutual", "Mutual link"),
+                                                (true, false) => ("\u{2192}", "linked-card-direction dir-forward", "Forward link"),
+                                                (false, true) => ("\u{2190}", "linked-card-direction dir-back", "Back link"),
+                                                _ => ("\u{22EF}", "linked-card-direction dir-transitive", "Transitive link"),
+                                            };
+                                            let item_class = if is_lid_blazed { "linked-card-item blazed" } else { "linked-card-item" };
+                                            let full_id = lid.to_string();
+                                            view! {
+                                                <li class=item_class on:click=move |_| {
+                                                    if !confirm_discard_changes(&state) {
+                                                        return;
+                                                    }
+                                                    flush_pending(&state);
+                                                    state.selected_card.set(Some(lid));
+                                                    state.editing.set(false);
+                                                    sync_query_params(&state);
+                                                } title=full_id>
+                                                    <span class=dir_class title=dir_tip>{direction}</span>
+                                                    <span class="linked-card-id">{short_id}</span>
+                                                    <span class="linked-card-preview">{preview}</span>
+                                                </li>
+                                            }
+                                        }).collect::<Vec<_>>()}
+                                    </ul>
+                                    <div class="filter-linked-group">
+                                        <button class="btn-filter-linked" on:click=move |_| {
+                                            let mut ids = all_linked_ids_for_filter.clone();
+                                            ids.insert(0, card_id);
+                                            state.linked_card_filter.set(ids);
+                                            state.filter.set(CardFilter::All);
+                                            state.search_query.set(String::new());
+                                            state.tag_filter.set(Vec::new());
+                                            state.no_tags_filter.set(false);
+                                            sync_query_params(&state);
+                                        } title="Filter by all linked cards">"Filter Linked"</button>
+                                        <button class="btn-filter-linked-dropdown" on:click=move |_| {
+                                            filter_dropdown_open.update(|v| *v = !*v);
+                                        }>{move || if filter_dropdown_open.get() { "\u{25B4}" } else { "\u{25BE}" }}</button>
+                                        {move || filter_dropdown_open.get().then(|| {
+                                            let fwd = forward_ids_for_filter.clone();
+                                            let bck = back_ids_for_filter.clone();
+                                            let direct_ids = {
+                                                let mut d = fwd.clone();
+                                                for id in &bck {
+                                                    if !d.contains(id) {
+                                                        d.push(*id);
+                                                    }
+                                                }
+                                                d
+                                            };
+                                            view! {
+                                                <div class="filter-linked-dropdown">
+                                                    <button class="filter-linked-option" on:click=move |_| {
+                                                        let mut ids = fwd.clone();
+                                                        ids.insert(0, card_id);
+                                                        state.linked_card_filter.set(ids);
+                                                        state.filter.set(CardFilter::All);
+                                                        state.search_query.set(String::new());
+                                                        state.tag_filter.set(Vec::new());
+                                                        state.no_tags_filter.set(false);
+                                                        filter_dropdown_open.set(false);
+                                                        sync_query_params(&state);
+                                                    }>"\u{2192} Forward links only"</button>
+                                                    <button class="filter-linked-option" on:click=move |_| {
+                                                        let mut ids = bck.clone();
+                                                        ids.insert(0, card_id);
+                                                        state.linked_card_filter.set(ids);
+                                                        state.filter.set(CardFilter::All);
+                                                        state.search_query.set(String::new());
+                                                        state.tag_filter.set(Vec::new());
+                                                        state.no_tags_filter.set(false);
+                                                        filter_dropdown_open.set(false);
+                                                        sync_query_params(&state);
+                                                    }>"\u{2190} Back links only"</button>
+                                                    <button class="filter-linked-option" on:click=move |_| {
+                                                        let mut ids = direct_ids.clone();
+                                                        ids.insert(0, card_id);
+                                                        state.linked_card_filter.set(ids);
+                                                        state.filter.set(CardFilter::All);
+                                                        state.search_query.set(String::new());
+                                                        state.tag_filter.set(Vec::new());
+                                                        state.no_tags_filter.set(false);
+                                                        filter_dropdown_open.set(false);
+                                                        sync_query_params(&state);
+                                                    }>"\u{2194} Direct (forward + back)"</button>
+                                                </div>
+                                            }
+                                        })}
+                                    </div>
+                                </div>
+                            </div>
+                        }
+                    })
+                }
+            };
+
             let result = if state.editing.get() {
                 view! {
                     <div class="card-detail">
@@ -769,6 +995,38 @@ pub fn CardDetail() -> impl IntoView {
                     <div class="card-detail">
                         <div class="detail-header">
                             <span class=move || if is_blazed.get() { "detail-status blazed" } else { "detail-status active" }>{move || if is_blazed.get() { "Blazed" } else { "Active" }}</span>
+                            <div class="detail-header-nav">
+                                <button
+                                    class="detail-nav-btn"
+                                    title="Previous card (k)"
+                                    on:click=move |_| {
+                                        let filtered = state.filtered_cards().get_untracked();
+                                        let pos = filtered.iter().position(|c| c.id() == card_id);
+                                        if let Some(i) = pos && i > 0 {
+                                            select_card_view(&state, filtered[i - 1].id());
+                                        }
+                                    }
+                                    disabled=move || {
+                                        let filtered = state.filtered_cards().get_untracked();
+                                        filtered.first().map(|c| c.id()) == Some(card_id)
+                                    }
+                                >"\u{2039}"</button>
+                                <button
+                                    class="detail-nav-btn"
+                                    title="Next card (j)"
+                                    on:click=move |_| {
+                                        let filtered = state.filtered_cards().get_untracked();
+                                        let pos = filtered.iter().position(|c| c.id() == card_id);
+                                        if let Some(i) = pos && i + 1 < filtered.len() {
+                                            select_card_view(&state, filtered[i + 1].id());
+                                        }
+                                    }
+                                    disabled=move || {
+                                        let filtered = state.filtered_cards().get_untracked();
+                                        filtered.last().map(|c| c.id()) == Some(card_id)
+                                    }
+                                >"\u{203A}"</button>
+                            </div>
                             <button class="detail-close" on:click=on_close>"x"</button>
                         </div>
                         <div class="card-content" node_ref=content_node_ref inner_html=content_html on:click=on_content_click></div>
@@ -778,32 +1036,85 @@ pub fn CardDetail() -> impl IntoView {
                                 <span class="meta-value">{format!("{done}/{total}")}</span>
                             </div>
                         })}
+
+                        // ── Tags (inline, only when present) ──
                         {(!card_tags_with_ids.is_empty()).then(|| {
                             let tags = card_tags_with_ids.clone();
                             view! {
-                                <div class="detail-tags">
-                                    <span class="meta-label">"Tags"</span>
-                                    <div class="detail-tag-chips">
-                                        {tags.into_iter().map(|(tag_id, name, color)| {
-                                            let on_tag_click = move |_| {
-                                                state.tag_filter.update(|tags| {
-                                                    if !tags.contains(&tag_id) {
-                                                        tags.push(tag_id);
+                                <div class="detail-tag-chips">
+                                    {tags.into_iter().map(|(tag_id, name, color)| {
+                                        let on_tag_click = move |_| {
+                                            let graph = TagGraph::from_tags(&state.tags.get_untracked());
+                                            let to_add = graph.closure_of(&[tag_id]);
+                                            state.tag_filter.update(|tags| {
+                                                for id in to_add {
+                                                    if !tags.contains(&id) {
+                                                        tags.push(id);
                                                     }
-                                                });
-                                                sync_query_params(&state);
-                                            };
-                                            let style = tag_chip_style(&color);
-                                            view! {
-                                                <span class="tag-chip" style=style on:click=on_tag_click title="Click to filter by this tag">{name}</span>
-                                            }
-                                        }).collect::<Vec<_>>()}
-                                    </div>
+                                                }
+                                            });
+                                            sync_query_params(&state);
+                                        };
+                                        let style = tag_chip_style(&color);
+                                        view! {
+                                            <span class="tag-chip" style=style on:click=on_tag_click title="Click to filter by this tag">{name}</span>
+                                        }
+                                    }).collect::<Vec<_>>()}
                                 </div>
                             }
                         })}
-                        <div class="detail-tags">
-                            <span class="meta-label">"Due date"</span>
+
+                        // ── Controls section (action buttons + due date) ──
+                        <div class="detail-section">
+                            <div class="card-actions">
+                                <div class="action-row nav-row">
+                                    <button class="btn-move" on:click=on_move_top prop:disabled={is_at_top || !in_filtered} title="Move to top">{"\u{2912}"}</button>
+                                    <button class="btn-move" on:click=on_move_up prop:disabled={is_at_top || !in_filtered} title="Move up one">{"\u{2191}"}</button>
+                                    <button class="btn-move" on:click=on_move_down prop:disabled={is_at_bottom || !in_filtered} title="Move down one">{"\u{2193}"}</button>
+                                    <button class="btn-move" on:click=on_move_bottom prop:disabled={is_at_bottom || !in_filtered} title="Move to bottom">{"\u{2913}"}</button>
+                                    <input
+                                        class="move-to-input"
+                                        type="number"
+                                        min="1"
+                                        max=total_cards.to_string()
+                                        prop:value=move || move_to_input.get()
+                                        prop:disabled={!in_filtered}
+                                        on:input=move |ev| move_to_input.set(event_target_value(&ev))
+                                    />
+                                    <span class="move-to-total">{format!("/ {total_cards}")}</span>
+                                    <button class="btn-go" on:click=on_move_to prop:disabled={!in_filtered}>"Move"</button>
+                                </div>
+                                <div class="action-row cmd-row">
+                                    <button class="btn-edit" on:click=on_edit>"Edit"</button>
+                                    <button class=move || if is_blazed.get() { "btn-extinguish" } else { "btn-blaze" } on:click=on_blaze>{move || if is_blazed.get() { "Extinguish" } else { "Blaze" }}</button>
+                                    {move || {
+                                        if confirm_delete.get() > 0 {
+                                            let card_label = move || {
+                                                let preview = state.cards.get_untracked().into_iter()
+                                                    .find(|c| c.id() == card_id)
+                                                    .and_then(|c| blazelist_client_lib::display::card_preview(c.content(), 120))
+                                                    .unwrap_or_else(|| "(empty)".to_string());
+                                                format!("Card: {preview}")
+                                            };
+                                            view! {
+                                                <ConfirmDeletePrompt
+                                                    step=confirm_delete
+                                                    first_prompt=|| "Delete?".to_string()
+                                                    entity_label=card_label
+                                                    on_confirm=do_confirm_delete
+                                                    on_cancel=do_cancel_delete
+                                                />
+                                            }.into_any()
+                                        } else {
+                                            view! {
+                                                <button class="btn-delete" on:click=on_delete_click>"Delete"</button>
+                                            }.into_any()
+                                        }
+                                    }}
+                                </div>
+                            </div>
+                            <div class="detail-tags">
+                                <span class="meta-label">"Due date"</span>
                             <div class="due-date-controls">
                                 {move || match due_date_opt.get() {
                                     Some(d) => {
@@ -818,9 +1129,21 @@ pub fn CardDetail() -> impl IntoView {
                                 }}
                                 <div class="due-date-dropdown-group" node_ref=due_group_ref>
                                     <button class="due-date-quick-btn" on:click={
-                                        let set_due_date = set_due_date.clone();
-                                        move |_| set_due_date(Some(due_preset.get_untracked().resolve()))
-                                    }>{move || due_preset.get().label()}</button>
+                                        let set_due_date = set_due_date;
+                                        move |_| {
+                                            let smart = match due_date_opt.get_untracked() {
+                                                Some(d) if matches!(due_date_status(&d), DueDateStatus::Today) => DueDatePreset::Tomorrow,
+                                                _ => DueDatePreset::Today,
+                                            };
+                                            due_preset.set(smart);
+                                            set_due_date(Some(smart.resolve()));
+                                        }
+                                    }>{move || {
+                                        match due_date_opt.get() {
+                                            Some(d) if matches!(due_date_status(&d), DueDateStatus::Today) => DueDatePreset::Tomorrow.label(),
+                                            _ => DueDatePreset::Today.label(),
+                                        }
+                                    }}</button>
                                     <button class="due-date-dropdown-toggle" on:click=move |ev: web_sys::MouseEvent| {
                                         ev.stop_propagation();
                                         due_dropdown_open.update(|v| *v = !*v);
@@ -828,11 +1151,11 @@ pub fn CardDetail() -> impl IntoView {
                                         {move || if due_dropdown_open.get() { "\u{25B4}" } else { "\u{25BE}" }}
                                     </button>
                                     {move || due_dropdown_open.get().then(|| {
-                                        let set_due_date = set_due_date.clone();
+                                        let set_due_date = set_due_date;
                                         view! {
                                             <div class="due-date-dropdown-menu">
                                                 {DueDatePreset::ALL.into_iter().map(|p| {
-                                                    let set_due_date = set_due_date.clone();
+                                                    let set_due_date = set_due_date;
                                                     view! {
                                                         <button
                                                             class="save-dropdown-item"
@@ -856,7 +1179,7 @@ pub fn CardDetail() -> impl IntoView {
                                     type="date"
                                     prop:value=move || due_date_opt.get().map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()
                                     on:change={
-                                        let set_due_date = set_due_date.clone();
+                                        let set_due_date = set_due_date;
                                         move |ev| {
                                             let val = event_target_value(&ev);
                                             if let Ok(date) = chrono::NaiveDate::parse_from_str(&val, "%Y-%m-%d") {
@@ -866,9 +1189,9 @@ pub fn CardDetail() -> impl IntoView {
                                     }
                                 />
                                 {
-                                    let set_due_date = set_due_date.clone();
+                                    let set_due_date = set_due_date;
                                     move || due_date_opt.get().map(|_| {
-                                        let set_due_date = set_due_date.clone();
+                                        let set_due_date = set_due_date;
                                         view! {
                                             <button class="due-date-clear-btn" on:click=move |_| set_due_date(None)>"Clear"</button>
                                         }
@@ -876,165 +1199,58 @@ pub fn CardDetail() -> impl IntoView {
                                 }
                             </div>
                         </div>
-                        {(!linked_cards_with_preview.is_empty()).then(|| {
-                            let links = linked_cards_with_preview.clone();
-                            let all_linked_ids_for_filter = all_linked_ids.clone();
-                            let back_set_clone = back_set.clone();
-                            let forward_set_clone = forward_set.clone();
-                            // Build colored summary spans like →3 ←2 ↔1
-                            let summary_fwd = (forward_only_count > 0).then(|| {
-                                let t = format!("\u{2192}{forward_only_count}");
-                                view! { <span class="summary-forward">{t}</span> }
-                            });
-                            let summary_bck = (back_only_count > 0).then(|| {
-                                let t = format!("\u{2190}{back_only_count}");
-                                view! { <span class="summary-back">{t}</span> }
-                            });
-                            let summary_mut = (mutual_count > 0).then(|| {
-                                let t = format!("\u{2194}{mutual_count}");
-                                view! { <span class="summary-mutual">{t}</span> }
-                            });
-                            view! {
-                                <div class="detail-linked-cards">
-                                    <div class="linked-cards-header">
-                                        <span class="meta-label">"Linked Cards"</span>
-                                        <span class="linked-cards-summary">{summary_fwd}{summary_bck}{summary_mut}</span>
-                                    </div>
-                                    <ul class="linked-card-list">
-                                        {links.into_iter().map(|(lid, preview)| {
-                                            let short_id = format!("{}\u{2026}", &lid.to_string()[..8]);
-                                            let is_forward = forward_set_clone.contains(&lid);
-                                            let is_back = back_set_clone.contains(&lid);
-                                            let (direction, dir_class) = match (is_forward, is_back) {
-                                                (true, true) => ("\u{2194}", "linked-card-direction dir-mutual"),
-                                                (true, false) => ("\u{2192}", "linked-card-direction dir-forward"),
-                                                (false, true) => ("\u{2190}", "linked-card-direction dir-back"),
-                                                _ => ("", "linked-card-direction"),
-                                            };
-                                            let full_id = lid.to_string();
-                                            view! {
-                                                <li class="linked-card-item" on:click=move |_| {
-                                                    if !confirm_discard_changes(&state) {
-                                                        return;
-                                                    }
-                                                    flush_pending(&state);
-                                                    state.selected_card.set(Some(lid));
-                                                    state.editing.set(false);
-                                                    sync_query_params(&state);
-                                                } title=full_id>
-                                                    <span class=dir_class>{direction}</span>
-                                                    <span class="linked-card-id">{short_id}</span>
-                                                    <span class="linked-card-preview">{preview}</span>
-                                                </li>
-                                            }
-                                        }).collect::<Vec<_>>()}
-                                    </ul>
-                                    <button class="btn-filter-linked" on:click=move |_| {
-                                        let mut ids = all_linked_ids_for_filter.clone();
-                                        ids.insert(0, card_id);
-                                        state.linked_card_filter.set(ids);
-                                        state.filter.set(CardFilter::All);
-                                        sync_query_params(&state);
-                                    }>"Filter Linked"</button>
+                        </div>
+
+                        // ── Details section (metadata) ──
+                        <div class="detail-section">
+                            <div class="detail-meta">
+                                <div class="meta-row">
+                                    <span class="meta-label">"ID"</span>
+                                    <span class="meta-value meta-id-value">
+                                        <button class="meta-copy-btn" title="Copy to clipboard" on:click=move |_| {
+                                            copy_to_clipboard(&id_str_copy);
+                                            show_copy_toast(state, &copy_toast_msg);
+                                        }>{"\u{29C9}"}</button>
+                                        {id_str}
+                                    </span>
                                 </div>
-                            }
-                        })}
-                        <div class="card-actions">
-                            <div class="action-row nav-row">
-                                <button class="btn-move" on:click=on_move_top prop:disabled={is_at_top || !in_filtered} title="Move to top">{"\u{2912}"}</button>
-                                <button class="btn-move" on:click=on_move_up prop:disabled={is_at_top || !in_filtered} title="Move up one">{"\u{2191}"}</button>
-                                <button class="btn-move" on:click=on_move_down prop:disabled={is_at_bottom || !in_filtered} title="Move down one">{"\u{2193}"}</button>
-                                <button class="btn-move" on:click=on_move_bottom prop:disabled={is_at_bottom || !in_filtered} title="Move to bottom">{"\u{2913}"}</button>
-                                <input
-                                    class="move-to-input"
-                                    type="number"
-                                    min="1"
-                                    max=total_cards.to_string()
-                                    prop:value=move || move_to_input.get()
-                                    prop:disabled={!in_filtered}
-                                    on:input=move |ev| move_to_input.set(event_target_value(&ev))
-                                />
-                                <span class="move-to-total">{format!("/ {total_cards}")}</span>
-                                <button class="btn-go" on:click=on_move_to prop:disabled={!in_filtered}>"Move"</button>
-                            </div>
-                            <div class="action-row cmd-row">
-                                <button class="btn-edit" on:click=on_edit>"Edit"</button>
-                                <button class=move || if is_blazed.get() { "btn-extinguish" } else { "btn-blaze" } on:click=on_blaze>{move || if is_blazed.get() { "Extinguish" } else { "Blaze" }}</button>
-                                {move || {
-                                    let step = confirm_delete.get();
-                                    if step == 2 {
-                                        let preview = state.cards.get().into_iter()
-                                            .find(|c| c.id() == card_id)
-                                            .map(|c| blazelist_client_lib::display::card_preview(c.content(), 120).unwrap_or_else(|| "(empty)".to_string()))
-                                            .unwrap_or_else(|| "(unknown)".to_string());
-                                        view! {
-                                            <div class="confirm-delete-permanent">
-                                                <span class="confirm-text-permanent">"This action is permanent and cannot be undone."</span>
-                                                <span class="confirm-entity-info">{format!("Card: {preview}")}</span>
-                                                <div class="confirm-permanent-buttons">
-                                                    <button class="btn-confirm-permanent" on:click=on_confirm_delete>"Delete permanently"</button>
-                                                    <button class="btn-confirm-no" on:click=on_cancel_delete>"Cancel"</button>
-                                                </div>
-                                            </div>
-                                        }.into_any()
-                                    } else if step == 1 {
-                                        view! {
-                                            <span class="confirm-delete">
-                                                <span class="confirm-text">"Delete?"</span>
-                                                <button class="btn-confirm-yes" on:click=move |_| confirm_delete.set(2)>"Yes"</button>
-                                                <button class="btn-confirm-no" on:click=on_cancel_delete>"No"</button>
-                                            </span>
-                                        }.into_any()
-                                    } else {
-                                        view! {
-                                            <button class="btn-delete" on:click=on_delete_click>"Delete"</button>
-                                        }.into_any()
-                                    }
-                                }}
+                                <div class="meta-row">
+                                    <span class="meta-label">"Priority"</span>
+                                    <span class="meta-value">{format!("{priority_raw} ({priority_pct:.2}%)")}</span>
+                                </div>
+                                <div class="meta-row">
+                                    <span class="meta-label">"Version"</span>
+                                    <span class="meta-value">{count.to_string()}</span>
+                                </div>
+                                <div class="meta-row">
+                                    <span class="meta-label">"Created"</span>
+                                    <Timestamp datetime=created class="meta-value" />
+                                </div>
+                                <div class="meta-row">
+                                    <span class="meta-label">"Modified"</span>
+                                    <Timestamp datetime=modified class="meta-value" />
+                                </div>
+                                <div class="meta-row">
+                                    <span class="meta-label">"Due Date"</span>
+                                    {move || match due_date_opt.get() {
+                                        Some(d) => view! {
+                                            <Timestamp datetime=d class="meta-value" />
+                                        }.into_any(),
+                                        None => view! {
+                                            <span class="meta-value due-not-set">"Not set"</span>
+                                        }.into_any(),
+                                    }}
+                                </div>
                             </div>
                         </div>
-                        <div class="detail-meta">
-                            <div class="meta-row">
-                                <span class="meta-label">"ID"</span>
-                                <span class="meta-value meta-id-value">
-                                    <button class="meta-copy-btn" title="Copy to clipboard" on:click=move |_| {
-                                        if let Some(w) = web_sys::window() {
-                                            let clipboard = w.navigator().clipboard();
-                                            let _ = clipboard.write_text(&id_str_copy);
-                                        }
-                                    }>{"\u{29C9}"}</button>
-                                    {id_str}
-                                </span>
-                            </div>
-                            <div class="meta-row">
-                                <span class="meta-label">"Priority"</span>
-                                <span class="meta-value">{format!("{priority_raw} ({priority_pct:.2}%)")}</span>
-                            </div>
-                            <div class="meta-row">
-                                <span class="meta-label">"Version"</span>
-                                <span class="meta-value">{count.to_string()}</span>
-                            </div>
-                            <div class="meta-row">
-                                <span class="meta-label">"Created"</span>
-                                <span class="meta-value">{created}</span>
-                            </div>
-                            <div class="meta-row">
-                                <span class="meta-label">"Modified"</span>
-                                <span class="meta-value">{modified}</span>
-                            </div>
-                            <div class="meta-row">
-                                <span class="meta-label">"Due Date"</span>
-                                {move || match due_date_opt.get() {
-                                    Some(d) => view! {
-                                        <span class="meta-value">{d.format("%Y-%m-%d %H:%M:%S UTC").to_string()}</span>
-                                    }.into_any(),
-                                    None => view! {
-                                        <span class="meta-value due-not-set">"Not set"</span>
-                                    }.into_any(),
-                                }}
-                            </div>
+
+                        // ── Linked Cards section ──
+                        {linked_cards_section}
+
+                        // ── History section ──
+                        <div class="detail-section">
+                            <VersionHistory card_id=card_id />
                         </div>
-                        <VersionHistory card_id=card_id />
                     </div>
                 }.into_any()
             };
@@ -1045,9 +1261,7 @@ pub fn CardDetail() -> impl IntoView {
 
 /// Inline component rendered inside `CardDetail` when `creating_new_tag` is true.
 #[component]
-fn NewTagForm(
-    on_close: impl Fn(()) + Copy + 'static,
-) -> impl IntoView {
+fn NewTagForm(on_close: impl Fn(()) + Copy + 'static) -> impl IntoView {
     let state = use_context::<AppState>().expect("AppState not provided");
     let title_input = RwSignal::new(String::new());
     let color_input = RwSignal::new(String::from("#808080"));
@@ -1069,38 +1283,38 @@ fn NewTagForm(
         }
 
         let color = if use_color.get_untracked() {
-            let hex = color_input.get_untracked();
-            let hex = hex.trim_start_matches('#');
-            if hex.len() != 6 {
-                None
-            } else {
-                match (
-                    u8::from_str_radix(&hex[0..2], 16),
-                    u8::from_str_radix(&hex[2..4], 16),
-                    u8::from_str_radix(&hex[4..6], 16),
-                ) {
-                    (Ok(r), Ok(g), Ok(b)) => Some(RGB8::new(r, g, b)),
-                    _ => None,
-                }
-            }
+            parse_hex_color(&color_input.get_untracked())
         } else {
             None
         };
 
         let state = state;
         leptos::task::spawn_local(async move {
-            if let Some(client) = get_client() {
-                let tag = Tag::first(Uuid::new_v4(), title, color, Utc::now());
-                if let Err(e) = client.push_tag(tag.clone()).await {
-                    tracing::error!(%e, "Failed to create tag");
+            // Tag push isn't queued offline (the offline queue only
+            // holds Cards), so surface a toast instead of silently
+            // swallowing the click.
+            let Some(client) = get_client() else {
+                show_error_toast(state, "Can't create tags while offline", 3000);
+                return;
+            };
+            let tag = Tag::first(Uuid::new_v4(), title, color, Utc::now());
+            match client.push_tag(tag.clone()).await {
+                Ok(_) => {}
+                Err(ClientError::ConnectionLost) => {
+                    show_error_toast(state, "Can't create tags while offline", 3000);
                     return;
                 }
-                let tag_id = tag.id();
-                state.tags.update(|tags| tags.push(tag));
-                state.creating_new_tag.set(false);
-                state.selected_card.set(Some(tag_id));
-                sync_query_params(&state);
+                Err(e) => {
+                    tracing::error!(%e, "Failed to create tag");
+                    show_error_toast(state, &format!("Failed to create tag: {e}"), 3000);
+                    return;
+                }
             }
+            let tag_id = tag.id();
+            state.tags.update(|tags| tags.push(tag));
+            state.creating_new_tag.set(false);
+            state.selected_card.set(Some(tag_id));
+            sync_query_params(&state);
         });
     };
 
@@ -1138,36 +1352,7 @@ fn NewTagForm(
             </form>
         </div>
 
-        <div class="tag-color-section">
-            <span class="tag-color-label">"Color"</span>
-        </div>
-        <div class="tag-color-row">
-            <input
-                class="tag-color-input"
-                type="color"
-                prop:value=move || color_input.get()
-                on:input=move |ev| {
-                    color_input.set(event_target_value(&ev));
-                    use_color.set(true);
-                }
-            />
-            <span
-                class=move || if use_color.get() { "tag-color-preview" } else { "tag-color-preview tag-color-placeholder" }
-                style=move || format!("background: {};", color_input.get())
-            ></span>
-            {move || use_color.get().then(|| {
-                let hex = color_input.get();
-                view! {
-                    <span class="tag-color-hex">{hex}</span>
-                }
-            })}
-            {move || use_color.get().then(|| view! {
-                <button class="btn-cancel tag-color-btn" on:click=move |_| {
-                    use_color.set(false);
-                    color_input.set(String::from("#808080"));
-                }>"Clear"</button>
-            })}
-        </div>
+        <TagColorPicker color_input=color_input use_color=use_color />
 
         <div class="card-actions">
             <div class="action-row cmd-row">

@@ -115,8 +115,7 @@ fn bench_hash_chain(c: &mut Criterion) {
 
         group.bench_function(format!("chain_{chain_len}_versions"), |b| {
             b.iter(|| {
-                let mut card =
-                    Card::first(ID, "Content".into(), 1000, vec![], false, ts(0), None);
+                let mut card = Card::first(ID, "Content".into(), 1000, vec![], false, ts(0), None);
                 for i in 1..chain_len {
                     card = card.next(
                         format!("Content version {i}"),

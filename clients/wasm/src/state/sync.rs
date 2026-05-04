@@ -1,10 +1,12 @@
+use crate::components::toast::show_error_toast;
+use crate::state::settings;
 use crate::state::store::{AppState, ConnectionStatus, get_client};
 use crate::storage;
 use crate::transport::client::Client;
 use blazelist_client_lib::client::Client as _;
 use blazelist_client_lib::error::ClientError;
 use blazelist_client_lib::filter::sort_by_priority;
-use blazelist_client_lib::priority::{build_shifted_versions, resolve_collision, Placement};
+use blazelist_client_lib::priority::{Placement, build_shifted_versions, resolve_collision};
 use blazelist_client_lib::sync;
 use blazelist_protocol::{
     Card, DeletedEntity, Entity, NonNegativeI64, ProtocolError, PushError, PushItem, ZERO_HASH,
@@ -12,12 +14,13 @@ use blazelist_protocol::{
 use leptos::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
+use uuid::Uuid;
 
 // Track deleted entities across syncs so they can be persisted to OPFS.
 // The WASM UI only needs the count, but the local DB stores the full list
 // to prevent re-creation from stale state during future offline edits.
 thread_local! {
-    static DELETED_ENTITIES: RefCell<Vec<DeletedEntity>> = RefCell::new(Vec::new());
+    static DELETED_ENTITIES: RefCell<Vec<DeletedEntity>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Load persisted state from OPFS into [`AppState`].
@@ -25,6 +28,7 @@ thread_local! {
 /// Returns `true` if the local DB contained data (non-empty root sequence),
 /// allowing the UI to render immediately before the network sync completes.
 pub async fn load_local_state(state: &AppState) -> bool {
+    tracing::info!("load_local_state: starting");
     let local = storage::load().await;
     let has_data = local.root.sequence != NonNegativeI64::MIN;
 
@@ -34,13 +38,42 @@ pub async fn load_local_state(state: &AppState) -> bool {
         state.deleted_count.set(local.deleted_entities.len());
         state.root.set(Some(local.root));
         DELETED_ENTITIES.with(|de| *de.borrow_mut() = local.deleted_entities);
-        tracing::info!("Loaded local state from Origin Private File System");
+        tracing::info!("load_local_state: populated state from OPFS");
+    } else {
+        tracing::info!(
+            "load_local_state: DB had no usable data (root sequence is MIN) \
+             — leaving state at defaults until sync"
+        );
     }
 
     has_data
 }
 
-/// Persist the current [`AppState`] to OPFS.
+/// Build the client-side cache schema stamp.
+///
+/// Combines the WASM crate version (covers client-lib and storage layout
+/// changes) with the protocol version (covers wire/serialization format
+/// changes). Crucially **client-only** — no server version — so the check
+/// is self-contained and works offline.
+///
+/// Format: `"{wasm_version}+{protocol_version}"`.
+pub fn build_schema_stamp() -> String {
+    let wasm_version = env!("CARGO_PKG_VERSION");
+    let protocol_version = blazelist_protocol::PROTOCOL_VERSION_STR;
+    format!("{wasm_version}+{protocol_version}")
+}
+
+/// Returns `true` if the stored schema stamp matches the running build,
+/// meaning OPFS caches written by a previous session can still be trusted.
+/// Returns `false` if there is no stored stamp (fresh install) or if the
+/// stamp is from a different client version.
+pub fn cache_schema_matches() -> bool {
+    let expected = build_schema_stamp();
+    settings::load_cache_schema().as_deref() == Some(&expected)
+}
+
+/// Persist the current [`AppState`] to OPFS and update the cache schema
+/// stamp. The stamp write is what makes future reloads trust the file.
 async fn save_local_state(state: &AppState) {
     let root = state.root.get_untracked();
     let Some(root) = root else { return };
@@ -54,6 +87,11 @@ async fn save_local_state(state: &AppState) {
         root,
     };
     storage::save(&local).await;
+
+    // Stamp the cache with the current client schema so future reloads
+    // know the data on disk matches the running build. A fresh install
+    // has no stamp, so the first successful save writes it.
+    settings::save_cache_schema(&build_schema_stamp());
 }
 
 /// Perform initial sync: fetch everything from the server via GetChangesSince(0).
@@ -74,11 +112,18 @@ pub async fn initial_sync(client: &Client, state: &AppState) -> Result<(), Strin
     state.root.set(Some(changes.root));
     state.last_synced.set(Some(blazelist_protocol::Utc::now()));
     state.last_sync_ops.set(ops);
-    state.last_sync_duration_ms.set(Some((js_sys::Date::now() - t0).round() as u32));
-    state.auto_sync_countdown.set(state.auto_sync_interval_secs.get_untracked());
+    state
+        .last_sync_duration_ms
+        .set(Some((js_sys::Date::now() - t0).round() as u32));
+    state
+        .auto_sync_countdown
+        .set(state.auto_sync_interval_secs.get_untracked());
     state.last_sync_error.set(None);
 
     save_local_state(state).await;
+
+    // Pre-fetch all histories in the background for offline access.
+    spawn_prefetch_all_histories();
 
     Ok(())
 }
@@ -102,6 +147,10 @@ pub async fn incremental_sync(client: &Client, state: &AppState) -> Result<(), S
             let deleted_in_changeset = changes.deleted.len();
             DELETED_ENTITIES.with(|de| de.borrow_mut().extend(changes.deleted.clone()));
 
+            // Collect IDs of changed cards/tags for incremental history pre-fetch.
+            let changed_card_ids: Vec<Uuid> = changes.cards.iter().map(|c| c.id()).collect();
+            let changed_tag_ids: Vec<Uuid> = changes.tags.iter().map(|t| t.id()).collect();
+
             // Apply changes using shared SDK logic
             let current_cards = state.cards.get_untracked();
             let current_tags = state.tags.get_untracked();
@@ -116,11 +165,30 @@ pub async fn incremental_sync(client: &Client, state: &AppState) -> Result<(), S
             state.last_synced.set(Some(blazelist_protocol::Utc::now()));
             state.last_sync_ops.set(ops);
             state.deleted_count.update(|c| *c += deleted_in_changeset);
-            state.last_sync_duration_ms.set(Some((js_sys::Date::now() - t0).round() as u32));
-            state.auto_sync_countdown.set(state.auto_sync_interval_secs.get_untracked());
+            state
+                .last_sync_duration_ms
+                .set(Some((js_sys::Date::now() - t0).round() as u32));
+            state
+                .auto_sync_countdown
+                .set(state.auto_sync_interval_secs.get_untracked());
             state.last_sync_error.set(None);
 
             save_local_state(state).await;
+
+            // Pre-fetch histories for changed entities in the background.
+            if !changed_card_ids.is_empty() || !changed_tag_ids.is_empty() {
+                let card_ids = if changed_card_ids.is_empty() {
+                    None
+                } else {
+                    Some(changed_card_ids)
+                };
+                let tag_ids = if changed_tag_ids.is_empty() {
+                    None
+                } else {
+                    Some(changed_tag_ids)
+                };
+                spawn_prefetch_histories(card_ids, tag_ids);
+            }
 
             // Flush any offline-queued cards now that we have a working connection.
             flush_offline_queue(client, state).await;
@@ -128,10 +196,15 @@ pub async fn incremental_sync(client: &Client, state: &AppState) -> Result<(), S
             Ok(())
         }
         Err(ClientError::Protocol(ProtocolError::RootHashMismatch { .. })) => {
-            // Local state is out of sync with the server.
-            // Wipe the local DB and history cache, then perform a full re-sync.
-            tracing::warn!("Root hash mismatch — wiping local database and performing full synchronization");
-            storage::clear().await;
+            // Local state is out of sync with the server. Force a full
+            // resync, but do NOT eagerly delete blazelist.db — if the
+            // follow-up initial_sync fails (e.g., network drop), an
+            // eagerly-wiped DB would leave the user with an empty app.
+            // Let initial_sync + save_local_state overwrite the DB
+            // atomically on success; the old data stays as a fallback
+            // on failure. The history cache is derived and safe to
+            // rebuild lazily.
+            tracing::warn!("Root hash mismatch — forcing full synchronization");
             storage::clear_history_cache().await;
             DELETED_ENTITIES.with(|de| de.borrow_mut().clear());
             state.root.set(None);
@@ -217,6 +290,10 @@ pub async fn push_card_or_queue(state: &AppState, card: Card) {
                             q.push(recreated);
                         });
                         storage::save_offline_queue(&state.offline_queue.get_untracked()).await;
+                        // Persist the main OPFS DB too, so offline edits
+                        // survive an app restart (queue alone is not enough —
+                        // on restart the UI hydrates from blazelist.db).
+                        save_local_state(state).await;
                         return;
                     }
                 }
@@ -232,6 +309,10 @@ pub async fn push_card_or_queue(state: &AppState, card: Card) {
         q.push(card);
     });
     storage::save_offline_queue(&state.offline_queue.get_untracked()).await;
+    // Persist the main OPFS DB too, so offline edits survive an app
+    // restart (queue alone is not enough — on restart the UI hydrates
+    // from blazelist.db).
+    save_local_state(state).await;
 }
 
 /// Push a chain of card versions, falling back to queuing the latest on failure.
@@ -288,6 +369,10 @@ pub async fn push_versions_or_queue(state: &AppState, versions: Vec<Card>) {
         q.push(last);
     });
     storage::save_offline_queue(&state.offline_queue.get_untracked()).await;
+    // Persist the main OPFS DB too, so offline edits survive an app
+    // restart (queue alone is not enough — on restart the UI hydrates
+    // from blazelist.db).
+    save_local_state(state).await;
 }
 
 /// Remove a card from the offline queue if present, and persist the change.
@@ -493,7 +578,19 @@ pub async fn flush_offline_queue(client: &Client, state: &AppState) {
                         hit_connection_error = true;
                     }
                     Err(e) => {
+                        // The rebased version was rejected by the
+                        // server (e.g. validation error, permission
+                        // denied). The card is already replaced in
+                        // `state.cards` by the preceding sync, so the
+                        // UI now shows the server's version. Surface
+                        // a toast so the user knows their offline
+                        // edit is gone instead of silently dropping.
                         tracing::warn!(%e, "Rebased push failed, dropping card");
+                        show_error_toast(
+                            *state,
+                            "An offline edit was dropped: server rejected the rebased version",
+                            3000,
+                        );
                     }
                 }
             }
@@ -529,9 +626,7 @@ pub async fn flush_offline_queue(client: &Client, state: &AppState) {
                     }
                 }
             }
-            Err(ClientError::Protocol(ProtocolError::PushFailed(
-                PushError::AlreadyDeleted,
-            ))) => {
+            Err(ClientError::Protocol(ProtocolError::PushFailed(PushError::AlreadyDeleted))) => {
                 tracing::info!(card_id = %card.id(), "Card deleted on server, dropping from queue");
             }
             Err(e) => {
@@ -554,6 +649,64 @@ pub async fn flush_offline_queue(client: &Client, state: &AppState) {
     }
 }
 
+/// Spawn a non-blocking background task to pre-fetch all card and tag
+/// histories from the server and populate the OPFS-backed history cache.
+///
+/// Used after `initial_sync` so the full history is available offline.
+fn spawn_prefetch_all_histories() {
+    spawn_prefetch_histories(None, None);
+}
+
+/// Spawn a non-blocking background task to pre-fetch histories for specific
+/// (or all) cards and tags from the server and merge into the history cache.
+///
+/// Pass `None` for a parameter to fetch all entities of that type.
+fn spawn_prefetch_histories(card_ids: Option<Vec<Uuid>>, tag_ids: Option<Vec<Uuid>>) {
+    leptos::task::spawn_local(async move {
+        let Some(client) = get_client() else {
+            return;
+        };
+
+        // Fetch card histories.
+        match client.get_all_card_histories(None, card_ids).await {
+            Ok(histories) => {
+                for (id, history) in histories {
+                    storage::update_cached_card_history(id, history);
+                }
+            }
+            Err(e) => {
+                tracing::debug!(%e, "Background card history pre-fetch failed");
+            }
+        }
+
+        // Fetch tag histories.
+        match client.get_all_tag_histories(None, tag_ids).await {
+            Ok(histories) => {
+                for (id, history) in histories {
+                    storage::update_cached_tag_history(id, history);
+                }
+            }
+            Err(e) => {
+                tracing::debug!(%e, "Background tag history pre-fetch failed");
+            }
+        }
+
+        // Fetch sequence history.
+        match client.get_sequence_history().await {
+            Ok(history) => {
+                storage::update_cached_sequence_history(history);
+            }
+            Err(e) => {
+                tracing::debug!(%e, "Background sequence history pre-fetch failed");
+            }
+        }
+
+        // Persist everything to OPFS in one write.
+        storage::save_history_cache().await;
+        tracing::debug!("History pre-fetch complete");
+    });
+}
+
 /// Run the subscription loop, reading notifications until the stream breaks.
 ///
 /// Returns `Ok` only if the stream closes cleanly (unlikely in practice),
@@ -570,10 +723,11 @@ pub async fn run_subscription(client: Rc<Client>, state: &AppState) -> Result<()
             Ok(server_root) => {
                 // Check if we're already up to date
                 let local_root = state.root.get_untracked();
-                if let Some(local) = local_root {
-                    if local.hash == server_root.hash && local.sequence == server_root.sequence {
-                        continue;
-                    }
+                if let Some(local) = local_root
+                    && local.hash == server_root.hash
+                    && local.sequence == server_root.sequence
+                {
+                    continue;
                 }
                 // Trigger incremental sync
                 if let Err(e) = incremental_sync(&client, state).await {

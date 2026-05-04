@@ -311,6 +311,31 @@
     background: var(--due-overdue-subtle);
 }
 
+/* "Today + Overdue" quick-filter button */
+.due-today-quick-btn {
+    padding: 0.2rem 0.45rem;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    transition: all 0.15s;
+}
+
+.due-today-quick-btn:hover {
+    color: var(--text-secondary);
+    border-color: var(--border-hover);
+}
+
+.due-today-quick-btn.active {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 /* Due date controls in editor/detail */
 .due-date-controls {
     display: flex;

@@ -1,4 +1,5 @@
 use crate::components::hooks::toggle_expanded;
+use crate::components::timestamp::Timestamp;
 use crate::state::store::{AppState, get_client, sync_query_params};
 use crate::storage;
 use blazelist_client_lib::client::Client as _;
@@ -203,10 +204,7 @@ pub fn SequenceHistory() -> impl IntoView {
                                         <span class=num_class>{seq_display}</span>
                                         <span class=hash_class>{full_hash.clone()}</span>
                                         <span class="seq-op-count">{op_label}</span>
-                                        {
-                                            let ts_display = created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string();
-                                            view! { <span class="seq-timestamp">{ts_display}</span> }.into_any()
-                                        }
+                                        <Timestamp datetime=created_at class="seq-timestamp" />
                                     </div>
                                     {ops_view}
                                 </div>

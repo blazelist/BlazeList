@@ -46,6 +46,13 @@ pub enum StorageError {
         tag_id: uuid::Uuid,
         referencing_card_ids: Vec<uuid::Uuid>,
     },
+    /// A tag cannot be deleted while other tags still declare it in their
+    /// `implies` list — doing so would leave any card holding the implying
+    /// tag permanently non-compliant.
+    OrphanedTagImpliesReference {
+        tag_id: uuid::Uuid,
+        referencing_tag_ids: Vec<uuid::Uuid>,
+    },
     /// Root hash mismatch during sync — client state is corrupted.
     RootHashMismatch {
         sequence: blazelist_protocol::NonNegativeI64,
@@ -79,6 +86,14 @@ impl std::fmt::Display for StorageError {
                 f,
                 "tag {tag_id} cannot be deleted: still referenced by {} card(s)",
                 referencing_card_ids.len()
+            ),
+            StorageError::OrphanedTagImpliesReference {
+                tag_id,
+                referencing_tag_ids,
+            } => write!(
+                f,
+                "tag {tag_id} cannot be deleted: still implied by {} tag(s)",
+                referencing_tag_ids.len()
             ),
             StorageError::RootHashMismatch {
                 sequence,
@@ -122,6 +137,13 @@ impl From<StorageError> for PushOpError {
             } => PushOpError::Domain(PushError::OrphanedTagReference {
                 tag_id,
                 referencing_card_ids,
+            }),
+            StorageError::OrphanedTagImpliesReference {
+                tag_id,
+                referencing_tag_ids,
+            } => PushOpError::Domain(PushError::OrphanedTagImpliesReference {
+                tag_id,
+                referencing_tag_ids,
             }),
             other => PushOpError::Internal(other.to_string()),
         }

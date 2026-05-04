@@ -68,7 +68,11 @@ pub fn SyncIndicator() -> impl IntoView {
     let offline_queue_text = move || {
         let count = state.offline_queue.with(|q| q.len());
         if count > 0 {
-            let label = if count == 1 { "operation" } else { "operations" };
+            let label = if count == 1 {
+                "operation"
+            } else {
+                "operations"
+            };
             Some(format!("{count} unsynced {label}"))
         } else {
             None

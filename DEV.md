@@ -20,7 +20,7 @@ This single command will:
 1. Clean any existing database files
 2. Build and start the BlazeList server
 3. Wait for the server to be ready
-4. Run the dev seeder to populate test data (1000 cards, 15 tags)
+4. Run the dev seeder to populate test data (medium preset: 400 cards, 18 tags)
 5. Start the Trunk dev server with live reload for the WASM client
 
 Once running, open `http://127.0.0.1:47800` in your browser.
@@ -86,10 +86,22 @@ Starts only the BlazeList server (no WASM client, no seeding).
 ### Dev Seeder
 
 ```bash
-just seed
+just seed                # Medium preset (default): 400 cards, 18 tags
+just seed-sm             # Small preset: 120 cards, 8 tags
+just seed-lg             # Large preset: 1200 cards, 50 tags
+just preset=large seed   # Same as seed-lg
+just preset=small dev    # Start dev environment with small dataset
 ```
 
-Runs the dev seeder against the running server. Generates deterministic test data (default: seed=42, 1000 cards, 15 tags).
+Runs the dev seeder against the running server. Three size presets are available:
+
+| Preset | Cards | Tags | Use case |
+|---|---|---|---|
+| `small` | 120 | 8 | Fast iteration, quick smoke tests |
+| `medium` | 400 | 18 | Everyday development (default) |
+| `large` | 1200 | 50 | Stress testing, full dataset |
+
+The `--cards` and `--tags` CLI flags can override preset values for custom sizes.
 
 ### WASM Client
 
@@ -125,7 +137,13 @@ just bench-crate <name>  # Run benchmarks for a specific crate
 just clean               # Remove local database files (blazelist.db, .db-shm, .db-wal)
 ```
 
-The `just dev` command runs `clean` automatically before starting.
+The `just dev` command runs `clean` automatically before starting. To reuse an
+existing database (skip both the clean and the seeder), pass `--keep`:
+
+```bash
+just dev --keep          # shorthand for clean_db=false seed=false
+just offset=1 dev --keep
+```
 
 ## Bind Address
 

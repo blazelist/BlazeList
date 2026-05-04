@@ -6,10 +6,13 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
 use crate::components::keyboard::register_keyboard_shortcuts;
-use crate::components::settings_panel::{apply_ui_density, apply_ui_scale};
+use crate::components::settings_panel::{apply_show_card_time, apply_ui_density, apply_ui_scale};
 use crate::pages::home::Home;
 use crate::state::settings;
-use crate::state::store::{AppState, ConnectionStatus, clear_client, get_client, restore_from_query_params, set_client};
+use crate::state::store::{
+    AppState, ConnectionStatus, clear_client, get_client, restore_from_query_params, set_client,
+};
+use crate::state::sync;
 use crate::state::sync::{
     flush_offline_queue, incremental_sync, initial_sync, load_local_state, run_subscription,
 };
@@ -44,7 +47,7 @@ fn take_reconnect_request() -> bool {
 #[component]
 pub fn App() -> impl IntoView {
     let state = AppState::new();
-    provide_context(state.clone());
+    provide_context(state);
 
     // Conditional tooltips: show title only when text is truncated
     js_sys::eval(
@@ -85,8 +88,7 @@ pub fn App() -> impl IntoView {
 
         // Auto-sync countdown
         let enabled = state.auto_sync_enabled.get_untracked();
-        let connected =
-            state.connection_status.get_untracked() == ConnectionStatus::Connected;
+        let connected = state.connection_status.get_untracked() == ConnectionStatus::Connected;
 
         if !enabled || !connected {
             state.auto_sync_countdown.set(0);
@@ -122,19 +124,87 @@ pub fn App() -> impl IntoView {
         // Require OPFS support — hard fail if unavailable.
         storage::require_opfs().await;
 
-        // Fetch server-side default config and apply where user hasn't
-        // set a preference in localStorage yet.
-        apply_server_config(&state).await;
+        // Cache validity is decided by a single client-side schema stamp
+        // check. If the stamp doesn't match the running build, the cached
+        // data was written by a previous client version and may no longer
+        // be compatible — wipe it all so the next successful sync rebuilds
+        // from the server. This check is the ONLY eviction mechanism; it
+        // runs at load time (before any network activity) so it works
+        // offline and during PWA cold starts, unlike a connection-time
+        // check that requires a successful handshake.
+        //
+        // The offline queue is preserved across schema changes because
+        // user edits are valuable work that should survive client
+        // upgrades. If a schema change actually broke the `Card`
+        // serialization format, `load_offline_queue` would fall back to
+        // an empty queue on its own.
+        if sync::cache_schema_matches() {
+            // Load the derived caches (history + link graph) BEFORE the
+            // main DB so they are already in place when `load_local_state`
+            // populates `state.cards`. Without this ordering, the
+            // card-list link-graph Effect fires as soon as `state.cards`
+            // is set, finds an empty `state.link_graph_cache`, and
+            // immediately kicks off a full background recomputation of
+            // every linked card — even though the persisted cache was
+            // perfectly valid. Loading the link cache first lets the
+            // Effect's blake3-hash selective invalidation operate on
+            // loaded entries instead and only recompute what actually
+            // changed.
+            //
+            // History cache is not gating any Effect in the same way,
+            // but loading it in the same block keeps the "derived
+            // caches" concept consistent.
+            storage::load_history_cache().await;
+            state.link_graph_cache.set(storage::load_link_cache().await);
+
+            // Atomic all-or-nothing: only keep the derived caches if the
+            // main DB loaded successfully. Without this gate, a missing
+            // or corrupt `blazelist.db` combined with a still-populated
+            // `history.db` leaves the sidebar showing 0 cards next to a
+            // card history count in the hundreds — a confusing "ghost"
+            // state. If `load_local_state` returns false, wipe the
+            // derived caches we just loaded so everything stays
+            // consistent.
+            let loaded_main = load_local_state(&state).await;
+            if !loaded_main {
+                tracing::info!(
+                    "Main DB empty/missing — clearing derived caches to stay consistent"
+                );
+                storage::clear_history_cache().await;
+                storage::clear_link_cache().await;
+                state.link_graph_cache.set(std::collections::HashMap::new());
+                state.link_cache_progress.set((0, 0));
+            }
+        } else {
+            tracing::info!(
+                "Cache schema stamp mismatch — wiping stale OPFS caches (queue preserved)"
+            );
+            storage::clear_all_caches().await;
+        }
+
+        // Offline queue is loaded regardless of schema-stamp outcome.
+        state.offline_queue.set(storage::load_offline_queue().await);
 
         // Request persistent storage to reduce eviction risk.
         if storage::request_persistent_storage().await {
             tracing::info!("Persistent storage granted by browser");
         }
 
-        // Load cached state from OPFS so the UI renders instantly.
-        load_local_state(&state).await;
-        storage::load_history_cache().await;
-        state.offline_queue.set(storage::load_offline_queue().await);
+        // Fetch server-side default config and apply where the user
+        // hasn't set a preference in localStorage yet. Spawn this in
+        // parallel with `connection_loop` rather than awaiting it
+        // inline: `/config` goes through `window.fetch`, which hangs
+        // indefinitely when the network is stalled (not just offline —
+        // think flaky mobile signal, VPN transitions, captive portals).
+        // If we awaited it, a hanging `/config` would prevent the
+        // connection loop from ever starting, so the app could never
+        // reconnect when the network recovered. Running it in parallel
+        // is safe because `apply_server_config` only writes settings
+        // signals, and each write is guarded by `has_*()` so a user
+        // choice in localStorage wins if it's set before this completes.
+        leptos::task::spawn_local(async move {
+            apply_server_config(&state).await;
+        });
 
         // Then enter the connection loop for background sync.
         connection_loop(state).await;
@@ -143,6 +213,7 @@ pub fn App() -> impl IntoView {
     // Apply initial UI customizations from settings
     apply_ui_scale(state.ui_scale.get_untracked());
     apply_ui_density(&state.ui_density.get_untracked());
+    apply_show_card_time(state.show_card_time.get_untracked());
 
     view! {
         <Home />
@@ -187,7 +258,10 @@ async fn connection_loop(state: AppState) {
                 break;
             }
             let status = state.connection_status.get_untracked();
-            if matches!(status, ConnectionStatus::Connected | ConnectionStatus::Syncing) {
+            if matches!(
+                status,
+                ConnectionStatus::Connected | ConnectionStatus::Syncing
+            ) {
                 was_connected = true;
                 break;
             }
@@ -202,7 +276,10 @@ async fn connection_loop(state: AppState) {
                 }
             }
         } else if !finished.get() {
-            tracing::warn!(timeout_secs = CONNECT_TIMEOUT_SECS, "Connection attempt timed out");
+            tracing::warn!(
+                timeout_secs = CONNECT_TIMEOUT_SECS,
+                "Connection attempt timed out"
+            );
         }
 
         state.connection_status.set(ConnectionStatus::Disconnected);
@@ -249,6 +326,11 @@ async fn connect_and_run(state: &AppState) {
     // Sync before exposing the client globally. While sync is in progress,
     // get_client() returns None so any user-triggered pushes go to the
     // offline queue instead of racing with stale OPFS-cached ancestor hashes.
+    //
+    // Cache validity is handled at load time by `sync::cache_schema_matches`
+    // in the startup block above — there is no runtime fingerprint check
+    // here anymore. `save_local_state` writes the schema stamp on every
+    // successful save so future reloads trust the file.
     let sync_result = if state.root.get_untracked().is_some() {
         incremental_sync(&client, state).await
     } else {
@@ -291,16 +373,15 @@ fn register_reconnect_listeners(state: AppState) {
     // stale connection attempts that may be hanging.
     if let Some(document) = window.document() {
         let cb = Closure::wrap(Box::new(move || {
-            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-                if !doc.hidden()
-                    && matches!(
-                        state.connection_status.get_untracked(),
-                        ConnectionStatus::Disconnected | ConnectionStatus::Connecting
-                    )
-                {
-                    tracing::info!("Page visible while not connected, requesting reconnection");
-                    request_reconnect();
-                }
+            if let Some(doc) = web_sys::window().and_then(|w| w.document())
+                && !doc.hidden()
+                && matches!(
+                    state.connection_status.get_untracked(),
+                    ConnectionStatus::Disconnected | ConnectionStatus::Connecting
+                )
+            {
+                tracing::info!("Page visible while not connected, requesting reconnection");
+                request_reconnect();
             }
         }) as Box<dyn FnMut()>);
         document
@@ -419,105 +500,152 @@ async fn apply_server_config(state: &AppState) {
             .map(|n| n as u32)
     }
 
-    if !settings::has_auto_save() {
-        if let Some(v) = get_bool(&config, "auto_save") {
-            state.auto_save_enabled.set(v);
+    // Capture raw config values for the settings panel display.
+    let mut raw_config = std::collections::HashMap::new();
+    if let Ok(keys) = js_sys::Reflect::own_keys(&config) {
+        for i in 0..keys.length() {
+            if let Some(key) = keys.get(i).as_string()
+                && let Ok(val) = js_sys::Reflect::get(&config, &JsValue::from_str(&key))
+            {
+                let val_str = if let Some(b) = val.as_bool() {
+                    b.to_string()
+                } else if let Some(n) = val.as_f64() {
+                    (n as u32).to_string()
+                } else if let Some(s) = val.as_string() {
+                    s
+                } else {
+                    continue;
+                };
+                raw_config.insert(key, val_str);
+            }
         }
     }
-    if !settings::has_auto_save_delay() {
-        if let Some(v) = get_u32(&config, "auto_save_delay") {
-            state.auto_save_delay_secs.set(v);
-        }
+    state.server_config.set(raw_config);
+
+    if !settings::has_auto_save()
+        && let Some(v) = get_bool(&config, "auto_save")
+    {
+        state.auto_save_enabled.set(v);
     }
-    if !settings::has_show_preview() {
-        if let Some(v) = get_bool(&config, "show_preview") {
-            state.show_preview.set(v);
-        }
+    if !settings::has_auto_save_delay()
+        && let Some(v) = get_u32(&config, "auto_save_delay")
+    {
+        state.auto_save_delay_secs.set(v);
     }
-    if !settings::has_auto_sync() {
-        if let Some(v) = get_bool(&config, "auto_sync") {
-            state.auto_sync_enabled.set(v);
-        }
+    if !settings::has_show_preview()
+        && let Some(v) = get_bool(&config, "show_preview")
+    {
+        state.show_preview.set(v);
     }
-    if !settings::has_auto_sync_interval() {
-        if let Some(v) = get_u32(&config, "auto_sync_interval") {
-            state.auto_sync_interval_secs.set(v);
-        }
+    if !settings::has_auto_sync()
+        && let Some(v) = get_bool(&config, "auto_sync")
+    {
+        state.auto_sync_enabled.set(v);
     }
-    if !settings::has_debounce_enabled() {
-        if let Some(v) = get_bool(&config, "debounce_enabled") {
-            state.debounce_enabled.set(v);
-        }
+    if !settings::has_auto_sync_interval()
+        && let Some(v) = get_u32(&config, "auto_sync_interval")
+    {
+        state.auto_sync_interval_secs.set(v);
     }
-    if !settings::has_debounce_delay() {
-        if let Some(v) = get_u32(&config, "debounce_delay") {
-            state.debounce_delay_secs.set(v);
-        }
+    if !settings::has_debounce_enabled()
+        && let Some(v) = get_bool(&config, "debounce_enabled")
+    {
+        state.debounce_enabled.set(v);
     }
-    if !settings::has_keyboard_shortcuts() {
-        if let Some(v) = get_bool(&config, "keyboard_shortcuts") {
-            state.keyboard_shortcuts_enabled.set(v);
-        }
+    if !settings::has_debounce_delay()
+        && let Some(v) = get_u32(&config, "debounce_delay")
+    {
+        state.debounce_delay_secs.set(v);
     }
-    if !settings::has_search_tags() {
-        if let Some(v) = get_bool(&config, "search_tags") {
-            state.search_tags.set(v);
-        }
+    if !settings::has_keyboard_shortcuts()
+        && let Some(v) = get_bool(&config, "keyboard_shortcuts")
+    {
+        state.keyboard_shortcuts_enabled.set(v);
     }
-    if !settings::has_ui_scale() {
-        if let Some(v) = get_u32(&config, "ui_scale") {
-            state.ui_scale.set(v);
-            apply_ui_scale(v);
-        }
+    if !settings::has_search_tags()
+        && let Some(v) = get_bool(&config, "search_tags")
+    {
+        state.search_tags.set(v);
     }
-    if !settings::has_ui_density() {
-        if let Some(v) = js_sys::Reflect::get(&config, &JsValue::from_str("ui_density"))
+    if !settings::has_ui_scale()
+        && let Some(v) = get_u32(&config, "ui_scale")
+    {
+        state.ui_scale.set(v);
+        apply_ui_scale(v);
+    }
+    if !settings::has_ui_density()
+        && let Some(v) = js_sys::Reflect::get(&config, &JsValue::from_str("ui_density"))
             .ok()
             .and_then(|v| v.as_string())
-        {
-            apply_ui_density(&v);
-            state.ui_density.set(v);
-        }
+    {
+        apply_ui_density(&v);
+        state.ui_density.set(v);
     }
-    if !settings::has_touch_swipe() {
-        if let Some(v) = get_bool(&config, "touch_swipe") {
-            state.touch_swipe_enabled.set(v);
-        }
+    if !settings::has_touch_swipe()
+        && let Some(v) = get_bool(&config, "touch_swipe")
+    {
+        state.touch_swipe_enabled.set(v);
     }
-    if !settings::has_swipe_threshold_right() {
-        if let Some(v) = get_u32(&config, "swipe_threshold_right") {
-            state.swipe_threshold_right.set(v);
-        }
+    if !settings::has_swipe_threshold_right()
+        && let Some(v) = get_u32(&config, "swipe_threshold_right")
+    {
+        state.swipe_threshold_right.set(v);
     }
-    if !settings::has_swipe_threshold_left() {
-        if let Some(v) = get_u32(&config, "swipe_threshold_left") {
-            state.swipe_threshold_left.set(v);
-        }
+    if !settings::has_swipe_threshold_left()
+        && let Some(v) = get_u32(&config, "swipe_threshold_left")
+    {
+        state.swipe_threshold_left.set(v);
     }
-    if !settings::has_clear_tag_search() {
-        if let Some(v) = get_bool(&config, "clear_tag_search") {
-            state.clear_tag_search.set(v);
-        }
+    if !settings::has_swipe_undo_timeout_ms()
+        && let Some(v) = get_u32(&config, "swipe_undo_timeout_ms")
+    {
+        state.swipe_undo_timeout_ms.set(v);
     }
-    if !settings::has_default_sidebar_width() {
-        if let Some(v) = get_u32(&config, "default_sidebar_width") {
-            state.default_sidebar_width.set(v);
-        }
+    if !settings::has_clear_tag_search()
+        && let Some(v) = get_bool(&config, "clear_tag_search")
+    {
+        state.clear_tag_search.set(v);
     }
-    if !settings::has_default_detail_width() {
-        if let Some(v) = get_u32(&config, "default_detail_width") {
-            state.default_detail_width.set(v);
-        }
+    if !settings::has_default_sidebar_width()
+        && let Some(v) = get_u32(&config, "default_sidebar_width")
+    {
+        state.default_sidebar_width.set(v);
     }
-    if !settings::has_override_sidebar_width() {
-        if let Some(v) = get_bool(&config, "override_sidebar_width") {
-            state.override_sidebar_width.set(v);
-        }
+    if !settings::has_default_detail_width()
+        && let Some(v) = get_u32(&config, "default_detail_width")
+    {
+        state.default_detail_width.set(v);
     }
-    if !settings::has_override_detail_width() {
-        if let Some(v) = get_bool(&config, "override_detail_width") {
-            state.override_detail_width.set(v);
-        }
+    if !settings::has_override_sidebar_width()
+        && let Some(v) = get_bool(&config, "override_sidebar_width")
+    {
+        state.override_sidebar_width.set(v);
+    }
+    if !settings::has_override_detail_width()
+        && let Some(v) = get_bool(&config, "override_detail_width")
+    {
+        state.override_detail_width.set(v);
+    }
+    if !settings::has_recursive_links()
+        && let Some(v) = get_bool(&config, "recursive_links")
+    {
+        state.recursive_links.set(v);
+    }
+    if !settings::has_show_list_link_counts()
+        && let Some(v) = get_bool(&config, "show_list_link_counts")
+    {
+        state.show_list_link_counts.set(v);
+    }
+    if !settings::has_show_due_today_button()
+        && let Some(v) = get_bool(&config, "show_due_today_button")
+    {
+        state.show_due_today_button.set(v);
+    }
+    if !settings::has_show_card_time()
+        && let Some(v) = get_bool(&config, "show_card_time")
+    {
+        state.show_card_time.set(v);
+        apply_show_card_time(v);
     }
 
     tracing::info!("Applied server configuration defaults");
@@ -533,7 +661,9 @@ async fn fetch_config() -> Result<JsValue, String> {
         let page_origin = location.origin().map_err(|_| "no origin".to_string())?;
         format!("{page_origin}/config")
     } else {
-        let host = location.hostname().unwrap_or_else(|_| "127.0.0.1".to_string());
+        let host = location
+            .hostname()
+            .unwrap_or_else(|_| "127.0.0.1".to_string());
         let page_port: u16 = location
             .port()
             .ok()
@@ -561,7 +691,7 @@ async fn fetch_config() -> Result<JsValue, String> {
 }
 
 fn hex_to_bytes(hex: &str) -> Option<Vec<u8>> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return None;
     }
     (0..hex.len())

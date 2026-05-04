@@ -35,7 +35,7 @@ pub fn webtransport_server_config(
     let certificate = Certificate::from_der(cert_der.to_vec())
         .map_err(|e| format!("invalid certificate DER: {e:?}"))?;
     let cert_hash = certificate.hash();
-    println!("WebTransport cert SHA-256 hash: {cert_hash}");
+    tracing::info!(%cert_hash, "WebTransport cert SHA-256 hash");
 
     let hash_bytes: [u8; 32] = *cert_hash.as_ref();
 
@@ -83,7 +83,7 @@ pub async fn run_webtransport_server<S: Storage + Send + Sync + 'static>(
     let endpoint = match Endpoint::server(config) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("failed to create WebTransport endpoint: {e}");
+            tracing::error!(error = %e, "failed to create WebTransport endpoint");
             return;
         }
     };
@@ -97,38 +97,38 @@ pub async fn run_webtransport_server<S: Storage + Send + Sync + 'static>(
             let session_request = match incoming.await {
                 Ok(req) => req,
                 Err(e) => {
-                    eprintln!("WebTransport session failed: {e}");
+                    tracing::warn!(error = %e, "WebTransport session failed");
                     return;
                 }
             };
-            println!("WebTransport: new session request");
+            tracing::debug!("WebTransport: new session request");
 
             let connection = match session_request.accept().await {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("WebTransport accept failed: {e}");
+                    tracing::warn!(error = %e, "WebTransport accept failed");
                     return;
                 }
             };
-            println!("WebTransport: session accepted");
+            tracing::debug!("WebTransport: session accepted");
 
             // --- Version handshake on the first bidirectional stream ---
             let (mut send, mut recv) = match connection.accept_bi().await {
                 Ok(pair) => pair,
                 Err(e) => {
-                    eprintln!("WebTransport accept_bi failed: {e}");
+                    tracing::warn!(error = %e, "WebTransport accept_bi failed");
                     return;
                 }
             };
-            println!("WebTransport: bi-stream accepted, starting handshake");
+            tracing::trace!("WebTransport: bi-stream accepted, starting handshake");
             if let Err(e) = server_handshake(&mut send, &mut recv, &SERVER_VERSION).await {
-                eprintln!("WebTransport handshake failed: {e}");
+                tracing::warn!(error = %e, "WebTransport handshake failed");
                 return;
             }
-            println!("WebTransport: handshake complete, flushing");
+            tracing::trace!("WebTransport: handshake complete, flushing");
             let _ = send.flush().await;
             let _ = send.finish().await;
-            println!("WebTransport: handshake stream finished, ready for requests");
+            tracing::debug!("WebTransport: handshake stream finished, ready for requests");
 
             // --- Normal request/response loop ---
             loop {
@@ -141,7 +141,7 @@ pub async fn run_webtransport_server<S: Storage + Send + Sync + 'static>(
                             let request: Request = match read_message(&mut recv).await {
                                 Ok(r) => r,
                                 Err(e) => {
-                                    eprintln!("WebTransport read request failed: {e}");
+                                    tracing::warn!(error = %e, "WebTransport read request failed");
                                     return;
                                 }
                             };

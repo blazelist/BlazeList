@@ -6,13 +6,13 @@
 
 use std::collections::BTreeSet;
 
-use blazelist_protocol::{Card, Entity, PushItem, Tag};
+use blazelist_protocol::{Card, Entity, PushItem, Tag, TagGraph};
 use chrono::{DateTime, Duration, Utc};
 use fake::Fake;
 use fake::faker::lorem::en::*;
-use rand::RngCore;
+use rand::Rng;
 use rand::SeedableRng;
-use rand_chacha::ChaCha8Rng;
+use rand::rngs::ChaCha8Rng;
 use rgb::RGB8;
 use uuid::Uuid;
 
@@ -135,7 +135,11 @@ pub(super) fn resolve_priority(priority: i64, used: &BTreeSet<i64>) -> i64 {
         .next()
         .copied()
         .unwrap_or(MAX_PRIORITY);
-    let lower = used.range(..priority).next_back().copied().unwrap_or(i64::MIN);
+    let lower = used
+        .range(..priority)
+        .next_back()
+        .copied()
+        .unwrap_or(i64::MIN);
 
     let gap_above = upper as i128 - priority as i128;
     let gap_below = priority as i128 - lower as i128;
@@ -192,6 +196,69 @@ fn generate_tags(rng: &mut ChaCha8Rng, num_tags: usize, base_time: DateTime<Utc>
         .collect()
 }
 
+/// Augment already-generated tag chains with implications. ~25% of
+/// tags gain 1–2 parent implies from earlier-generated (smaller-index)
+/// tags, which guarantees the resulting graph is a DAG. The helper
+/// appends a `next_with_implies` version to each chosen chain, so the
+/// seed data exercises both the "tag was created without implies,
+/// later gained one" path and the server's retroactive-closure
+/// enforcement.
+fn apply_seeded_implications(
+    rng: &mut ChaCha8Rng,
+    tag_chains: &mut [Vec<Tag>],
+    now: DateTime<Utc>,
+) {
+    let tag_ids: Vec<Uuid> = tag_chains
+        .iter()
+        .map(|chain| chain.first().unwrap().id())
+        .collect();
+    // We intentionally skip index 0 (the earliest tag has no earlier
+    // tags to point at) and only allow parents at strictly smaller
+    // indices so the resulting graph is a DAG by construction.
+    #[allow(clippy::needless_range_loop)]
+    for i in 1..tag_chains.len() {
+        let roll = rng.next_u32() % 100;
+        if roll >= 25 {
+            continue;
+        }
+        // 1–2 parents from strictly-earlier indices → DAG by construction.
+        let max_parents = 2.min(i);
+        let num_parents = 1 + (rng.next_u32() as usize % max_parents);
+        let mut picked: Vec<Uuid> = Vec::with_capacity(num_parents);
+        for _ in 0..num_parents {
+            let idx = (rng.next_u32() as usize) % i;
+            let parent = tag_ids[idx];
+            if !picked.contains(&parent) {
+                picked.push(parent);
+            }
+        }
+        let prev = tag_chains[i].last().unwrap().clone();
+        let modified_at = prev.modified_at() + Duration::seconds(1);
+        let modified_at = modified_at.min(now);
+        let v_next =
+            prev.next_with_implies(prev.title().to_string(), prev.color(), picked, modified_at);
+        tag_chains[i].push(v_next);
+    }
+}
+
+/// Build a [`TagGraph`] from the live (last) version of every tag chain.
+fn graph_from_chains(tag_chains: &[Vec<Tag>]) -> TagGraph {
+    let live: Vec<Tag> = tag_chains
+        .iter()
+        .filter_map(|chain| chain.last().cloned())
+        .collect();
+    TagGraph::from_tags(&live)
+}
+
+/// Close a tag set under the implication graph so every transitively
+/// implied tag is present, then sort and deduplicate.
+fn closed_tags(graph: &TagGraph, tags: &[Uuid]) -> Vec<Uuid> {
+    let mut closed: Vec<Uuid> = graph.closure_of(tags).into_iter().collect();
+    closed.sort();
+    closed.dedup();
+    closed
+}
+
 /// Generate version history for a tag (~30% get 1-3 renames).
 ///
 /// Edits are spread between the tag's creation time and `now`.
@@ -240,6 +307,7 @@ fn generate_cards(
     rng: &mut ChaCha8Rng,
     num_cards: usize,
     tag_ids: &[Uuid],
+    graph: &TagGraph,
     base_time: DateTime<Utc>,
     used_priorities: &mut BTreeSet<i64>,
 ) -> Vec<Vec<Card>> {
@@ -282,7 +350,7 @@ fn generate_cards(
                     let lo = available.div_ceil(2);
                     lo + (rng.next_u32() as usize % (available - lo + 1))
                 };
-                pick_tags(rng, tag_ids, num_tags)
+                closed_tags(graph, &pick_tags(rng, tag_ids, num_tags))
             };
 
             // ~40% of cards are blazed (~400 of 1000).
@@ -292,7 +360,7 @@ fn generate_cards(
             let due_date = gen_due_date(rng, base_time);
 
             let first = Card::first(id, content, priority, tags, blazed, created_at, due_date);
-            generate_card_history(rng, first, tag_ids, base_time, used_priorities)
+            generate_card_history(rng, first, tag_ids, graph, base_time, used_priorities)
         })
         .collect()
 }
@@ -309,6 +377,7 @@ fn generate_card_history(
     rng: &mut ChaCha8Rng,
     first: Card,
     tag_ids: &[Uuid],
+    graph: &TagGraph,
     now: DateTime<Utc>,
     used_priorities: &mut BTreeSet<i64>,
 ) -> Vec<Card> {
@@ -394,6 +463,11 @@ fn generate_card_history(
                                 tags = pick_tags(rng, tag_ids, n);
                             }
                         }
+                        // Re-apply closure so the resulting card still
+                        // satisfies the implication invariant — mutations
+                        // above might add a tag whose implies are missing
+                        // or might remove one that's still required.
+                        tags = closed_tags(graph, &tags);
                     }
                 }
                 CardEdit::Blazed => {
@@ -576,10 +650,12 @@ fn gen_card_content(rng: &mut ChaCha8Rng, index: usize) -> String {
 /// Generate deleted cards with random priorities.
 ///
 /// These cards will be pushed then immediately deleted in the same batch.
+#[allow(clippy::too_many_arguments)]
 fn generate_deleted_cards(
     rng: &mut ChaCha8Rng,
     num_cards: usize,
     tag_ids: &[Uuid],
+    graph: &TagGraph,
     base_time: DateTime<Utc>,
     used_priorities: &mut BTreeSet<i64>,
 ) -> Vec<Vec<Card>> {
@@ -598,7 +674,7 @@ fn generate_deleted_cards(
                 vec![]
             } else {
                 let n = 1 + (rng.next_u32() as usize % 3.min(tag_ids.len()));
-                pick_tags(rng, tag_ids, n)
+                closed_tags(graph, &pick_tags(rng, tag_ids, n))
             };
 
             let blazed = rng.next_u32() % 100 < 20;
@@ -606,7 +682,7 @@ fn generate_deleted_cards(
             let due_date = gen_due_date(rng, base_time);
 
             let first = Card::first(id, content, priority, tags, blazed, created_at, due_date);
-            generate_card_history(rng, first, tag_ids, base_time, used_priorities)
+            generate_card_history(rng, first, tag_ids, graph, base_time, used_priorities)
         })
         .collect()
 }
@@ -615,6 +691,7 @@ fn generate_deleted_cards(
 fn make_fresh_card(
     rng: &mut ChaCha8Rng,
     tag_ids: &[Uuid],
+    graph: &TagGraph,
     now: DateTime<Utc>,
     used_priorities: &mut BTreeSet<i64>,
 ) -> Card {
@@ -629,7 +706,7 @@ fn make_fresh_card(
         vec![]
     } else {
         let n = 1 + (rng.next_u32() as usize % 3.min(tag_ids.len()));
-        pick_tags(rng, tag_ids, n)
+        closed_tags(graph, &pick_tags(rng, tag_ids, n))
     };
     let blazed = rng.next_u32() % 100 < 30;
     let created_at = now - Duration::minutes((rng.next_u32() % 120) as i64);
@@ -642,6 +719,7 @@ fn make_card_update(
     rng: &mut ChaCha8Rng,
     prev: &Card,
     tag_ids: &[Uuid],
+    graph: &TagGraph,
     now: DateTime<Utc>,
     used_priorities: &mut BTreeSet<i64>,
 ) -> Card {
@@ -673,6 +751,7 @@ fn make_card_update(
                     if !tags.contains(&new_tag) {
                         tags.push(new_tag);
                     }
+                    tags = closed_tags(graph, &tags);
                 }
             }
             CardEdit::Blazed => blazed = !blazed,
@@ -703,11 +782,13 @@ fn make_fresh_tag(rng: &mut ChaCha8Rng, now: DateTime<Utc>) -> Tag {
 /// C. Small batches of 2–5 mixed operations
 /// D. Delete the doomed entities (shows "operations purged")
 /// E. Post-deletion activity (proves life goes on)
+#[allow(clippy::too_many_arguments)]
 fn generate_extra_ops(
     rng: &mut ChaCha8Rng,
     live_tag_ids: &[Uuid],
     card_chains: &[Vec<Card>],
     tag_chains: &[Vec<Tag>],
+    graph: &TagGraph,
     base_time: DateTime<Utc>,
     used_priorities: &mut BTreeSet<i64>,
 ) -> Vec<Vec<PushItem>> {
@@ -738,7 +819,7 @@ fn generate_extra_ops(
     // ── Phase A: Create entities destined for deletion (20 ops) ──
 
     for _ in 0..15 {
-        let card = make_fresh_card(rng, live_tag_ids, base_time, used_priorities);
+        let card = make_fresh_card(rng, live_tag_ids, graph, base_time, used_priorities);
         doomed_card_ids.push(card.id());
         ops.push(vec![PushItem::Cards(vec![card])]);
     }
@@ -753,7 +834,7 @@ fn generate_extra_ops(
 
     // 25 new card creates
     for _ in 0..25 {
-        let card = make_fresh_card(rng, live_tag_ids, base_time, used_priorities);
+        let card = make_fresh_card(rng, live_tag_ids, graph, base_time, used_priorities);
         ops.push(vec![PushItem::Cards(vec![card])]);
     }
 
@@ -765,6 +846,7 @@ fn generate_extra_ops(
             rng,
             &card_heads[idx],
             live_tag_ids,
+            graph,
             base_time,
             used_priorities,
         );
@@ -774,7 +856,7 @@ fn generate_extra_ops(
 
     // 10 more card creates
     for _ in 0..10 {
-        let card = make_fresh_card(rng, live_tag_ids, base_time, used_priorities);
+        let card = make_fresh_card(rng, live_tag_ids, graph, base_time, used_priorities);
         ops.push(vec![PushItem::Cards(vec![card])]);
     }
 
@@ -799,6 +881,7 @@ fn generate_extra_ops(
                     batch.push(PushItem::Cards(vec![make_fresh_card(
                         rng,
                         live_tag_ids,
+                        graph,
                         base_time,
                         used_priorities,
                     )]));
@@ -810,6 +893,7 @@ fn generate_extra_ops(
                         rng,
                         &card_heads[idx],
                         live_tag_ids,
+                        graph,
                         base_time,
                         used_priorities,
                     );
@@ -820,6 +904,7 @@ fn generate_extra_ops(
                     batch.push(PushItem::Cards(vec![make_fresh_card(
                         rng,
                         live_tag_ids,
+                        graph,
                         base_time,
                         used_priorities,
                     )]));
@@ -848,8 +933,7 @@ fn generate_extra_ops(
         let mut batch: Vec<PushItem> = Vec::new();
         for head in card_heads.iter_mut() {
             if head.tags().contains(id) {
-                let new_tags: Vec<Uuid> =
-                    head.tags().iter().copied().filter(|t| t != id).collect();
+                let new_tags: Vec<Uuid> = head.tags().iter().copied().filter(|t| t != id).collect();
                 let updated = head.next(
                     head.content().to_string(),
                     head.priority(),
@@ -874,6 +958,7 @@ fn generate_extra_ops(
                 ops.push(vec![PushItem::Cards(vec![make_fresh_card(
                     rng,
                     live_tag_ids,
+                    graph,
                     base_time,
                     used_priorities,
                 )])]);
@@ -885,6 +970,7 @@ fn generate_extra_ops(
                     rng,
                     &card_heads[idx],
                     live_tag_ids,
+                    graph,
                     base_time,
                     used_priorities,
                 );
@@ -902,8 +988,8 @@ fn generate_extra_ops(
             }
             _ => {
                 // Mixed batch: two new cards in one sequence.
-                let card1 = make_fresh_card(rng, live_tag_ids, base_time, used_priorities);
-                let card2 = make_fresh_card(rng, live_tag_ids, base_time, used_priorities);
+                let card1 = make_fresh_card(rng, live_tag_ids, graph, base_time, used_priorities);
+                let card2 = make_fresh_card(rng, live_tag_ids, graph, base_time, used_priorities);
                 ops.push(vec![
                     PushItem::Cards(vec![card1]),
                     PushItem::Cards(vec![card2]),
@@ -997,7 +1083,14 @@ pub fn generate(seed: u64, num_tags: usize, num_cards: usize) -> SeedData {
     // client lib's placement logic but without non-deterministic jitter).
     let mut used_priorities = BTreeSet::new();
 
-    let tag_chains = generate_tags(&mut rng, num_tags, base_time);
+    let mut tag_chains = generate_tags(&mut rng, num_tags, base_time);
+    // Give ~25% of live tags an implies list so the seed data exercises
+    // both the new tag-graph storage path and the server's retroactive
+    // implication validator. Must happen before any card generation so
+    // the `TagGraph` snapshot covers the final (implied) state.
+    apply_seeded_implications(&mut rng, &mut tag_chains, base_time);
+    let graph = graph_from_chains(&tag_chains);
+
     let tag_ids: Vec<Uuid> = tag_chains
         .iter()
         .map(|chain| chain.first().unwrap().id())
@@ -1007,6 +1100,7 @@ pub fn generate(seed: u64, num_tags: usize, num_cards: usize) -> SeedData {
         &mut rng,
         num_cards,
         &tag_ids,
+        &graph,
         base_time,
         &mut used_priorities,
     );
@@ -1019,10 +1113,14 @@ pub fn generate(seed: u64, num_tags: usize, num_cards: usize) -> SeedData {
     let num_deleted_tags = (num_tags / 4).clamp(3, 5);
 
     let deleted_tag_chains = generate_tags(&mut rng, num_deleted_tags, base_time);
+    // Deleted tags never end up in the live graph, so pass the same
+    // `graph` snapshot. The deleted cards' tags still reference only
+    // live tag ids (from `tag_ids`) so closure is meaningful.
     let deleted_card_chains = generate_deleted_cards(
         &mut rng,
         num_deleted_cards,
         &tag_ids,
+        &graph,
         base_time,
         &mut used_priorities,
     );
@@ -1033,6 +1131,7 @@ pub fn generate(seed: u64, num_tags: usize, num_cards: usize) -> SeedData {
         &tag_ids,
         &card_chains,
         &tag_chains,
+        &graph,
         base_time,
         &mut used_priorities,
     );

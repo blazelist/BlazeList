@@ -88,6 +88,23 @@
     border-top: 1px solid var(--border);
 }
 
+/* When inside a detail-section, the section already provides the border */
+.detail-section .tag-history-section {
+    border-top: none;
+    margin: 0;
+    padding-top: 0;
+    padding-left: 0;
+    padding-right: 0;
+}
+
+/* Match linked-cards-header label style when inside card detail */
+.detail-section .tag-history-label {
+    font-size: 0.75rem;
+    font-weight: normal;
+    text-transform: none;
+    letter-spacing: normal;
+}
+
 .tag-history-label {
     font-size: 0.65rem;
     color: var(--text-muted);

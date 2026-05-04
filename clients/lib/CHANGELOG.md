@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.0.0] - 2026-05-04
+
+### Added
+
+- `tag_graph` module re-exporting `blazelist_protocol::TagGraph`,
+  `TagImplicationCycle`, and `affected_cards_for_change` so WASM and
+  other client code can compute implication closures, detect cycles,
+  and preview the set of cards that would need new versions when a
+  tag's implies list changes.
+- `get_all_card_histories` and `get_all_tag_histories` convenience methods
+  on the `Client` trait for bulk history fetching
+- `compute_all_link_counts_recursive` — augments direct link counts with
+  transitive reachability count via BFS expansion
+- `transitive` field on `LinkCounts` struct for cards reachable beyond
+  direct forward/back links
+- `mutual` field on `LinkCounts` struct — count of cards that this card
+  links to and that also link back. `compute_all_link_counts` classifies
+  each pair as forward-only, back-only, or mutual; the recursive variant
+  sums all three for the BFS seed set.
+- `expand_linked_cards` BFS traversal for recursive linked card expansion
+- `NextTue`, `NextWed`, `NextThu`, `NextSat`, and `NextSun` variants on
+  `DueDatePreset` — the dropdown now offers a quick-pick for every
+  weekday rather than only Monday and Friday.
+
+### Changed
+
+- **Breaking:** `LinkCounts.forward` and `.back` are now exclusive of
+  mutual links — a bidirectional pair contributes only to `mutual`, not
+  to `forward` or `back`. Consumers displaying these counts must read
+  the new `mutual` field to recover the previous total.
+- **Breaking:** `DueDateFilter::Upcoming` variant removed — use
+  `TodayAndUpcoming` instead. "Next 7 days" and "Next 14 days" filters
+  now include today (previously they started from tomorrow).
+- **Breaking:** Tied to protocol 3.0.0 — `Tag::from_parts` takes an
+  additional `implies: Vec<Uuid>` argument and `Tag` carries an
+  `implies` field on the wire. Tag client code upgraded accordingly.
+- **Breaking:** `affected_cards_for_change` now takes only `(next, cards)`
+  — the previously unused `prev` parameter has been removed. Call sites
+  in the tag-detail editor updated accordingly.
+- **Breaking:** UUID extraction in card content now requires the UUID to
+  start the text or be preceded by whitespace, naturally excluding UUIDs
+  embedded in URLs, markdown link targets, and text without a separator.
+  Affects `extract_card_links` and the markdown UUID-to-card-link
+  post-processor.
+
 ## [2.3.0] - 2026-03-23
 
 ### Added

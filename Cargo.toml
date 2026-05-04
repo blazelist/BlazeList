@@ -24,7 +24,7 @@ blazelist-protocol = { path = "protocol" }
 blake3 = { version = "1", features = ["serde"] }
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock", "std"] }
 clap = { version = "4", features = ["derive"] }
-comrak = { version = "0.51", default-features = false }
+comrak = { version = "0.52", default-features = false }
 criterion = { version = "0.8", features = ["html_reports"] }
 expect-test = "1"
 indexmap = "2"
@@ -34,13 +34,14 @@ rand = "0.10"
 rgb = { version = "0.8", features = ["serde"] }
 regex = "1"
 rcgen = "0.14"
-rusqlite = { version = "0.38", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "time", "signal"] }
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 wtransport = "0.7"
