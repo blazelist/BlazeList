@@ -190,3 +190,20 @@ manual step under Nix.
 
 For deploying via the bundled NixOS module (`services.blazelist`), see
 [DOCS.md → NixOS](DOCS.md#nixos).
+
+### Pinned, signature-verified builds
+
+`lib.buildFromCommit` builds a specific upstream commit and, by default,
+verifies its GPG signature against the committed `release-signing-key.asc`
+before building — it refuses an unsigned or wrong-key commit:
+
+```nix
+blazelist.lib.${system}.buildFromCommit {
+  rev = "<commit sha>";
+  hash = "<fetchgit hash>";
+  # verify = false;   # opt out (e.g. a fork that doesn't sign its commits)
+}
+```
+
+Verification runs `git verify-commit` inside the build sandbox, so a successful
+build is proof the pinned commit carries a valid release signature.

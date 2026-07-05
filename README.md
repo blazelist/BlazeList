@@ -50,8 +50,9 @@ imports = [ inputs.blazelist.nixosModules.default ];
 services.blazelist.enable = true;
 ```
 
-The flake also ships `lib.buildFromCommit` for pinned, signature-verified
-deploys. See [DEV.md](DEV.md#nix) for the full reference.
+The flake also ships `lib.buildFromCommit` for pinned deploys that verify the
+commit's GPG signature against the release key by default (opt out with
+`verify = false`). See [DEV.md](DEV.md#nix) for the full reference.
 
 ## Documentation
 
