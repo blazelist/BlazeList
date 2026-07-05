@@ -1,5 +1,5 @@
 use crate::state::settings;
-use crate::state::store::{AppState, confirm_discard_changes, sync_query_params};
+use crate::state::store::{AppState, set_selection};
 use crate::storage;
 use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
@@ -55,20 +55,15 @@ fn env_info(
     }
 }
 
-/// Helper: check for unsaved changes and clear pane state before opening a new pane.
-/// Returns `false` if the user cancels.
+/// Open the settings or shortcuts pane after deselecting any card.
+/// Returns `false` if the user cancels the unsaved-changes prompt.
 pub fn switch_to_pane(state: &AppState, open_settings: bool, open_shortcuts: bool) -> bool {
-    if !confirm_discard_changes(state) {
+    if !set_selection(state, None) {
         return false;
     }
-    state.selected_card.set(None);
-    state.creating_new.set(false);
-    state.creating_new_tag.set(false);
-    state.editing.set(false);
     state.has_unsaved_changes.set(false);
     state.settings_open.set(open_settings);
     state.shortcuts_open.set(open_shortcuts);
-    sync_query_params(state);
     true
 }
 
@@ -108,41 +103,28 @@ pub fn SettingsPanel() -> impl IntoView {
         state.auto_sync_enabled.set(v);
         settings::save_auto_sync(v);
         if !v {
-            state.auto_sync_countdown.set(0);
+            state.auto_sync_countdown_ms.set(0);
         }
     };
     let on_change_sync_interval = move |ev: web_sys::Event| {
         let val = event_target_value(&ev);
-        if let Ok(s) = val.parse::<u32>() {
-            let s = s.clamp(5, 300);
-            state.auto_sync_interval_secs.set(s);
-            settings::save_auto_sync_interval(s);
+        if let Ok(ms) = val.parse::<u32>() {
+            let ms = ms.clamp(5_000, 300_000);
+            state.auto_sync_interval_ms.set(ms);
+            settings::save_auto_sync_interval_ms(ms);
         }
     };
-    let on_toggle_auto_save = move |_| {
-        let v = !state.auto_save_enabled.get_untracked();
-        state.auto_save_enabled.set(v);
-        settings::save_auto_save(v);
+    let on_toggle_priority_debounce = move |_| {
+        let v = !state.priority_debounce_enabled.get_untracked();
+        state.priority_debounce_enabled.set(v);
+        settings::save_priority_debounce_enabled(v);
     };
-    let on_change_delay = move |ev: web_sys::Event| {
+    let on_change_priority_debounce = move |ev: web_sys::Event| {
         let val = event_target_value(&ev);
-        if let Ok(s) = val.parse::<u32>() {
-            let s = s.clamp(1, 60);
-            state.auto_save_delay_secs.set(s);
-            settings::save_auto_save_delay(s);
-        }
-    };
-    let on_toggle_debounce = move |_| {
-        let v = !state.debounce_enabled.get_untracked();
-        state.debounce_enabled.set(v);
-        settings::save_debounce_enabled(v);
-    };
-    let on_change_debounce = move |ev: web_sys::Event| {
-        let val = event_target_value(&ev);
-        if let Ok(s) = val.parse::<u32>() {
-            let s = s.clamp(1, 10);
-            state.debounce_delay_secs.set(s);
-            settings::save_debounce_delay(s);
+        if let Ok(ms) = val.parse::<u32>() {
+            let ms = ms.clamp(100, 30_000);
+            state.priority_debounce_delay_ms.set(ms);
+            settings::save_priority_debounce_delay_ms(ms);
         }
     };
     let on_toggle_show_preview = move |_| {
@@ -164,6 +146,21 @@ pub fn SettingsPanel() -> impl IntoView {
         let v = !state.show_due_today_button.get_untracked();
         state.show_due_today_button.set(v);
         settings::save_show_due_today_button(v);
+    };
+    let on_toggle_extinguish_on_due_set = move |_| {
+        let v = !state.extinguish_on_due_set.get_untracked();
+        state.extinguish_on_due_set.set(v);
+        settings::save_extinguish_on_due_set(v);
+    };
+    let on_toggle_extinguish_on_due_clear = move |_| {
+        let v = !state.extinguish_on_due_clear.get_untracked();
+        state.extinguish_on_due_clear.set(v);
+        settings::save_extinguish_on_due_clear(v);
+    };
+    let on_toggle_clear_due_on_blaze = move |_| {
+        let v = !state.clear_due_on_blaze.get_untracked();
+        state.clear_due_on_blaze.set(v);
+        settings::save_clear_due_on_blaze(v);
     };
     let on_toggle_recursive_links = move |_| {
         let v = !state.recursive_links.get_untracked();
@@ -195,21 +192,61 @@ pub fn SettingsPanel() -> impl IntoView {
         state.touch_swipe_enabled.set(v);
         settings::save_touch_swipe(v);
     };
-    let on_change_swipe_threshold_right = move |ev: web_sys::Event| {
-        let val = event_target_value(&ev);
-        if let Ok(px) = val.parse::<u32>() {
-            let px = px.clamp(40, 150);
-            state.swipe_threshold_right.set(px);
-            settings::save_swipe_threshold_right(px);
+    let on_toggle_drag_and_drop = move |_| {
+        let v = !state.drag_and_drop_enabled.get_untracked();
+        state.drag_and_drop_enabled.set(v);
+        settings::save_drag_and_drop_enabled(v);
+        apply_drag_and_drop_classes(v, &state.drag_and_drop_mode.get_untracked());
+        if !v {
+            // Tear down any session in flight; the primary toggle being
+            // off mid-drag should abort, not commit on release.
+            crate::components::drag_drop::cancel_active_drag();
         }
     };
-    let on_change_swipe_threshold_left = move |ev: web_sys::Event| {
+    let on_change_drag_and_drop_mode = move |ev: web_sys::Event| {
+        let val = event_target_value(&ev);
+        if settings::is_valid_drag_and_drop_mode(&val) {
+            state.drag_and_drop_mode.set(val.clone());
+            settings::save_drag_and_drop_mode(&val);
+            apply_drag_and_drop_classes(state.drag_and_drop_enabled.get_untracked(), &val);
+        }
+    };
+    let on_change_swipe_threshold_right_cycle = move |ev: web_sys::Event| {
         let val = event_target_value(&ev);
         if let Ok(px) = val.parse::<u32>() {
             let px = px.clamp(40, 150);
-            state.swipe_threshold_left.set(px);
-            settings::save_swipe_threshold_left(px);
+            state.swipe_threshold_right_cycle.set(px);
+            settings::save_swipe_threshold_right_cycle(px);
         }
+    };
+    let on_change_swipe_threshold_right_levels = move |ev: web_sys::Event| {
+        let val = event_target_value(&ev);
+        if let Ok(px) = val.parse::<u32>() {
+            let px = px.clamp(40, 150);
+            state.swipe_threshold_right_levels.set(px);
+            settings::save_swipe_threshold_right_levels(px);
+        }
+    };
+    let on_change_swipe_threshold_left_cycle = move |ev: web_sys::Event| {
+        let val = event_target_value(&ev);
+        if let Ok(px) = val.parse::<u32>() {
+            let px = px.clamp(40, 150);
+            state.swipe_threshold_left_cycle.set(px);
+            settings::save_swipe_threshold_left_cycle(px);
+        }
+    };
+    let on_change_swipe_threshold_left_levels = move |ev: web_sys::Event| {
+        let val = event_target_value(&ev);
+        if let Ok(px) = val.parse::<u32>() {
+            let px = px.clamp(40, 150);
+            state.swipe_threshold_left_levels.set(px);
+            settings::save_swipe_threshold_left_levels(px);
+        }
+    };
+    let on_change_swipe_left_mode = move |ev: web_sys::Event| {
+        let val = event_target_value(&ev);
+        state.swipe_left_mode.set(val.clone());
+        settings::save_swipe_left_mode(&val);
     };
     let on_change_swipe_undo_timeout = move |ev: web_sys::Event| {
         let val = event_target_value(&ev);
@@ -217,6 +254,30 @@ pub fn SettingsPanel() -> impl IntoView {
             let ms = ms.clamp(500, 30_000);
             state.swipe_undo_timeout_ms.set(ms);
             settings::save_swipe_undo_timeout_ms(ms);
+        }
+    };
+    let on_change_swipe_levels_zone_today_width = move |ev: web_sys::Event| {
+        let val = event_target_value(&ev);
+        if let Ok(px) = val.parse::<u32>() {
+            let px = px.clamp(20, 400);
+            state.swipe_levels_zone_today_width.set(px);
+            settings::save_swipe_levels_zone_today_width(px);
+        }
+    };
+    let on_change_swipe_levels_zone_tomorrow_width = move |ev: web_sys::Event| {
+        let val = event_target_value(&ev);
+        if let Ok(px) = val.parse::<u32>() {
+            let px = px.clamp(20, 400);
+            state.swipe_levels_zone_tomorrow_width.set(px);
+            settings::save_swipe_levels_zone_tomorrow_width(px);
+        }
+    };
+    let on_change_swipe_levels_zone_soon_width = move |ev: web_sys::Event| {
+        let val = event_target_value(&ev);
+        if let Ok(px) = val.parse::<u32>() {
+            let px = px.clamp(20, 400);
+            state.swipe_levels_zone_soon_width.set(px);
+            settings::save_swipe_levels_zone_soon_width(px);
         }
     };
     let on_change_ui_scale = move |ev: web_sys::Event| {
@@ -300,55 +361,39 @@ pub fn SettingsPanel() -> impl IntoView {
                 {env_info(state, "BLAZELIST_DEFAULT_AUTO_SYNC", settings::DEFAULT_AUTO_SYNC.to_string(), Signal::derive(move || state.auto_sync_enabled.get().to_string()))}
                 <div class=move || if state.auto_sync_enabled.get() { "" } else { "settings-disabled" }>
                     <div class="settings-sub-item">
-                        <span class="settings-label">"Interval (seconds)"</span>
-                        <input type="number" class="settings-number" min="5" max="300"
-                            prop:value=move || state.auto_sync_interval_secs.get().to_string()
+                        <span class="settings-label">"Interval (ms)"</span>
+                        <input type="number" class="settings-number" min="5000" max="300000" step="1000"
+                            prop:value=move || state.auto_sync_interval_ms.get().to_string()
                             on:change=on_change_sync_interval />
                     </div>
                     <div class="settings-sub-env">
-                        {env_info(state, "BLAZELIST_DEFAULT_AUTO_SYNC_INTERVAL", settings::DEFAULT_AUTO_SYNC_INTERVAL.to_string(), Signal::derive(move || state.auto_sync_interval_secs.get().to_string()))}
+                        {env_info(state, "BLAZELIST_DEFAULT_AUTO_SYNC_INTERVAL_MS", settings::DEFAULT_AUTO_SYNC_INTERVAL_MS.to_string(), Signal::derive(move || state.auto_sync_interval_ms.get().to_string()))}
                     </div>
                 </div>
             </div>
 
             <div class="settings-section">
                 <label class="settings-item">
-                    <span class="settings-label">"Auto-save while editing"</span>
+                    <span class="settings-label">"Card-move debounce"</span>
                     <input type="checkbox" class="toggle-checkbox"
-                        prop:checked=move || state.auto_save_enabled.get()
-                        on:change=on_toggle_auto_save />
+                        prop:checked=move || state.priority_debounce_enabled.get()
+                        on:change=on_toggle_priority_debounce />
                 </label>
-                {env_info(state, "BLAZELIST_DEFAULT_AUTO_SAVE", settings::DEFAULT_AUTO_SAVE.to_string(), Signal::derive(move || state.auto_save_enabled.get().to_string()))}
-                <div class=move || if state.auto_save_enabled.get() { "" } else { "settings-disabled" }>
-                    <div class="settings-sub-item">
-                        <span class="settings-label">"Delay (seconds)"</span>
-                        <input type="number" class="settings-number" min="1" max="60"
-                            prop:value=move || state.auto_save_delay_secs.get().to_string()
-                            on:change=on_change_delay />
-                    </div>
-                    <div class="settings-sub-env">
-                        {env_info(state, "BLAZELIST_DEFAULT_AUTO_SAVE_DELAY", settings::DEFAULT_AUTO_SAVE_DELAY.to_string(), Signal::derive(move || state.auto_save_delay_secs.get().to_string()))}
-                    </div>
+                <div class="settings-hint">
+                    "A burst of rapid card moves coalesces into a single push. "
+                    "Only moves are debounced — other edits push immediately. "
+                    "Disable to push every move instantly."
                 </div>
-            </div>
-
-            <div class="settings-section">
-                <label class="settings-item">
-                    <span class="settings-label">"Push debounce"</span>
-                    <input type="checkbox" class="toggle-checkbox"
-                        prop:checked=move || state.debounce_enabled.get()
-                        on:change=on_toggle_debounce />
-                </label>
-                {env_info(state, "BLAZELIST_DEFAULT_DEBOUNCE_ENABLED", settings::DEFAULT_DEBOUNCE_ENABLED.to_string(), Signal::derive(move || state.debounce_enabled.get().to_string()))}
-                <div class=move || if state.debounce_enabled.get() { "" } else { "settings-disabled" }>
+                {env_info(state, "BLAZELIST_DEFAULT_PRIORITY_DEBOUNCE_ENABLED", settings::DEFAULT_PRIORITY_DEBOUNCE_ENABLED.to_string(), Signal::derive(move || state.priority_debounce_enabled.get().to_string()))}
+                <div class=move || if state.priority_debounce_enabled.get() { "" } else { "settings-disabled" }>
                     <div class="settings-sub-item">
-                        <span class="settings-label">"Delay (seconds)"</span>
-                        <input type="number" class="settings-number" min="1" max="10"
-                            prop:value=move || state.debounce_delay_secs.get().to_string()
-                            on:change=on_change_debounce />
+                        <span class="settings-label">"Delay (ms)"</span>
+                        <input type="number" class="settings-number" min="100" max="30000" step="100"
+                            prop:value=move || state.priority_debounce_delay_ms.get().to_string()
+                            on:change=on_change_priority_debounce />
                     </div>
                     <div class="settings-sub-env">
-                        {env_info(state, "BLAZELIST_DEFAULT_DEBOUNCE_DELAY", settings::DEFAULT_DEBOUNCE_DELAY.to_string(), Signal::derive(move || state.debounce_delay_secs.get().to_string()))}
+                        {env_info(state, "BLAZELIST_DEFAULT_PRIORITY_DEBOUNCE_DELAY_MS", settings::DEFAULT_PRIORITY_DEBOUNCE_DELAY_MS.to_string(), Signal::derive(move || state.priority_debounce_delay_ms.get().to_string()))}
                     </div>
                 </div>
             </div>
@@ -397,6 +442,46 @@ pub fn SettingsPanel() -> impl IntoView {
                         on:change=on_toggle_show_due_today_button />
                 </label>
                 {env_info(state, "BLAZELIST_DEFAULT_SHOW_DUE_TODAY_BUTTON", settings::DEFAULT_SHOW_DUE_TODAY_BUTTON.to_string(), Signal::derive(move || state.show_due_today_button.get().to_string()))}
+            </div>
+
+            // ── Due Date ──
+            <div class="settings-section-title">"Due Date"</div>
+
+            <div class="settings-section">
+                <label class="settings-item">
+                    <span class="settings-label">"Extinguish when setting a due date"</span>
+                    <input type="checkbox" class="toggle-checkbox"
+                        prop:checked=move || state.extinguish_on_due_set.get()
+                        on:change=on_toggle_extinguish_on_due_set />
+                </label>
+                <div class="settings-hint">
+                    "Extinguish a Blazed card when its due date is set or changed. Already-Extinguished cards are untouched."
+                </div>
+                {env_info(state, "BLAZELIST_DEFAULT_EXTINGUISH_ON_DUE_SET", settings::DEFAULT_EXTINGUISH_ON_DUE_SET.to_string(), Signal::derive(move || state.extinguish_on_due_set.get().to_string()))}
+                <div class=move || if state.extinguish_on_due_set.get() { "" } else { "settings-disabled" }>
+                    <div class="settings-sub-item">
+                        <span class="settings-label">"Also extinguish when clearing the due date"</span>
+                        <input type="checkbox" class="toggle-checkbox"
+                            prop:checked=move || state.extinguish_on_due_clear.get()
+                            on:change=on_toggle_extinguish_on_due_clear />
+                    </div>
+                    <div class="settings-sub-env">
+                        {env_info(state, "BLAZELIST_DEFAULT_EXTINGUISH_ON_DUE_CLEAR", settings::DEFAULT_EXTINGUISH_ON_DUE_CLEAR.to_string(), Signal::derive(move || state.extinguish_on_due_clear.get().to_string()))}
+                    </div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <label class="settings-item">
+                    <span class="settings-label">"Clear due date when blazing"</span>
+                    <input type="checkbox" class="toggle-checkbox"
+                        prop:checked=move || state.clear_due_on_blaze.get()
+                        on:change=on_toggle_clear_due_on_blaze />
+                </label>
+                <div class="settings-hint">
+                    "Clear a card's due date when blazing it. Extinguishing leaves the due date untouched."
+                </div>
+                {env_info(state, "BLAZELIST_DEFAULT_CLEAR_DUE_ON_BLAZE", settings::DEFAULT_CLEAR_DUE_ON_BLAZE.to_string(), Signal::derive(move || state.clear_due_on_blaze.get().to_string()))}
             </div>
 
             // ── Linked Cards ──
@@ -451,32 +536,142 @@ pub fn SettingsPanel() -> impl IntoView {
                 </label>
                 {env_info(state, "BLAZELIST_DEFAULT_TOUCH_SWIPE", settings::DEFAULT_TOUCH_SWIPE.to_string(), Signal::derive(move || state.touch_swipe_enabled.get().to_string()))}
                 <div class=move || if state.touch_swipe_enabled.get() { "" } else { "settings-disabled" }>
+                    // Mode select goes first — it determines what the left-swipe
+                    // distances mean below.
                     <div class="settings-sub-item">
-                        <span class="settings-label">"Swipe right distance (px)"</span>
-                        <input type="number" class="settings-number" min="40" max="150"
-                            prop:value=move || state.swipe_threshold_right.get().to_string()
-                            on:change=on_change_swipe_threshold_right />
+                        <span class="settings-label">"Swipe-left mode"</span>
+                        <select class="settings-select"
+                            on:change=on_change_swipe_left_mode
+                            prop:value=move || state.swipe_left_mode.get()>
+                            <option value="levels">"Levels (distance picks action)"</option>
+                            <option value="cycle">"Cycle (each swipe advances)"</option>
+                        </select>
                     </div>
                     <div class="settings-sub-env">
-                        {env_info(state, "BLAZELIST_DEFAULT_SWIPE_THRESHOLD_RIGHT", settings::DEFAULT_SWIPE_THRESHOLD_RIGHT.to_string(), Signal::derive(move || state.swipe_threshold_right.get().to_string()))}
+                        {env_info(state, "BLAZELIST_DEFAULT_SWIPE_LEFT_MODE", settings::DEFAULT_SWIPE_LEFT_MODE.to_string(), Signal::derive(move || state.swipe_left_mode.get()))}
                     </div>
+
+                    // ── Right swipe (Blaze toggle) ──
+                    // Two trigger fields, each gated by mode, mirroring the
+                    // Left swipe layout below. The user can set per-mode
+                    // values manually via env vars / localStorage; the
+                    // shipped defaults are the same for both modes.
+                    <div class="settings-sub-section-title">"Right swipe"</div>
+                    <div class=move || if state.swipe_left_mode.get() == "cycle" { "" } else { "settings-disabled" }>
+                        <div class="settings-sub-item">
+                            <span class="settings-label">"Cycle trigger distance (px)"</span>
+                            <input type="number" class="settings-number" min="40" max="150"
+                                prop:value=move || state.swipe_threshold_right_cycle.get().to_string()
+                                on:change=on_change_swipe_threshold_right_cycle />
+                        </div>
+                        <div class="settings-sub-env">
+                            {env_info(state, "BLAZELIST_DEFAULT_SWIPE_THRESHOLD_RIGHT_CYCLE", settings::DEFAULT_SWIPE_THRESHOLD_RIGHT_CYCLE.to_string(), Signal::derive(move || state.swipe_threshold_right_cycle.get().to_string()))}
+                        </div>
+                    </div>
+                    <div class=move || if state.swipe_left_mode.get() == "levels" { "" } else { "settings-disabled" }>
+                        <div class="settings-sub-item">
+                            <span class="settings-label">"Levels trigger distance (px)"</span>
+                            <input type="number" class="settings-number" min="40" max="150"
+                                prop:value=move || state.swipe_threshold_right_levels.get().to_string()
+                                on:change=on_change_swipe_threshold_right_levels />
+                        </div>
+                        <div class="settings-sub-env">
+                            {env_info(state, "BLAZELIST_DEFAULT_SWIPE_THRESHOLD_RIGHT_LEVELS", settings::DEFAULT_SWIPE_THRESHOLD_RIGHT_LEVELS.to_string(), Signal::derive(move || state.swipe_threshold_right_levels.get().to_string()))}
+                        </div>
+                    </div>
+
+                    // ── Left swipe (Due-date set) ──
+                    // Two trigger fields, each gated by mode: cycle uses
+                    // its own threshold; levels uses a separate threshold
+                    // that doubles as the start of the Today zone.
+                    <div class="settings-sub-section-title">"Left swipe"</div>
+                    <div class=move || if state.swipe_left_mode.get() == "cycle" { "" } else { "settings-disabled" }>
+                        <div class="settings-sub-item">
+                            <span class="settings-label">"Cycle trigger distance (px)"</span>
+                            <input type="number" class="settings-number" min="40" max="150"
+                                prop:value=move || state.swipe_threshold_left_cycle.get().to_string()
+                                on:change=on_change_swipe_threshold_left_cycle />
+                        </div>
+                        <div class="settings-sub-env">
+                            {env_info(state, "BLAZELIST_DEFAULT_SWIPE_THRESHOLD_LEFT_CYCLE", settings::DEFAULT_SWIPE_THRESHOLD_LEFT_CYCLE.to_string(), Signal::derive(move || state.swipe_threshold_left_cycle.get().to_string()))}
+                        </div>
+                    </div>
+                    <div class=move || if state.swipe_left_mode.get() == "levels" { "" } else { "settings-disabled" }>
+                        <div class="settings-sub-item">
+                            <span class="settings-label">"Levels trigger / Today zone start (px)"</span>
+                            <input type="number" class="settings-number" min="40" max="150"
+                                prop:value=move || state.swipe_threshold_left_levels.get().to_string()
+                                on:change=on_change_swipe_threshold_left_levels />
+                        </div>
+                        <div class="settings-sub-env">
+                            {env_info(state, "BLAZELIST_DEFAULT_SWIPE_THRESHOLD_LEFT_LEVELS", settings::DEFAULT_SWIPE_THRESHOLD_LEFT_LEVELS.to_string(), Signal::derive(move || state.swipe_threshold_left_levels.get().to_string()))}
+                        </div>
+                        <div class="settings-sub-item">
+                            <span class="settings-label">"Zone: Today width (px)"</span>
+                            <input type="number" class="settings-number" min="20" max="400"
+                                prop:value=move || state.swipe_levels_zone_today_width.get().to_string()
+                                on:change=on_change_swipe_levels_zone_today_width />
+                        </div>
+                        <div class="settings-sub-env">
+                            {env_info(state, "BLAZELIST_DEFAULT_SWIPE_LEVELS_ZONE_TODAY_WIDTH", settings::DEFAULT_SWIPE_LEVELS_ZONE_TODAY_WIDTH.to_string(), Signal::derive(move || state.swipe_levels_zone_today_width.get().to_string()))}
+                        </div>
+                        <div class="settings-sub-item">
+                            <span class="settings-label">"Zone: Tomorrow width (px)"</span>
+                            <input type="number" class="settings-number" min="20" max="400"
+                                prop:value=move || state.swipe_levels_zone_tomorrow_width.get().to_string()
+                                on:change=on_change_swipe_levels_zone_tomorrow_width />
+                        </div>
+                        <div class="settings-sub-env">
+                            {env_info(state, "BLAZELIST_DEFAULT_SWIPE_LEVELS_ZONE_TOMORROW_WIDTH", settings::DEFAULT_SWIPE_LEVELS_ZONE_TOMORROW_WIDTH.to_string(), Signal::derive(move || state.swipe_levels_zone_tomorrow_width.get().to_string()))}
+                        </div>
+                        <div class="settings-sub-item">
+                            <span class="settings-label">"Zone: In 2 days width (px)"</span>
+                            <input type="number" class="settings-number" min="20" max="400"
+                                prop:value=move || state.swipe_levels_zone_soon_width.get().to_string()
+                                on:change=on_change_swipe_levels_zone_soon_width />
+                        </div>
+                        <div class="settings-sub-env">
+                            {env_info(state, "BLAZELIST_DEFAULT_SWIPE_LEVELS_ZONE_SOON_WIDTH", settings::DEFAULT_SWIPE_LEVELS_ZONE_SOON_WIDTH.to_string(), Signal::derive(move || state.swipe_levels_zone_soon_width.get().to_string()))}
+                        </div>
+                    </div>
+
+                    // ── Undo ──
+                    <div class="settings-sub-section-title">"Undo"</div>
                     <div class="settings-sub-item">
-                        <span class="settings-label">"Swipe left distance (px)"</span>
-                        <input type="number" class="settings-number" min="40" max="150"
-                            prop:value=move || state.swipe_threshold_left.get().to_string()
-                            on:change=on_change_swipe_threshold_left />
-                    </div>
-                    <div class="settings-sub-env">
-                        {env_info(state, "BLAZELIST_DEFAULT_SWIPE_THRESHOLD_LEFT", settings::DEFAULT_SWIPE_THRESHOLD_LEFT.to_string(), Signal::derive(move || state.swipe_threshold_left.get().to_string()))}
-                    </div>
-                    <div class="settings-sub-item">
-                        <span class="settings-label">"Swipe undo timeout (ms)"</span>
+                        <span class="settings-label">"Toast dismiss timeout (ms)"</span>
                         <input type="number" class="settings-number" min="500" max="30000" step="500"
                             prop:value=move || state.swipe_undo_timeout_ms.get().to_string()
                             on:change=on_change_swipe_undo_timeout />
                     </div>
                     <div class="settings-sub-env">
                         {env_info(state, "BLAZELIST_DEFAULT_SWIPE_UNDO_TIMEOUT_MS", settings::DEFAULT_SWIPE_UNDO_TIMEOUT_MS.to_string(), Signal::derive(move || state.swipe_undo_timeout_ms.get().to_string()))}
+                    </div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <label class="settings-item">
+                    <span class="settings-label">"Drag and drop reordering"</span>
+                    <input type="checkbox" class="toggle-checkbox"
+                        prop:checked=move || state.drag_and_drop_enabled.get()
+                        on:change=on_toggle_drag_and_drop />
+                </label>
+                <div class="settings-hint">
+                    "Drag a card to a new position. Only active when sorted by priority."
+                </div>
+                {env_info(state, "BLAZELIST_DEFAULT_DRAG_AND_DROP_ENABLED", settings::DEFAULT_DRAG_AND_DROP_ENABLED.to_string(), Signal::derive(move || state.drag_and_drop_enabled.get().to_string()))}
+                <div class=move || if state.drag_and_drop_enabled.get() { "" } else { "settings-disabled" }>
+                    <div class="settings-sub-item">
+                        <span class="settings-label">"Drag activation"</span>
+                        <select class="settings-select"
+                            on:change=on_change_drag_and_drop_mode
+                            prop:value=move || state.drag_and_drop_mode.get()>
+                            <option value="anywhere">"Anywhere on card (desktop-friendly)"</option>
+                            <option value="handle">"Card number only (mobile-friendly)"</option>
+                        </select>
+                    </div>
+                    <div class="settings-sub-env">
+                        {env_info(state, "BLAZELIST_DEFAULT_DRAG_AND_DROP_MODE", settings::DEFAULT_DRAG_AND_DROP_MODE.to_string(), Signal::derive(move || state.drag_and_drop_mode.get()))}
                     </div>
                 </div>
             </div>
@@ -636,6 +831,32 @@ pub fn apply_show_card_time(enabled: bool) {
             let _ = cl.add_1("show-card-time");
         } else {
             let _ = cl.remove_1("show-card-time");
+        }
+    }
+}
+
+/// Toggle the `<html>` classes that gate drag-and-drop CSS. Two
+/// independent classes keep the cascade readable:
+/// - `dnd-on` whenever the primary setting is enabled
+/// - `dnd-mode-handle` whenever the mode is `handle`
+///
+/// `anywhere` mode is the implicit default — represented by `dnd-on`
+/// without `dnd-mode-handle`. Cards render byte-identical to the
+/// pre-feature baseline whenever `dnd-on` is absent.
+pub fn apply_drag_and_drop_classes(enabled: bool, mode: &str) {
+    if let Some(doc) = web_sys::window().and_then(|w| w.document())
+        && let Some(root) = doc.document_element()
+    {
+        let cl = root.class_list();
+        if enabled {
+            let _ = cl.add_1("dnd-on");
+        } else {
+            let _ = cl.remove_1("dnd-on");
+        }
+        if enabled && mode == "handle" {
+            let _ = cl.add_1("dnd-mode-handle");
+        } else {
+            let _ = cl.remove_1("dnd-mode-handle");
         }
     }
 }

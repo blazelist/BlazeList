@@ -266,6 +266,17 @@
     padding-left: 0.25rem;
 }
 
+.settings-sub-section-title {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-top: 0.75rem;
+    margin-bottom: 0.1rem;
+    padding-left: 0.25rem;
+    border-bottom: 1px dashed var(--border);
+    padding-bottom: 0.15rem;
+}
+
 .settings-sub-item {
     display: flex;
     align-items: center;

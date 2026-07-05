@@ -1,6 +1,7 @@
 use super::*;
 use crate::{Card, DateTime, DeletedEntity, NonNegativeI64, RootState, Tag, Version};
 use expect_test::expect;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 // -- Shared test helpers -----------------------------------------------------
@@ -383,6 +384,70 @@ fn sequence_history_response_round_trip() {
     assert_eq!(resp, decoded);
 }
 
+#[test]
+fn get_all_card_histories_round_trip() {
+    let req = Request::GetAllCardHistories {
+        limit_per_card: Some(5),
+        card_ids: Some(vec![TEST_UUID_A, TEST_UUID_B]),
+    };
+    let bytes = postcard::to_allocvec(&req).unwrap();
+    let decoded: Request = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(req, decoded);
+}
+
+#[test]
+fn get_all_card_histories_none_round_trip() {
+    let req = Request::GetAllCardHistories {
+        limit_per_card: None,
+        card_ids: None,
+    };
+    let bytes = postcard::to_allocvec(&req).unwrap();
+    let decoded: Request = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(req, decoded);
+}
+
+#[test]
+fn get_all_tag_histories_round_trip() {
+    let req = Request::GetAllTagHistories {
+        limit_per_tag: Some(3),
+        tag_ids: Some(vec![TEST_UUID_C, TEST_UUID_D]),
+    };
+    let bytes = postcard::to_allocvec(&req).unwrap();
+    let decoded: Request = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(req, decoded);
+}
+
+#[test]
+fn get_all_tag_histories_none_round_trip() {
+    let req = Request::GetAllTagHistories {
+        limit_per_tag: None,
+        tag_ids: None,
+    };
+    let bytes = postcard::to_allocvec(&req).unwrap();
+    let decoded: Request = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(req, decoded);
+}
+
+#[test]
+fn all_card_histories_response_round_trip() {
+    let mut histories = HashMap::new();
+    histories.insert(TEST_UUID_A, vec![test_card()]);
+    let resp = Response::AllCardHistories(histories);
+    let bytes = postcard::to_allocvec(&resp).unwrap();
+    let decoded: Response = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(resp, decoded);
+}
+
+#[test]
+fn all_tag_histories_response_round_trip() {
+    let mut histories = HashMap::new();
+    histories.insert(TEST_UUID_B, vec![test_tag()]);
+    let resp = Response::AllTagHistories(histories);
+    let bytes = postcard::to_allocvec(&resp).unwrap();
+    let decoded: Response = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(resp, decoded);
+}
+
 // -- ProtocolError Display tests --
 
 #[test]
@@ -557,6 +622,22 @@ fn into_sequence_history_success() {
     assert_eq!(resp.into_sequence_history().unwrap(), vec![]);
 }
 
+#[test]
+fn into_all_card_histories_success() {
+    let mut histories = HashMap::new();
+    histories.insert(TEST_UUID_A, vec![test_card()]);
+    let resp = Response::AllCardHistories(histories.clone());
+    assert_eq!(resp.into_all_card_histories().unwrap(), histories);
+}
+
+#[test]
+fn into_all_tag_histories_success() {
+    let mut histories = HashMap::new();
+    histories.insert(TEST_UUID_B, vec![test_tag()]);
+    let resp = Response::AllTagHistories(histories.clone());
+    assert_eq!(resp.into_all_tag_histories().unwrap(), histories);
+}
+
 // -- ResponseExtractError tests --
 
 #[test]
@@ -588,6 +669,74 @@ fn push_error_into_protocol_error() {
     assert_eq!(
         protocol_err,
         ProtocolError::PushFailed(PushError::HashVerificationFailed)
+    );
+}
+
+// -- Request classification tests --
+
+#[test]
+fn request_is_mutation() {
+    // The five mutating variants.
+    assert!(Request::PushCardVersions(vec![test_card()]).is_mutation());
+    assert!(Request::PushTagVersions(vec![test_tag()]).is_mutation());
+    assert!(Request::PushBatch(vec![]).is_mutation());
+    assert!(Request::DeleteCard { id: Uuid::nil() }.is_mutation());
+    assert!(Request::DeleteTag { id: Uuid::nil() }.is_mutation());
+
+    // Representative read variants are not mutations.
+    assert!(!Request::GetRoot.is_mutation());
+    assert!(!Request::ListTags.is_mutation());
+    assert!(!Request::GetCard { id: Uuid::nil() }.is_mutation());
+    assert!(
+        !Request::ListCards {
+            filter: CardFilter::All,
+            limit: None,
+        }
+        .is_mutation()
+    );
+    assert!(!Request::Subscribe.is_mutation());
+    assert!(
+        !Request::GetAllCardHistories {
+            limit_per_card: None,
+            card_ids: None,
+        }
+        .is_mutation()
+    );
+    assert!(
+        !Request::GetAllTagHistories {
+            limit_per_tag: None,
+            tag_ids: None,
+        }
+        .is_mutation()
+    );
+}
+
+#[test]
+fn request_is_streaming() {
+    // Subscribe is the only streaming variant.
+    assert!(Request::Subscribe.is_streaming());
+
+    // Everything else (including mutations and reads) is non-streaming.
+    assert!(!Request::PushCardVersions(vec![test_card()]).is_streaming());
+    assert!(!Request::PushTagVersions(vec![test_tag()]).is_streaming());
+    assert!(!Request::PushBatch(vec![]).is_streaming());
+    assert!(!Request::DeleteCard { id: Uuid::nil() }.is_streaming());
+    assert!(!Request::DeleteTag { id: Uuid::nil() }.is_streaming());
+    assert!(!Request::GetRoot.is_streaming());
+    assert!(!Request::ListTags.is_streaming());
+    assert!(
+        !Request::GetAllCardHistories {
+            limit_per_card: None,
+            card_ids: None,
+        }
+        .is_streaming()
+    );
+    assert!(
+        !Request::GetAllTagHistories {
+            limit_per_tag: None,
+            tag_ids: None,
+        }
+        .is_streaming()
     );
 }
 
@@ -652,6 +801,20 @@ fn request_discriminant_stability() {
         })
         .to_string(),
     );
+    expect!["15"].assert_eq(
+        &discriminant(&Request::GetAllCardHistories {
+            limit_per_card: None,
+            card_ids: None,
+        })
+        .to_string(),
+    );
+    expect!["16"].assert_eq(
+        &discriminant(&Request::GetAllTagHistories {
+            limit_per_tag: None,
+            tag_ids: None,
+        })
+        .to_string(),
+    );
 }
 
 #[test]
@@ -697,6 +860,8 @@ fn response_discriminant_stability() {
     expect!["10"].assert_eq(&discriminant(&Response::CardHistory(vec![])).to_string());
     expect!["11"].assert_eq(&discriminant(&Response::TagHistory(vec![])).to_string());
     expect!["12"].assert_eq(&discriminant(&Response::SequenceHistory(vec![])).to_string());
+    expect!["13"].assert_eq(&discriminant(&Response::AllCardHistories(HashMap::new())).to_string());
+    expect!["14"].assert_eq(&discriminant(&Response::AllTagHistories(HashMap::new())).to_string());
 }
 
 #[test]

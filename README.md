@@ -41,6 +41,18 @@ docker compose up
 
 The container can run as any UID/GID — see [DOCS.md](DOCS.md) for details.
 
+## Quick Start (NixOS)
+
+```nix
+inputs.blazelist.url = "github:blazelist/BlazeList";
+# In your host config:
+imports = [ inputs.blazelist.nixosModules.default ];
+services.blazelist.enable = true;
+```
+
+The flake also ships `lib.buildFromCommit` for pinned, signature-verified
+deploys. See [DEV.md](DEV.md#nix) for the full reference.
+
 ## Documentation
 
 | Document | Description |

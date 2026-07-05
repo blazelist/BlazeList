@@ -34,7 +34,7 @@ fn ensure_readable(c: &RGB8) -> String {
         let r = c.r as f32 + (255.0 - c.r as f32) * factor;
         let g = c.g as f32 + (255.0 - c.g as f32) * factor;
         let b = c.b as f32 + (255.0 - c.b as f32) * factor;
-        format!("#{:02x}{:02x}{:02x}", r as u8, g as u8, b as u8)
+        format_tag_hex(&RGB8::new(r as u8, g as u8, b as u8))
     }
 }
 

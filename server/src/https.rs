@@ -32,31 +32,39 @@ pub fn tls_acceptor(
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
-/// Run the HTTPS static-file server.
-///
-/// Serves files from `static_dir` over TLS and exposes `/cert-hash` so the
-/// WASM client can fetch the certificate hash from the same origin (avoiding
-/// mixed-content blocking on HTTPS pages).
 /// Build a JSON config string from `BLAZELIST_DEFAULT_*` env vars.
 ///
 /// Returns defaults for client settings that can be overridden per-device
 /// in the browser's localStorage.
 pub fn build_client_config_json() -> String {
-    let auto_save = std::env::var("BLAZELIST_DEFAULT_AUTO_SAVE").ok();
-    let auto_save_delay = std::env::var("BLAZELIST_DEFAULT_AUTO_SAVE_DELAY").ok();
     let show_preview = std::env::var("BLAZELIST_DEFAULT_SHOW_PREVIEW").ok();
     let auto_sync = std::env::var("BLAZELIST_DEFAULT_AUTO_SYNC").ok();
-    let auto_sync_interval = std::env::var("BLAZELIST_DEFAULT_AUTO_SYNC_INTERVAL").ok();
-    let debounce_enabled = std::env::var("BLAZELIST_DEFAULT_DEBOUNCE_ENABLED").ok();
-    let debounce_delay = std::env::var("BLAZELIST_DEFAULT_DEBOUNCE_DELAY").ok();
+    let auto_sync_interval_ms = std::env::var("BLAZELIST_DEFAULT_AUTO_SYNC_INTERVAL_MS").ok();
+    let priority_debounce_enabled =
+        std::env::var("BLAZELIST_DEFAULT_PRIORITY_DEBOUNCE_ENABLED").ok();
+    let priority_debounce_delay_ms =
+        std::env::var("BLAZELIST_DEFAULT_PRIORITY_DEBOUNCE_DELAY_MS").ok();
     let keyboard_shortcuts = std::env::var("BLAZELIST_DEFAULT_KEYBOARD_SHORTCUTS").ok();
     let search_tags = std::env::var("BLAZELIST_DEFAULT_SEARCH_TAGS").ok();
     let ui_scale = std::env::var("BLAZELIST_DEFAULT_UI_SCALE").ok();
     let ui_density = std::env::var("BLAZELIST_DEFAULT_UI_DENSITY").ok();
     let touch_swipe = std::env::var("BLAZELIST_DEFAULT_TOUCH_SWIPE").ok();
-    let swipe_threshold_right = std::env::var("BLAZELIST_DEFAULT_SWIPE_THRESHOLD_RIGHT").ok();
-    let swipe_threshold_left = std::env::var("BLAZELIST_DEFAULT_SWIPE_THRESHOLD_LEFT").ok();
+    let swipe_threshold_right_cycle =
+        std::env::var("BLAZELIST_DEFAULT_SWIPE_THRESHOLD_RIGHT_CYCLE").ok();
+    let swipe_threshold_right_levels =
+        std::env::var("BLAZELIST_DEFAULT_SWIPE_THRESHOLD_RIGHT_LEVELS").ok();
+    let swipe_threshold_left_cycle =
+        std::env::var("BLAZELIST_DEFAULT_SWIPE_THRESHOLD_LEFT_CYCLE").ok();
+    let swipe_threshold_left_levels =
+        std::env::var("BLAZELIST_DEFAULT_SWIPE_THRESHOLD_LEFT_LEVELS").ok();
     let swipe_undo_timeout_ms = std::env::var("BLAZELIST_DEFAULT_SWIPE_UNDO_TIMEOUT_MS").ok();
+    let swipe_left_mode = std::env::var("BLAZELIST_DEFAULT_SWIPE_LEFT_MODE").ok();
+    let swipe_levels_zone_today_width =
+        std::env::var("BLAZELIST_DEFAULT_SWIPE_LEVELS_ZONE_TODAY_WIDTH").ok();
+    let swipe_levels_zone_tomorrow_width =
+        std::env::var("BLAZELIST_DEFAULT_SWIPE_LEVELS_ZONE_TOMORROW_WIDTH").ok();
+    let swipe_levels_zone_soon_width =
+        std::env::var("BLAZELIST_DEFAULT_SWIPE_LEVELS_ZONE_SOON_WIDTH").ok();
     let clear_tag_search = std::env::var("BLAZELIST_DEFAULT_CLEAR_TAG_SEARCH").ok();
     let default_sidebar_width = std::env::var("BLAZELIST_DEFAULT_SIDEBAR_WIDTH").ok();
     let default_detail_width = std::env::var("BLAZELIST_DEFAULT_DETAIL_WIDTH").ok();
@@ -66,35 +74,32 @@ pub fn build_client_config_json() -> String {
     let show_list_link_counts = std::env::var("BLAZELIST_DEFAULT_SHOW_LIST_LINK_COUNTS").ok();
     let show_due_today_button = std::env::var("BLAZELIST_DEFAULT_SHOW_DUE_TODAY_BUTTON").ok();
     let show_card_time = std::env::var("BLAZELIST_DEFAULT_SHOW_CARD_TIME").ok();
+    let extinguish_on_due_set = std::env::var("BLAZELIST_DEFAULT_EXTINGUISH_ON_DUE_SET").ok();
+    let extinguish_on_due_clear = std::env::var("BLAZELIST_DEFAULT_EXTINGUISH_ON_DUE_CLEAR").ok();
+    let clear_due_on_blaze = std::env::var("BLAZELIST_DEFAULT_CLEAR_DUE_ON_BLAZE").ok();
+    let drag_and_drop_enabled = std::env::var("BLAZELIST_DEFAULT_DRAG_AND_DROP_ENABLED").ok();
+    let drag_and_drop_mode = std::env::var("BLAZELIST_DEFAULT_DRAG_AND_DROP_MODE").ok();
 
     // Only include env vars that are explicitly set.
     let mut pairs = Vec::new();
-    if let Some(v) = auto_save {
-        pairs.push(format!(r#""auto_save":{}"#, v == "true"));
-    }
-    if let Some(v) = auto_save_delay
-        && let Ok(n) = v.parse::<u32>()
-    {
-        pairs.push(format!(r#""auto_save_delay":{n}"#));
-    }
     if let Some(v) = show_preview {
         pairs.push(format!(r#""show_preview":{}"#, v == "true"));
     }
     if let Some(v) = auto_sync {
         pairs.push(format!(r#""auto_sync":{}"#, v == "true"));
     }
-    if let Some(v) = auto_sync_interval
+    if let Some(v) = auto_sync_interval_ms
         && let Ok(n) = v.parse::<u32>()
     {
-        pairs.push(format!(r#""auto_sync_interval":{n}"#));
+        pairs.push(format!(r#""auto_sync_interval_ms":{n}"#));
     }
-    if let Some(v) = debounce_enabled {
-        pairs.push(format!(r#""debounce_enabled":{}"#, v == "true"));
+    if let Some(v) = priority_debounce_enabled {
+        pairs.push(format!(r#""priority_debounce_enabled":{}"#, v == "true"));
     }
-    if let Some(v) = debounce_delay
+    if let Some(v) = priority_debounce_delay_ms
         && let Ok(n) = v.parse::<u32>()
     {
-        pairs.push(format!(r#""debounce_delay":{n}"#));
+        pairs.push(format!(r#""priority_debounce_delay_ms":{n}"#));
     }
     if let Some(v) = keyboard_shortcuts {
         pairs.push(format!(r#""keyboard_shortcuts":{}"#, v == "true"));
@@ -113,20 +118,48 @@ pub fn build_client_config_json() -> String {
     if let Some(v) = touch_swipe {
         pairs.push(format!(r#""touch_swipe":{}"#, v == "true"));
     }
-    if let Some(v) = swipe_threshold_right
+    if let Some(v) = swipe_threshold_right_cycle
         && let Ok(n) = v.parse::<u32>()
     {
-        pairs.push(format!(r#""swipe_threshold_right":{n}"#));
+        pairs.push(format!(r#""swipe_threshold_right_cycle":{n}"#));
     }
-    if let Some(v) = swipe_threshold_left
+    if let Some(v) = swipe_threshold_right_levels
         && let Ok(n) = v.parse::<u32>()
     {
-        pairs.push(format!(r#""swipe_threshold_left":{n}"#));
+        pairs.push(format!(r#""swipe_threshold_right_levels":{n}"#));
+    }
+    if let Some(v) = swipe_threshold_left_cycle
+        && let Ok(n) = v.parse::<u32>()
+    {
+        pairs.push(format!(r#""swipe_threshold_left_cycle":{n}"#));
+    }
+    if let Some(v) = swipe_threshold_left_levels
+        && let Ok(n) = v.parse::<u32>()
+    {
+        pairs.push(format!(r#""swipe_threshold_left_levels":{n}"#));
     }
     if let Some(v) = swipe_undo_timeout_ms
         && let Ok(n) = v.parse::<u32>()
     {
         pairs.push(format!(r#""swipe_undo_timeout_ms":{n}"#));
+    }
+    if let Some(v) = swipe_left_mode {
+        pairs.push(format!(r#""swipe_left_mode":"{}""#, v.replace('"', "")));
+    }
+    if let Some(v) = swipe_levels_zone_today_width
+        && let Ok(n) = v.parse::<u32>()
+    {
+        pairs.push(format!(r#""swipe_levels_zone_today_width":{n}"#));
+    }
+    if let Some(v) = swipe_levels_zone_tomorrow_width
+        && let Ok(n) = v.parse::<u32>()
+    {
+        pairs.push(format!(r#""swipe_levels_zone_tomorrow_width":{n}"#));
+    }
+    if let Some(v) = swipe_levels_zone_soon_width
+        && let Ok(n) = v.parse::<u32>()
+    {
+        pairs.push(format!(r#""swipe_levels_zone_soon_width":{n}"#));
     }
     if let Some(v) = clear_tag_search {
         pairs.push(format!(r#""clear_tag_search":{}"#, v == "true"));
@@ -159,10 +192,30 @@ pub fn build_client_config_json() -> String {
     if let Some(v) = show_card_time {
         pairs.push(format!(r#""show_card_time":{}"#, v == "true"));
     }
+    if let Some(v) = extinguish_on_due_set {
+        pairs.push(format!(r#""extinguish_on_due_set":{}"#, v == "true"));
+    }
+    if let Some(v) = extinguish_on_due_clear {
+        pairs.push(format!(r#""extinguish_on_due_clear":{}"#, v == "true"));
+    }
+    if let Some(v) = clear_due_on_blaze {
+        pairs.push(format!(r#""clear_due_on_blaze":{}"#, v == "true"));
+    }
+    if let Some(v) = drag_and_drop_enabled {
+        pairs.push(format!(r#""drag_and_drop_enabled":{}"#, v == "true"));
+    }
+    if let Some(v) = drag_and_drop_mode {
+        pairs.push(format!(r#""drag_and_drop_mode":"{}""#, v.replace('"', "")));
+    }
 
     format!("{{{}}}", pairs.join(","))
 }
 
+/// Run the HTTPS static-file server.
+///
+/// Serves files from `static_dir` over TLS and exposes `/cert-hash` so the
+/// WASM client can fetch the certificate hash from the same origin (avoiding
+/// mixed-content blocking on HTTPS pages).
 pub async fn run_https_server(
     addr: SocketAddr,
     static_dir: PathBuf,
@@ -221,8 +274,8 @@ async fn handle_connection(
     let path = parse_request_path(request_line);
 
     let response = match path.as_deref() {
-        Some("/cert-hash") => build_cert_hash_response(cert_hash_hex),
-        Some("/config") => build_json_response(config_json),
+        Some("/cert-hash") => build_cors_response("text/plain", cert_hash_hex),
+        Some("/config") => build_cors_response("application/json", config_json),
         Some(p) => serve_static_file(static_dir, p),
         None => build_error_response(400, "Bad Request"),
     };
@@ -253,15 +306,20 @@ fn serve_static_file(static_dir: &Path, request_path: &str) -> Vec<u8> {
         Err(_) => return build_error_response(500, "Internal Server Error"),
     };
 
-    // Try the requested file, then fall back to index.html (SPA routing).
-    let file_path = if clean_path.is_empty() {
-        canonical_dir.join("index.html")
+    // Path traversal is rejected textually on the cleaned request path —
+    // not by canonicalizing and fencing under `canonical_dir`. When
+    // `static_dir` is a Nix `symlinkJoin` output, every leaf file is a
+    // symlink into a sibling store path, so a canonical-path fence would
+    // reject every asset and dump it into the SPA fallback. The request
+    // path is never URL-decoded, so a literal-segment compare is enough:
+    // sequences like `%2E%2E` are opaque directory names and won't match
+    // anything on disk.
+    let traversal = clean_path.split('/').any(|s| s == "..");
+    let candidate = canonical_dir.join(clean_path);
+    let file_path = if !traversal && candidate.is_file() {
+        candidate
     } else {
-        let resolved = static_dir.join(clean_path);
-        match resolved.canonicalize() {
-            Ok(p) if p.starts_with(&canonical_dir) && p.is_file() => p,
-            _ => canonical_dir.join("index.html"),
-        }
+        canonical_dir.join("index.html")
     };
 
     match std::fs::read(&file_path) {
@@ -300,10 +358,10 @@ fn build_file_response(path: &Path, body: &[u8]) -> Vec<u8> {
     response
 }
 
-fn build_json_response(json: &str) -> Vec<u8> {
+fn build_cors_response(content_type: &str, body: &str) -> Vec<u8> {
     format!(
         "HTTP/1.1 200 OK\r\n\
-         Content-Type: application/json\r\n\
+         Content-Type: {content_type}\r\n\
          Content-Length: {}\r\n\
          Access-Control-Allow-Origin: *\r\n\
          Access-Control-Allow-Methods: GET, OPTIONS\r\n\
@@ -312,26 +370,8 @@ fn build_json_response(json: &str) -> Vec<u8> {
          Connection: close\r\n\
          \r\n\
          {}",
-        json.len(),
-        json
-    )
-    .into_bytes()
-}
-
-fn build_cert_hash_response(hex: &str) -> Vec<u8> {
-    format!(
-        "HTTP/1.1 200 OK\r\n\
-         Content-Type: text/plain\r\n\
-         Content-Length: {}\r\n\
-         Access-Control-Allow-Origin: *\r\n\
-         Access-Control-Allow-Methods: GET, OPTIONS\r\n\
-         Access-Control-Allow-Headers: *\r\n\
-         Cache-Control: no-store\r\n\
-         Connection: close\r\n\
-         \r\n\
-         {}",
-        hex.len(),
-        hex
+        body.len(),
+        body
     )
     .into_bytes()
 }
@@ -393,12 +433,145 @@ pub async fn run_cert_hash_server(addr: SocketAddr, cert_hash_hex: String, confi
             let path = parse_request_path(request_line);
 
             let response = match path.as_deref() {
-                Some("/config") => build_json_response(&config_json),
-                _ => build_cert_hash_response(&cert_hash_hex),
+                Some("/config") => build_cors_response("application/json", &config_json),
+                _ => build_cors_response("text/plain", &cert_hash_hex),
             };
 
             let _ = stream.write_all(&response).await;
             let _ = stream.shutdown().await;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_request_path, serve_static_file};
+
+    /// Split a raw HTTP response into (status line, body) for assertions.
+    fn split_response(response: &[u8]) -> (String, Vec<u8>) {
+        let text = String::from_utf8_lossy(response);
+        let status_line = text.lines().next().unwrap_or("").to_string();
+        // Body starts after the blank line terminating the headers.
+        let body = match response.windows(4).position(|w| w == b"\r\n\r\n") {
+            Some(i) => response[i + 4..].to_vec(),
+            None => Vec::new(),
+        };
+        (status_line, body)
+    }
+
+    // -- parse_request_path -------------------------------------------------
+
+    #[test]
+    fn parse_request_path_get_strips_query() {
+        assert_eq!(
+            parse_request_path("GET /foo?x=1 HTTP/1.1"),
+            Some("/foo".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_request_path_get_without_query() {
+        assert_eq!(
+            parse_request_path("GET /cert-hash HTTP/1.1"),
+            Some("/cert-hash".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_request_path_post_is_none() {
+        assert_eq!(parse_request_path("POST /foo HTTP/1.1"), None);
+    }
+
+    #[test]
+    fn parse_request_path_non_get_methods_are_none() {
+        // Any method other than GET is rejected.
+        assert_eq!(parse_request_path("PUT /foo HTTP/1.1"), None);
+        assert_eq!(parse_request_path("HEAD /foo HTTP/1.1"), None);
+        assert_eq!(parse_request_path("OPTIONS /foo HTTP/1.1"), None);
+    }
+
+    #[test]
+    fn parse_request_path_malformed_lines_are_none() {
+        // Empty line: no method token.
+        assert_eq!(parse_request_path(""), None);
+        // Only a method, no path token.
+        assert_eq!(parse_request_path("GET"), None);
+        assert_eq!(parse_request_path("GET "), None);
+    }
+
+    #[test]
+    fn parse_request_path_method_is_case_sensitive() {
+        // The compare is exact "GET", so a lowercase verb is not accepted.
+        assert_eq!(parse_request_path("get /foo HTTP/1.1"), None);
+    }
+
+    // -- serve_static_file --------------------------------------------------
+
+    #[test]
+    fn serve_static_file_existing_file_returns_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), b"INDEX").unwrap();
+        std::fs::write(dir.path().join("app.js"), b"console.log(1)").unwrap();
+
+        let response = serve_static_file(dir.path(), "/app.js");
+        let (status, body) = split_response(&response);
+
+        assert!(status.starts_with("HTTP/1.1 200 OK"), "status: {status}");
+        assert_eq!(body, b"console.log(1)");
+    }
+
+    /// Build a unique tempdir holding `root/` (the served static root, with
+    /// an index.html) and a sibling `secret.txt` one directory above the
+    /// root — exactly where a `..` traversal would land if the guard broke.
+    /// Everything lives inside the per-test `TempDir`, so parallel tests
+    /// (and other users of the machine) never share paths, and Drop cleans
+    /// up the secret.
+    fn static_root_with_sibling_secret() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("index.html"), b"INDEX").unwrap();
+        std::fs::write(dir.path().join("secret.txt"), b"TOP-SECRET").unwrap();
+        (dir, root)
+    }
+
+    #[test]
+    fn serve_static_file_dotdot_segment_falls_back_to_index_without_escape() {
+        let (_dir, root) = static_root_with_sibling_secret();
+
+        let response = serve_static_file(&root, "/../secret.txt");
+        let (status, body) = split_response(&response);
+
+        // The textual `..` check rejects the traversal: we get index.html,
+        // never the file outside the root.
+        assert!(status.starts_with("HTTP/1.1 200 OK"), "status: {status}");
+        assert_eq!(body, b"INDEX");
+        assert_ne!(body, b"TOP-SECRET");
+    }
+
+    #[test]
+    fn serve_static_file_percent_encoded_dotdot_is_literal_and_falls_back() {
+        let (_dir, root) = static_root_with_sibling_secret();
+
+        // The request path is never URL-decoded, so `%2E%2E` is an opaque
+        // directory name that matches nothing on disk -> SPA fallback.
+        let response = serve_static_file(&root, "/%2E%2E/secret.txt");
+        let (status, body) = split_response(&response);
+
+        assert!(status.starts_with("HTTP/1.1 200 OK"), "status: {status}");
+        assert_eq!(body, b"INDEX");
+        assert_ne!(body, b"TOP-SECRET");
+    }
+
+    #[test]
+    fn serve_static_file_unknown_path_falls_back_to_index() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), b"INDEX").unwrap();
+
+        let response = serve_static_file(dir.path(), "/does/not/exist");
+        let (status, body) = split_response(&response);
+
+        assert!(status.starts_with("HTTP/1.1 200 OK"), "status: {status}");
+        assert_eq!(body, b"INDEX");
     }
 }

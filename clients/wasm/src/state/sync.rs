@@ -116,8 +116,8 @@ pub async fn initial_sync(client: &Client, state: &AppState) -> Result<(), Strin
         .last_sync_duration_ms
         .set(Some((js_sys::Date::now() - t0).round() as u32));
     state
-        .auto_sync_countdown
-        .set(state.auto_sync_interval_secs.get_untracked());
+        .auto_sync_countdown_ms
+        .set(state.auto_sync_interval_ms.get_untracked());
     state.last_sync_error.set(None);
 
     save_local_state(state).await;
@@ -169,8 +169,8 @@ pub async fn incremental_sync(client: &Client, state: &AppState) -> Result<(), S
                 .last_sync_duration_ms
                 .set(Some((js_sys::Date::now() - t0).round() as u32));
             state
-                .auto_sync_countdown
-                .set(state.auto_sync_interval_secs.get_untracked());
+                .auto_sync_countdown_ms
+                .set(state.auto_sync_interval_ms.get_untracked());
             state.last_sync_error.set(None);
 
             save_local_state(state).await;
@@ -222,6 +222,35 @@ pub async fn incremental_sync(client: &Client, state: &AppState) -> Result<(), S
     }
 }
 
+/// Rebuild `card` at the resolved `priority`, preserving its content/tags/etc.
+///
+/// With an `ancestor`, chain a new version onto it (rebase the edit onto the
+/// server's latest), stamping `modified_at` to now. Without one, recreate the
+/// card as a fresh first version, **preserving the original `created_at`** so
+/// the recreated card keeps its original creation timestamp. This now/created
+/// distinction between the `.next()` and `.first()` paths is intentional.
+fn rebuild_card(card: &Card, priority: i64, ancestor: Option<&Card>) -> Card {
+    match ancestor {
+        Some(a) => a.next(
+            card.content().to_string(),
+            priority,
+            card.tags().to_vec(),
+            card.blazed(),
+            blazelist_protocol::Utc::now(),
+            card.due_date(),
+        ),
+        None => Card::first(
+            card.id(),
+            card.content().to_string(),
+            priority,
+            card.tags().to_vec(),
+            card.blazed(),
+            card.created_at(),
+            card.due_date(),
+        ),
+    }
+}
+
 /// Push a card to the server, falling back to the offline queue on failure.
 ///
 /// If the client is `None` (never connected) or the push fails with a
@@ -241,14 +270,7 @@ pub async fn push_card_or_queue(state: &AppState, card: Card) {
                 // Server has a newer version — rebase our edit on top of it
                 // so content is preserved instead of silently lost in the queue.
                 tracing::info!(card_id = %card.id(), "Ancestor mismatch, rebasing edit");
-                let rebased = server_card.next(
-                    card.content().to_string(),
-                    card.priority(),
-                    card.tags().to_vec(),
-                    card.blazed(),
-                    blazelist_protocol::Utc::now(),
-                    card.due_date(),
-                );
+                let rebased = rebuild_card(&card, card.priority(), Some(&server_card));
                 match client.push_card(rebased.clone()).await {
                     Ok(_) => {
                         state.upsert_card(rebased);
@@ -266,15 +288,7 @@ pub async fn push_card_or_queue(state: &AppState, card: Card) {
                 // Server doesn't have this card — recreate it as a first
                 // version so the user's content is preserved.
                 tracing::info!(card_id = %card.id(), "Hash verification failed, recreating card");
-                let recreated = Card::first(
-                    card.id(),
-                    card.content().to_string(),
-                    card.priority(),
-                    card.tags().to_vec(),
-                    card.blazed(),
-                    card.created_at(),
-                    card.due_date(),
-                );
+                let recreated = rebuild_card(&card, card.priority(), None);
                 match client.push_card(recreated.clone()).await {
                     Ok(_) => {
                         state.upsert_card(recreated);
@@ -307,66 +321,6 @@ pub async fn push_card_or_queue(state: &AppState, card: Card) {
     state.offline_queue.update(|q| {
         q.retain(|c| c.id() != card_id);
         q.push(card);
-    });
-    storage::save_offline_queue(&state.offline_queue.get_untracked()).await;
-    // Persist the main OPFS DB too, so offline edits survive an app
-    // restart (queue alone is not enough — on restart the UI hydrates
-    // from blazelist.db).
-    save_local_state(state).await;
-}
-
-/// Push a chain of card versions, falling back to queuing the latest on failure.
-///
-/// Tries `push_card_versions` when a client is available. If that fails or
-/// there is no client, the **last** version in the chain is queued (it
-/// represents the current state of the card). The server may see a version
-/// gap on reconnect, but the reconciliation in [`flush_offline_queue`] and
-/// the server's conflict handling ensure consistency.
-pub async fn push_versions_or_queue(state: &AppState, versions: Vec<Card>) {
-    if versions.is_empty() {
-        return;
-    }
-    let last = versions.last().unwrap().clone();
-    let card_id = last.id();
-    if let Some(client) = get_client() {
-        match client.push_card_versions(versions).await {
-            Ok(_) => {
-                clear_queued_card(state, card_id).await;
-                return;
-            }
-            Err(ClientError::Protocol(ProtocolError::PushFailed(
-                PushError::CardAncestorMismatch(server_card),
-            ))) => {
-                // The version chain's base is stale. Rebase the latest
-                // version's content onto the server's current state.
-                tracing::info!(card_id = %last.id(), "Ancestor mismatch on version chain, rebasing latest");
-                let rebased = server_card.next(
-                    last.content().to_string(),
-                    last.priority(),
-                    last.tags().to_vec(),
-                    last.blazed(),
-                    blazelist_protocol::Utc::now(),
-                    last.due_date(),
-                );
-                match client.push_card(rebased.clone()).await {
-                    Ok(_) => {
-                        state.upsert_card(rebased);
-                        clear_queued_card(state, card_id).await;
-                        return;
-                    }
-                    Err(e) => {
-                        tracing::warn!(%e, "Rebased push also failed, queuing for later");
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(%e, "Push versions failed, queuing latest");
-            }
-        }
-    }
-    state.offline_queue.update(|q| {
-        q.retain(|c| c.id() != card_id);
-        q.push(last);
     });
     storage::save_offline_queue(&state.offline_queue.get_untracked()).await;
     // Persist the main OPFS DB too, so offline edits survive an app
@@ -473,26 +427,7 @@ pub async fn flush_offline_queue(client: &Client, state: &AppState) {
                 let placement = resolve_collision(&cards, card.priority());
                 match placement {
                     Placement::Simple(new_priority) => {
-                        let retry = if let Some(ancestor) = &server_ancestor {
-                            ancestor.next(
-                                card.content().to_string(),
-                                new_priority,
-                                card.tags().to_vec(),
-                                card.blazed(),
-                                blazelist_protocol::Utc::now(),
-                                card.due_date(),
-                            )
-                        } else {
-                            Card::first(
-                                card.id(),
-                                card.content().to_string(),
-                                new_priority,
-                                card.tags().to_vec(),
-                                card.blazed(),
-                                card.created_at(),
-                                card.due_date(),
-                            )
-                        };
+                        let retry = rebuild_card(&card, new_priority, server_ancestor.as_ref());
                         match client.push_card(retry.clone()).await {
                             Ok(_) => {
                                 state.upsert_card(retry);
@@ -507,26 +442,7 @@ pub async fn flush_offline_queue(client: &Client, state: &AppState) {
                         }
                     }
                     Placement::Rebalanced { priority, shifted } => {
-                        let retry = if let Some(ancestor) = &server_ancestor {
-                            ancestor.next(
-                                card.content().to_string(),
-                                priority,
-                                card.tags().to_vec(),
-                                card.blazed(),
-                                blazelist_protocol::Utc::now(),
-                                card.due_date(),
-                            )
-                        } else {
-                            Card::first(
-                                card.id(),
-                                card.content().to_string(),
-                                priority,
-                                card.tags().to_vec(),
-                                card.blazed(),
-                                card.created_at(),
-                                card.due_date(),
-                            )
-                        };
+                        let retry = rebuild_card(&card, priority, server_ancestor.as_ref());
                         let shifted_cards = build_shifted_versions(&shifted, &cards);
                         let mut items: Vec<PushItem> = shifted_cards
                             .iter()
@@ -561,14 +477,7 @@ pub async fn flush_offline_queue(client: &Client, state: &AppState) {
                     card_id = %card.id(),
                     "Rebasing queued edit onto server version",
                 );
-                let rebased = server_card.next(
-                    card.content().to_string(),
-                    card.priority(),
-                    card.tags().to_vec(),
-                    card.blazed(),
-                    blazelist_protocol::Utc::now(),
-                    card.due_date(),
-                );
+                let rebased = rebuild_card(&card, card.priority(), Some(&server_card));
                 match client.push_card(rebased.clone()).await {
                     Ok(_) => {
                         state.upsert_card(rebased);
@@ -603,15 +512,7 @@ pub async fn flush_offline_queue(client: &Client, state: &AppState) {
                     card_id = %card.id(),
                     "Hash verification failed during flush, recreating card",
                 );
-                let recreated = Card::first(
-                    card.id(),
-                    card.content().to_string(),
-                    card.priority(),
-                    card.tags().to_vec(),
-                    card.blazed(),
-                    card.created_at(),
-                    card.due_date(),
-                );
+                let recreated = rebuild_card(&card, card.priority(), None);
                 match client.push_card(recreated.clone()).await {
                     Ok(_) => {
                         state.upsert_card(recreated);

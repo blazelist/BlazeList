@@ -40,6 +40,7 @@ fn undo_swipe(state: &AppState) {
 
     let s = *state;
     leptos::task::spawn_local(async move {
+        crate::state::pending_priority::flush_now(&s).await;
         push_card_or_queue(&s, reverted).await;
     });
 

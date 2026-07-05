@@ -1,7 +1,10 @@
 #[cfg(test)]
 mod tests {
     use blazelist_protocol::CardFilter;
-    use blazelist_protocol::{Card, DateTime, Entity, NonNegativeI64, Tag, Utc, ZERO_HASH};
+    use blazelist_protocol::{
+        Card, DateTime, Entity, NonNegativeI64, SequenceHistoryEntry, SequenceOperationKind, Tag,
+        Utc, ZERO_HASH,
+    };
     use expect_test::expect;
     use uuid::Uuid;
 
@@ -2235,7 +2238,7 @@ mod tests {
             rusqlite::params![
                 card.id().as_bytes().as_slice(),
                 card.content(),
-                i64::from(card.priority()),
+                card.priority(),
                 postcard::to_allocvec(card.tags()).unwrap(),
                 card.blazed(),
                 card.created_at().timestamp_millis(),
@@ -2895,5 +2898,136 @@ mod tests {
             PushOpError::Domain(PushError::TagImpliesUnknown { .. })
         ));
         assert!(s.get_tag(TAG_ID).unwrap().is_none());
+    }
+
+    // -- Sequence history ----------------------------------------------------
+
+    /// Extract the `(entity_id, kind)` pairs from a sequence entry's
+    /// operations as an owned Vec, so assertions don't have to reach through
+    /// the `SequenceOperation` struct field-by-field.
+    fn op_pairs(entry: &SequenceHistoryEntry) -> Vec<(Uuid, SequenceOperationKind)> {
+        entry
+            .operations
+            .iter()
+            .map(|op| (op.entity_id, op.kind))
+            .collect()
+    }
+
+    /// Seed the canonical six-mutation timeline (seq 1..=6) the sequence
+    /// history tests assert against:
+    ///   seq 1: card ID_A created   seq 2: card ID_A updated
+    ///   seq 3: tag TAG_ID created  seq 4: tag TAG_ID updated
+    ///   seq 5: card ID_B created   seq 6: card ID_B deleted
+    fn seed_six_mutations(s: &SqliteStorage) {
+        let v1 = Card::first(ID_A, "C1".into(), 1, vec![], false, ts(0), None);
+        s.push_card_versions(std::slice::from_ref(&v1)).unwrap();
+        let v2 = v1.next("C2".into(), 1, vec![], false, ts(1000), None);
+        s.push_card_versions(std::slice::from_ref(&v2)).unwrap();
+
+        let t1 = Tag::first(TAG_ID, "T1".into(), None, ts(0));
+        s.push_tag_versions(std::slice::from_ref(&t1)).unwrap();
+        let t2 = t1.next("T2".into(), None, ts(1000));
+        s.push_tag_versions(std::slice::from_ref(&t2)).unwrap();
+
+        let b1 = Card::first(ID_B, "B1".into(), 2, vec![], false, ts(0), None);
+        s.push_card_versions(std::slice::from_ref(&b1)).unwrap();
+        s.delete_card(ID_B).unwrap();
+    }
+
+    #[test]
+    fn sequence_history_orders_desc_with_expected_ops() {
+        let s = store();
+        seed_six_mutations(&s);
+
+        let entries: Vec<SequenceHistoryEntry> = s.get_sequence_history(None, None).unwrap();
+
+        // Six mutations -> six root-history entries, newest (seq 6) first.
+        let sequences: Vec<i64> = entries.iter().map(|e| i64::from(e.sequence)).collect();
+        assert_eq!(sequences, vec![6, 5, 4, 3, 2, 1]);
+
+        // Each sequence carries exactly the operation that caused it, with the
+        // Created-vs-Updated kind derived from the version count.
+        assert_eq!(
+            op_pairs(&entries[0]),
+            vec![(ID_B, SequenceOperationKind::EntityDeleted)]
+        );
+        // seq 5 created ID_B, but deleting it (seq 6) physically removes its
+        // card_versions rows, so the create's sequence is left with NO
+        // operations attached. This is the current behavior and is what the
+        // EntityDeleted attachment at seq 6 stands in for.
+        assert_eq!(op_pairs(&entries[1]), vec![]);
+        assert_eq!(
+            op_pairs(&entries[2]),
+            vec![(TAG_ID, SequenceOperationKind::TagUpdated)]
+        );
+        assert_eq!(
+            op_pairs(&entries[3]),
+            vec![(TAG_ID, SequenceOperationKind::TagCreated)]
+        );
+        assert_eq!(
+            op_pairs(&entries[4]),
+            vec![(ID_A, SequenceOperationKind::CardUpdated)]
+        );
+        assert_eq!(
+            op_pairs(&entries[5]),
+            vec![(ID_A, SequenceOperationKind::CardCreated)]
+        );
+
+        // The hash on each entry matches the live root hash at that sequence.
+        let root = s.get_root().unwrap();
+        assert_eq!(entries[0].sequence, root.sequence);
+        assert_eq!(entries[0].hash, root.hash);
+    }
+
+    #[test]
+    fn sequence_history_after_sequence_and_limit_window() {
+        let s = store();
+        seed_six_mutations(&s);
+
+        // after_sequence is EXCLUSIVE (`sequence < after`): starting after seq 5
+        // skips seq 6 and seq 5, and the limit of 2 caps the window at seq 4, 3.
+        let window = s.get_sequence_history(Some(p(5)), Some(2)).unwrap();
+        let sequences: Vec<i64> = window.iter().map(|e| i64::from(e.sequence)).collect();
+        assert_eq!(sequences, vec![4, 3]);
+
+        // Operations are attached to the correct sequence within the window.
+        assert_eq!(
+            op_pairs(&window[0]),
+            vec![(TAG_ID, SequenceOperationKind::TagUpdated)]
+        );
+        assert_eq!(
+            op_pairs(&window[1]),
+            vec![(TAG_ID, SequenceOperationKind::TagCreated)]
+        );
+
+        // limit alone (no after_sequence) returns the newest `limit` entries.
+        let newest_two = s.get_sequence_history(None, Some(2)).unwrap();
+        let newest_seqs: Vec<i64> = newest_two.iter().map(|e| i64::from(e.sequence)).collect();
+        assert_eq!(newest_seqs, vec![6, 5]);
+        assert_eq!(
+            op_pairs(&newest_two[0]),
+            vec![(ID_B, SequenceOperationKind::EntityDeleted)]
+        );
+        // seq 5's create operation was dropped when ID_B's version rows were
+        // deleted (see sequence_history_orders_desc_with_expected_ops).
+        assert_eq!(op_pairs(&newest_two[1]), vec![]);
+
+        // after_sequence alone (no limit) returns everything strictly below it,
+        // still newest-first. Starting after seq 3 yields seq 2, then seq 1.
+        let below_three = s.get_sequence_history(Some(p(3)), None).unwrap();
+        let below_seqs: Vec<i64> = below_three.iter().map(|e| i64::from(e.sequence)).collect();
+        assert_eq!(below_seqs, vec![2, 1]);
+        assert_eq!(
+            op_pairs(&below_three[0]),
+            vec![(ID_A, SequenceOperationKind::CardUpdated)]
+        );
+        assert_eq!(
+            op_pairs(&below_three[1]),
+            vec![(ID_A, SequenceOperationKind::CardCreated)]
+        );
+
+        // after_sequence == 1 excludes seq 1 itself (strict `<`), leaving nothing.
+        let empty = s.get_sequence_history(Some(p(1)), None).unwrap();
+        assert!(empty.is_empty());
     }
 }

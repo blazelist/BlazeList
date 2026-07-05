@@ -1,7 +1,6 @@
 use crate::state::store::{
-    AppState, DueDateFilter, SortOrder, TagFilterMode, sync_query_params, tag_chip_style,
+    AppState, DueDateFilter, SortOrder, apply_today_quick_filter, sync_query_params, tag_chip_style,
 };
-use blazelist_client_lib::tag_graph::TagGraph;
 use blazelist_protocol::CardFilter;
 use leptos::prelude::*;
 
@@ -16,15 +15,7 @@ pub fn FilterBar() -> impl IntoView {
 
     let on_due_change = move |ev: web_sys::Event| {
         let val = event_target_value(&ev);
-        let filter = match val.as_str() {
-            "overdue" => DueDateFilter::Overdue,
-            "today" => DueDateFilter::Today,
-            "today-upcoming" => DueDateFilter::TodayAndUpcoming,
-            "upcoming-tomorrow" => DueDateFilter::UpcomingTomorrow,
-            "upcoming-week" => DueDateFilter::UpcomingWeek,
-            "upcoming-2weeks" => DueDateFilter::UpcomingTwoWeeks,
-            _ => DueDateFilter::All,
-        };
+        let filter = DueDateFilter::from_url_value(&val);
         state.due_date_filter.set(filter);
         if matches!(filter, DueDateFilter::All | DueDateFilter::Overdue) {
             state.include_overdue.set(false);
@@ -38,21 +29,7 @@ pub fn FilterBar() -> impl IntoView {
         sync_query_params(&state);
     };
 
-    // Today quick-filter: clears every other filter so the user lands on a
-    // clean "what needs my attention today" view. Blaze filter stays on its
-    // default (Active), due-date becomes Today + overdue, and tag / search /
-    // linked-card filters are all cleared.
-    let set_due_today_overdue = move |_| {
-        state.filter.set(CardFilter::Extinguished);
-        state.due_date_filter.set(DueDateFilter::Today);
-        state.include_overdue.set(true);
-        state.tag_filter.set(Vec::new());
-        state.tag_filter_mode.set(TagFilterMode::Or);
-        state.no_tags_filter.set(false);
-        state.linked_card_filter.set(Vec::new());
-        state.search_query.set(String::new());
-        sync_query_params(&state);
-    };
+    let set_due_today_overdue = move |_| apply_today_quick_filter(&state);
 
     let toggle_overdue = move |_| {
         let new_val = !state.include_overdue.get_untracked();
@@ -68,21 +45,18 @@ pub fn FilterBar() -> impl IntoView {
     };
 
     let due_select_value = move || {
-        let f = state.due_date_filter.get();
-        match f {
-            DueDateFilter::Overdue => "overdue".to_string(),
-            DueDateFilter::Today => "today".to_string(),
-            DueDateFilter::TodayAndUpcoming => "today-upcoming".to_string(),
-            DueDateFilter::UpcomingTomorrow => "upcoming-tomorrow".to_string(),
-            DueDateFilter::UpcomingWeek => "upcoming-week".to_string(),
-            DueDateFilter::UpcomingTwoWeeks => "upcoming-2weeks".to_string(),
-            DueDateFilter::All => String::new(),
-        }
+        state
+            .due_date_filter
+            .get()
+            .url_value()
+            .unwrap_or("")
+            .to_string()
     };
 
-    let toggle_mode = move |_| {
-        state.tag_filter_mode.update(|m| *m = m.toggle());
-        if state.tag_filter_mode.get_untracked() == TagFilterMode::And {
+    let cycle_mode = move |_| {
+        state.tag_filter_mode.update(|m| *m = m.next());
+        let new_mode = state.tag_filter_mode.get_untracked();
+        if !new_mode.allows_no_tags() {
             state.no_tags_filter.set(false);
         }
         sync_query_params(&state);
@@ -222,7 +196,7 @@ pub fn FilterBar() -> impl IntoView {
             </div>
             {move || has_tags().then(|| view! {
                 <div class="tag-filter-controls">
-                    <button class="mode-btn" on:click=toggle_mode>{mode_text}</button>
+                    <button class="mode-btn" on:click=cycle_mode>{mode_text}</button>
                     <div class="tag-chips">
                         {move || state.no_tags_filter.get().then(|| {
                             let remove = move |_| {
@@ -238,21 +212,7 @@ pub fn FilterBar() -> impl IntoView {
                         })}
                         {move || tag_chips().into_iter().map(|(id, title, color)| {
                             let remove = move |_| {
-                                // Cascade-remove: drop the tag + its closure
-                                // and any tag that requires it, then re-add
-                                // anything still implied by the remaining set.
-                                let graph = TagGraph::from_tags(&state.tags.get_untracked());
-                                state.tag_filter.update(|tags| {
-                                    let to_remove = graph.closure_of(&[id]);
-                                    tags.retain(|t| !to_remove.contains(t));
-                                    tags.retain(|t| !graph.closure_of(&[*t]).contains(&id));
-                                    let to_add = graph.closure_of(tags);
-                                    for tid in to_add {
-                                        if !tags.contains(&tid) {
-                                            tags.push(tid);
-                                        }
-                                    }
-                                });
+                                state.tag_filter.update(|tags| tags.retain(|t| *t != id));
                                 sync_query_params(&state);
                             };
                             let style = tag_chip_style(&color);

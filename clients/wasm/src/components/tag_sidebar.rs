@@ -1,5 +1,5 @@
 use crate::components::sequence_history::SequenceHistory;
-use crate::state::store::{AppState, confirm_discard_changes, sync_query_params};
+use crate::state::store::{AppState, set_selection, start_new_tag, sync_query_params};
 use blazelist_client_lib::tag_graph::TagGraph;
 use blazelist_protocol::Entity;
 use leptos::prelude::*;
@@ -10,6 +10,27 @@ use uuid::Uuid;
 pub fn TagSidebar() -> impl IntoView {
     let state = use_context::<AppState>().expect("AppState not provided");
     let search = RwSignal::new(String::new());
+
+    // Toggle a tag in/out of the active tag filter. Shared by the search
+    // box's Enter shortcut and each tag row's click handler: clears the
+    // no-tags filter when the current mode disallows it, flips membership
+    // of `tag_id`, optionally clears the search box, and syncs the URL.
+    let toggle_tag_filter = move |tag_id: Uuid| {
+        if !state.tag_filter_mode.get_untracked().allows_no_tags() {
+            state.no_tags_filter.set(false);
+        }
+        state.tag_filter.update(|tags| {
+            if tags.contains(&tag_id) {
+                tags.retain(|t| *t != tag_id);
+            } else {
+                tags.push(tag_id);
+            }
+        });
+        if state.clear_tag_search.get_untracked() {
+            search.set(String::new());
+        }
+        sync_query_params(&state);
+    };
 
     // Transitive implication stats: for each tag, count how many tags
     // it transitively implies (fwd) and how many tags transitively
@@ -35,13 +56,7 @@ pub fn TagSidebar() -> impl IntoView {
     });
 
     let on_new_tag = move |_| {
-        state.selected_card.set(None);
-        state.creating_new.set(false);
-        state.editing.set(false);
-        state.creating_new_tag.set(true);
-        state.settings_open.set(false);
-        state.shortcuts_open.set(false);
-        sync_query_params(&state);
+        start_new_tag(&state);
     };
 
     view! {
@@ -65,21 +80,7 @@ pub fn TagSidebar() -> impl IntoView {
                                 tags.retain(|t| t.title().to_lowercase().contains(&q));
                             }
                             if let Some(first) = tags.first() {
-                                let tag_id = first.id();
-                                if state.tag_filter_mode.get_untracked() == blazelist_client_lib::filter::TagFilterMode::And {
-                                    state.no_tags_filter.set(false);
-                                }
-                                state.tag_filter.update(|f| {
-                                    if f.contains(&tag_id) {
-                                        f.retain(|t| *t != tag_id);
-                                    } else {
-                                        f.push(tag_id);
-                                    }
-                                });
-                                if state.clear_tag_search.get_untracked() {
-                                    search.set(String::new());
-                                }
-                                sync_query_params(&state);
+                                toggle_tag_filter(first.id());
                             }
                         }
                     }
@@ -120,37 +121,14 @@ pub fn TagSidebar() -> impl IntoView {
                 tags.into_iter().map(|tag| {
                     let tag_id = tag.id();
                     let title = tag.title().to_string();
-                    let color = tag.color().map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b));
+                    let color = tag.color().map(|c| blazelist_client_lib::color::format_tag_hex(&c));
                     let is_active = move || state.tag_filter.get().contains(&tag_id);
 
-                    let toggle_filter = move |_| {
-                        if state.tag_filter_mode.get_untracked() == blazelist_client_lib::filter::TagFilterMode::And {
-                            state.no_tags_filter.set(false);
-                        }
-                        state.tag_filter.update(|tags| {
-                            if tags.contains(&tag_id) {
-                                tags.retain(|t| *t != tag_id);
-                            } else {
-                                tags.push(tag_id);
-                            }
-                        });
-                        if state.clear_tag_search.get_untracked() {
-                            search.set(String::new());
-                        }
-                        sync_query_params(&state);
-                    };
+                    let toggle_filter = move |_| toggle_tag_filter(tag_id);
 
                     let on_manage = move |ev: web_sys::MouseEvent| {
                         ev.stop_propagation();
-                        if !confirm_discard_changes(&state) {
-                            return;
-                        }
-                        state.selected_card.set(Some(tag_id));
-                        state.creating_new_tag.set(false);
-                        state.editing.set(false);
-                        state.creating_new.set(false);
-                        state.settings_open.set(false);
-                        sync_query_params(&state);
+                        set_selection(&state, Some(tag_id));
                     };
 
                     let item_class = move || if is_active() { "tag-item active" } else { "tag-item" };

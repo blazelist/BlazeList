@@ -1,2 +1,14 @@
 [target.wasm32-unknown-unknown]
-rustflags = ["--cfg=web_sys_unstable_apis"]
+# `-z stack-size` raises the WASM shadow stack from rust-lld's 1 MiB default to
+# 8 MiB. The reactive view tree drives deep, by-value `into_owned` recursion —
+# `AppState` is a large `#[derive(Copy)]` context struct captured into many view
+# closures, so each frame is heavy — and the detail-panel render in debug builds
+# sat right at the 1 MiB limit. Once over it, the overflow surfaces as an opaque
+# `RuntimeError: memory access out of bounds` deep in `tachys`, then cascades as
+# every subsequent reactive callback traps on its prologue. 8 MiB restores ample
+# headroom. Don't lower it without re-checking the heaviest renders (see DEV.md).
+rustflags = [
+    "--cfg=web_sys_unstable_apis",
+    "-Clink-arg=-z",
+    "-Clink-arg=stack-size=8388608",
+]

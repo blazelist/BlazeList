@@ -5,3 +5,10 @@
 
 # Trunk build output
 clients/wasm/dist/
+
+# direnv cache
+.direnv/
+
+# Nix build output symlinks
+/result
+/result-*

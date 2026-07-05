@@ -4,7 +4,11 @@ mod app;
 mod components;
 #[cfg(target_arch = "wasm32")]
 mod pages;
-#[cfg(target_arch = "wasm32")]
+// `state` is also compiled on host so the host `cargo test` runs the
+// pure-logic units (validators, migration sweep) defined in
+// `state::settings`. Runtime web_sys calls inside this module never
+// execute off-target — they live in functions only the wasm entry point
+// reaches.
 mod state;
 #[cfg(target_arch = "wasm32")]
 mod storage;

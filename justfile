@@ -283,6 +283,29 @@ fmt:
     cargo fmt
 
 # ==============================
+# E2E Tests (Playwright)
+# ==============================
+
+# Run Playwright E2E tests (uses offset=100 to avoid port conflicts)
+e2e *args:
+    #!/usr/bin/env bash
+    cd e2e
+    if [ ! -d node_modules ]; then
+        echo "Installing E2E dependencies..."
+        npm install
+        npx playwright install chromium
+    fi
+    npx playwright test {{args}}
+
+# Run Playwright E2E tests in headed mode (visible browser)
+e2e-headed:
+    just e2e --headed
+
+# Open Playwright HTML test report
+e2e-report:
+    cd e2e && npx playwright show-report
+
+# ==============================
 # Aliases
 # ==============================
 

@@ -1,8 +1,9 @@
 use crate::components::hooks::{handle_code_copy_click, toggle_expanded, use_click_outside_close};
 use crate::components::timestamp::Timestamp;
+use crate::state::pending_priority;
 use crate::state::store::{
-    AppState, NewCardPosition, NewCardPrefill, format_relative_time, get_client, sync_query_params,
-    tag_chip_style,
+    AppState, NewCardPosition, NewCardPrefill, format_relative_time, get_client,
+    set_selection_without_flush, start_new_card, tag_chip_style,
 };
 use crate::state::sync::push_card_or_queue;
 use crate::storage;
@@ -18,6 +19,159 @@ fn render_markdown(content: &str) -> String {
     blazelist_client_lib::display::wrap_code_blocks_with_copy_button(&html)
 }
 
+/// Kinds of changes between two consecutive card versions. A single
+/// `next()` call may produce more than one of these — we surface them
+/// all so the history view can label and filter precisely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CardChangeKind {
+    Created,
+    Content,
+    Priority,
+    Tags,
+    Blazed,
+    Extinguished,
+    DueDate,
+    /// New version with no tracked semantic change — only `modified_at` differs.
+    Touched,
+}
+
+impl CardChangeKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Created => "Created",
+            Self::Content => "Content",
+            Self::Priority => "Priority",
+            Self::Tags => "Tags",
+            Self::Blazed => "Blazed",
+            Self::Extinguished => "Extinguished",
+            Self::DueDate => "Due",
+            Self::Touched => "Touched",
+        }
+    }
+
+    fn css_class(self) -> &'static str {
+        match self {
+            Self::Created => "history-kind-created",
+            Self::Content => "history-kind-content",
+            Self::Priority => "history-kind-priority",
+            Self::Tags => "history-kind-tags",
+            Self::Blazed => "history-kind-blazed",
+            Self::Extinguished => "history-kind-extinguished",
+            Self::DueDate => "history-kind-due",
+            Self::Touched => "history-kind-touched",
+        }
+    }
+
+    /// Stable order for filter chips and badge sequences.
+    fn all() -> &'static [Self] {
+        &[
+            Self::Created,
+            Self::Content,
+            Self::Priority,
+            Self::Tags,
+            Self::Blazed,
+            Self::Extinguished,
+            Self::DueDate,
+            Self::Touched,
+        ]
+    }
+}
+
+/// Compare two consecutive card versions and return the set of changes.
+/// `prev` is `None` for the first version (which is treated as a creation).
+fn card_changes(prev: Option<&Card>, curr: &Card) -> Vec<CardChangeKind> {
+    let Some(prev) = prev else {
+        return vec![CardChangeKind::Created];
+    };
+    let mut changes = Vec::new();
+    if prev.content() != curr.content() {
+        changes.push(CardChangeKind::Content);
+    }
+    if prev.priority() != curr.priority() {
+        changes.push(CardChangeKind::Priority);
+    }
+    if prev.tags() != curr.tags() {
+        changes.push(CardChangeKind::Tags);
+    }
+    if prev.blazed() != curr.blazed() {
+        if curr.blazed() {
+            changes.push(CardChangeKind::Blazed);
+        } else {
+            changes.push(CardChangeKind::Extinguished);
+        }
+    }
+    if prev.due_date() != curr.due_date() {
+        changes.push(CardChangeKind::DueDate);
+    }
+    if changes.is_empty() {
+        changes.push(CardChangeKind::Touched);
+    }
+    changes
+}
+
+/// Kinds of changes between two consecutive tag versions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TagChangeKind {
+    Created,
+    Title,
+    Color,
+    Implies,
+    /// Mirrors `CardChangeKind::Touched`.
+    Touched,
+}
+
+impl TagChangeKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Created => "Created",
+            Self::Title => "Title",
+            Self::Color => "Color",
+            Self::Implies => "Implies",
+            Self::Touched => "Touched",
+        }
+    }
+
+    fn css_class(self) -> &'static str {
+        match self {
+            Self::Created => "history-kind-created",
+            Self::Title => "history-kind-title",
+            Self::Color => "history-kind-color",
+            Self::Implies => "history-kind-implies",
+            Self::Touched => "history-kind-touched",
+        }
+    }
+
+    fn all() -> &'static [Self] {
+        &[
+            Self::Created,
+            Self::Title,
+            Self::Color,
+            Self::Implies,
+            Self::Touched,
+        ]
+    }
+}
+
+fn tag_changes(prev: Option<&Tag>, curr: &Tag) -> Vec<TagChangeKind> {
+    let Some(prev) = prev else {
+        return vec![TagChangeKind::Created];
+    };
+    let mut changes = Vec::new();
+    if prev.title() != curr.title() {
+        changes.push(TagChangeKind::Title);
+    }
+    if prev.color() != curr.color() {
+        changes.push(TagChangeKind::Color);
+    }
+    if prev.implies() != curr.implies() {
+        changes.push(TagChangeKind::Implies);
+    }
+    if changes.is_empty() {
+        changes.push(TagChangeKind::Touched);
+    }
+    changes
+}
+
 /// Inline version history section for a card. Renders a "History" label
 /// followed by an expandable version list with "New from this" buttons.
 #[component]
@@ -28,6 +182,8 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
     let error_msg: RwSignal<Option<String>> = RwSignal::new(None);
     let expanded: RwSignal<Option<i64>> = RwSignal::new(None);
     let prev_card: RwSignal<Option<Uuid>> = RwSignal::new(None);
+    // Filter chip selection. `None` = show every version.
+    let filter: RwSignal<Option<CardChangeKind>> = RwSignal::new(None);
 
     // Dropdown state for the "New from this" group — matches the
     // main `+ New Card` button's dropdown. Position defaults to Top
@@ -42,7 +198,7 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
     // after the client connects (the card detail no longer re-creates this
     // component on sync, so the Effect must retry on its own).
     Effect::new(move |_| {
-        let selected = state.selected_card.get(); // re-trigger on card change
+        let selected = state.selected_card().get(); // re-trigger on card change
         let _ = state.connection_status.get(); // re-trigger on connect
 
         // Only reset UI state when the selected card changes,
@@ -50,6 +206,7 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
         if prev_card.get_untracked() != selected {
             error_msg.set(None);
             expanded.set(None);
+            filter.set(None);
             prev_card.set(selected);
         }
 
@@ -123,10 +280,16 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
             // and pick up the new content — the side effect of
             // collapsing the version history is acceptable since the
             // user just performed an explicit action.
-            if let Some(sel) = state.selected_card.get_untracked() {
-                state.selected_card.set(None);
-                state.selected_card.set(Some(sel));
+            //
+            // `set_selection_without_flush` instead of `set_selection`:
+            // the UUID is unchanged before/after so any burst still
+            // belongs to the same card; going through the full helper
+            // would also reset `editing` / `creating_new` mid-restore.
+            if let Some(sel) = state.selected_card().get_untracked() {
+                set_selection_without_flush(&state, None);
+                set_selection_without_flush(&state, Some(sel));
             }
+            pending_priority::flush_now(&state).await;
             push_card_or_queue(&state, restored).await;
         });
     };
@@ -145,16 +308,16 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
     // so offline / priority-rebalance cases are handled by the
     // same code as a regular new-card save.
     let on_fork = move |version: Card, position: NewCardPosition| {
+        // Stash the prefill before `start_new_card` so CardEditor's
+        // mount-time read of `new_card_prefill` picks it up.
         state.new_card_prefill.set(Some(NewCardPrefill {
             content: version.content().to_string(),
             tags: version.tags().to_vec(),
             due_date: version.due_date(),
         }));
-        state.selected_card.set(None);
-        state.new_card_position.set(position);
-        state.creating_new.set(true);
-        fork_dropdown.set(false);
-        sync_query_params(&state);
+        if start_new_card(&state, position) {
+            fork_dropdown.set(false);
+        }
     };
 
     view! {
@@ -187,9 +350,89 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
                 let total = items.len();
                 let num_width = total.max(1).ilog10() as usize + 1;
                 let max_count = items.first().map(|v| i64::from(v.count()));
+
+                // items[i+1] is the previous version (lower count) since the
+                // list is sorted newest-first. The last item has no prev,
+                // which `card_changes` treats as a Created entry.
+                let tagged: Vec<(Card, Vec<CardChangeKind>)> = items.iter().enumerate().map(|(i, v)| {
+                    let prev = items.get(i + 1);
+                    (v.clone(), card_changes(prev, v))
+                }).collect();
+
+                // Only show kinds that are actually present in the history,
+                // so the user is never offered a chip that filters everything out.
+                let mut present: Vec<CardChangeKind> = Vec::new();
+                for (_, changes) in &tagged {
+                    for c in changes {
+                        if !present.contains(c) {
+                            present.push(*c);
+                        }
+                    }
+                }
+                let mut ordered_present: Vec<CardChangeKind> = CardChangeKind::all()
+                    .iter()
+                    .copied()
+                    .filter(|k| present.contains(k))
+                    .collect();
+                // If the current filter selects a kind no longer present
+                // (e.g. history shrank), drop it.
+                if let Some(active) = filter.get_untracked()
+                    && !ordered_present.contains(&active)
+                {
+                    filter.set(None);
+                }
+
+                let active_filter = filter.get();
+                let filtered: Vec<(Card, Vec<CardChangeKind>)> = tagged.into_iter()
+                    .filter(|(_, changes)| match active_filter {
+                        None => true,
+                        Some(k) => changes.contains(&k),
+                    })
+                    .collect();
+
+                // Filter chip view — shown only when there's something to filter.
+                let show_filter_bar = ordered_present.len() > 1;
+                let filter_bar = show_filter_bar.then(|| {
+                    let all_active = active_filter.is_none();
+                    let chips = ordered_present.drain(..).map(|kind| {
+                        let is_active = active_filter == Some(kind);
+                        let mut class = String::from("history-filter-chip ");
+                        class.push_str(kind.css_class());
+                        if is_active {
+                            class.push_str(" active");
+                        }
+                        view! {
+                            <button class=class on:click=move |_| {
+                                filter.update(|f| {
+                                    if *f == Some(kind) {
+                                        *f = None;
+                                    } else {
+                                        *f = Some(kind);
+                                    }
+                                });
+                            }>{kind.label()}</button>
+                        }
+                    }).collect::<Vec<_>>();
+                    view! {
+                        <div class="history-filter-bar">
+                            <button
+                                class=if all_active { "history-filter-chip history-filter-all active" } else { "history-filter-chip history-filter-all" }
+                                on:click=move |_| filter.set(None)
+                            >"All"</button>
+                            {chips}
+                        </div>
+                    }
+                });
+
+                let empty_after_filter = filtered.is_empty();
+
                 view! {
                     <div class="version-list">
-                        {items.into_iter().map(|v| {
+                        {filter_bar}
+                        {empty_after_filter.then(|| view! {
+                            <p class="version-loading">"No versions match this filter."</p>
+                        })}
+                        {filtered.into_iter().map(|(v, changes)| {
                             let count = i64::from(v.count());
                             let number = format!("{:0>width$}", count, width = num_width);
                             let time_str = format_relative_time(&v.modified_at());
@@ -203,6 +446,7 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
                             } else {
                                 "version-item"
                             };
+                            let badges = changes.clone();
                             let expanded_view = if is_expanded {
                                 let v_for_fork_main = v.clone();
                                 let v_for_fork_top = v.clone();
@@ -225,7 +469,7 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
                                         (t.title().to_string(), t.color())
                                     })
                                 }).collect();
-                                tag_entries.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+                                tag_entries.sort_by_key(|a| a.0.to_lowercase());
 
                                 Some(view! {
                                     <div class="version-expanded">
@@ -345,6 +589,12 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
                                 <div class=item_class>
                                     <div class="version-row" on:click=move |_| on_toggle_expand(count)>
                                         <span class="version-number">{number.clone()}</span>
+                                        <div class="version-changes">
+                                            {badges.into_iter().map(|kind| {
+                                                let class = format!("history-kind {}", kind.css_class());
+                                                view! { <span class=class>{kind.label()}</span> }
+                                            }).collect::<Vec<_>>()}
+                                        </div>
                                         <span class="version-preview-text">{preview_text.clone()}</span>
                                         {is_current.then(|| view! {
                                             <span class="version-current-badge">"current"</span>
@@ -375,6 +625,7 @@ pub fn TagVersionHistory(tag_id: Uuid) -> impl IntoView {
     let error_msg: RwSignal<Option<String>> = RwSignal::new(None);
     let expanded: RwSignal<Option<i64>> = RwSignal::new(None);
     let prev_tag: RwSignal<Option<Uuid>> = RwSignal::new(None);
+    let filter: RwSignal<Option<TagChangeKind>> = RwSignal::new(None);
 
     // Fetch history on mount — show cached data first, then refresh from server.
     // Also re-trigger when connection status changes so that history is fetched
@@ -383,7 +634,7 @@ pub fn TagVersionHistory(tag_id: Uuid) -> impl IntoView {
     Effect::new(move |_| {
         // `selected_card` is the shared signal used for both cards and tags;
         // subscribing here re-triggers the effect whenever the selection changes.
-        let selected = state.selected_card.get();
+        let selected = state.selected_card().get();
         let _ = state.connection_status.get(); // re-trigger on connect
 
         // Only reset UI state when the selected tag changes,
@@ -391,6 +642,7 @@ pub fn TagVersionHistory(tag_id: Uuid) -> impl IntoView {
         if prev_tag.get_untracked() != selected {
             error_msg.set(None);
             expanded.set(None);
+            filter.set(None);
             prev_tag.set(selected);
         }
 
@@ -458,9 +710,81 @@ pub fn TagVersionHistory(tag_id: Uuid) -> impl IntoView {
                 let total = items.len();
                 let num_width = total.max(1).ilog10() as usize + 1;
                 let max_count = items.first().map(|v| i64::from(v.count()));
+
+                let tagged: Vec<(Tag, Vec<TagChangeKind>)> = items.iter().enumerate().map(|(i, v)| {
+                    let prev = items.get(i + 1);
+                    (v.clone(), tag_changes(prev, v))
+                }).collect();
+
+                let mut present: Vec<TagChangeKind> = Vec::new();
+                for (_, changes) in &tagged {
+                    for c in changes {
+                        if !present.contains(c) {
+                            present.push(*c);
+                        }
+                    }
+                }
+                let mut ordered_present: Vec<TagChangeKind> = TagChangeKind::all()
+                    .iter()
+                    .copied()
+                    .filter(|k| present.contains(k))
+                    .collect();
+                if let Some(active) = filter.get_untracked()
+                    && !ordered_present.contains(&active)
+                {
+                    filter.set(None);
+                }
+
+                let active_filter = filter.get();
+                let filtered: Vec<(Tag, Vec<TagChangeKind>)> = tagged.into_iter()
+                    .filter(|(_, changes)| match active_filter {
+                        None => true,
+                        Some(k) => changes.contains(&k),
+                    })
+                    .collect();
+
+                let show_filter_bar = ordered_present.len() > 1;
+                let filter_bar = show_filter_bar.then(|| {
+                    let all_active = active_filter.is_none();
+                    let chips = ordered_present.drain(..).map(|kind| {
+                        let is_active = active_filter == Some(kind);
+                        let mut class = String::from("history-filter-chip ");
+                        class.push_str(kind.css_class());
+                        if is_active {
+                            class.push_str(" active");
+                        }
+                        view! {
+                            <button class=class on:click=move |_| {
+                                filter.update(|f| {
+                                    if *f == Some(kind) {
+                                        *f = None;
+                                    } else {
+                                        *f = Some(kind);
+                                    }
+                                });
+                            }>{kind.label()}</button>
+                        }
+                    }).collect::<Vec<_>>();
+                    view! {
+                        <div class="history-filter-bar">
+                            <button
+                                class=if all_active { "history-filter-chip history-filter-all active" } else { "history-filter-chip history-filter-all" }
+                                on:click=move |_| filter.set(None)
+                            >"All"</button>
+                            {chips}
+                        </div>
+                    }
+                });
+
+                let empty_after_filter = filtered.is_empty();
+
                 view! {
                     <div class="version-list">
-                        {items.into_iter().map(|v| {
+                        {filter_bar}
+                        {empty_after_filter.then(|| view! {
+                            <p class="version-loading">"No versions match this filter."</p>
+                        })}
+                        {filtered.into_iter().map(|(v, changes)| {
                             let count = i64::from(v.count());
                             let number = format!("{:0>width$}", count, width = num_width);
                             let time_str = format_relative_time(&v.modified_at());
@@ -472,10 +796,11 @@ pub fn TagVersionHistory(tag_id: Uuid) -> impl IntoView {
                             } else {
                                 "version-item"
                             };
+                            let badges = changes.clone();
                             let expanded_view = if is_expanded {
                                 let created = v.created_at();
                                 let modified = v.modified_at();
-                                let version_color = v.color().map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b));
+                                let version_color = v.color().map(|c| blazelist_client_lib::color::format_tag_hex(&c));
                                 // Resolve implies to (title, color) pairs.
                                 let all_tags = state.tags.get_untracked();
                                 let mut implies_entries: Vec<(String, Option<rgb::RGB8>)> = v.implies().iter().filter_map(|tid| {
@@ -483,7 +808,7 @@ pub fn TagVersionHistory(tag_id: Uuid) -> impl IntoView {
                                         (t.title().to_string(), t.color())
                                     })
                                 }).collect();
-                                implies_entries.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+                                implies_entries.sort_by_key(|a| a.0.to_lowercase());
                                 Some(view! {
                                     <div class="version-expanded">
                                         <div class="version-detail-meta">
@@ -543,6 +868,12 @@ pub fn TagVersionHistory(tag_id: Uuid) -> impl IntoView {
                                 <div class=item_class>
                                     <div class="version-row" on:click=move |_| on_toggle_expand(count)>
                                         <span class="version-number">{number.clone()}</span>
+                                        <div class="version-changes">
+                                            {badges.into_iter().map(|kind| {
+                                                let class = format!("history-kind {}", kind.css_class());
+                                                view! { <span class=class>{kind.label()}</span> }
+                                            }).collect::<Vec<_>>()}
+                                        </div>
                                         <span class="version-preview-text">{title}</span>
                                         {is_current.then(|| view! {
                                             <span class="version-current-badge">"current"</span>

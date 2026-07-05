@@ -89,6 +89,84 @@ impl SqliteStorage {
             reader: Mutex::new(reader),
         })
     }
+
+    /// Read the current root state (`hash` + `sequence`) from `root_state`.
+    fn read_root_state(conn: &Connection) -> Result<RootState, StorageError> {
+        let (hash_bytes, sequence_raw): (Vec<u8>, i64) = conn.query_row(
+            "SELECT hash, sequence FROM root_state WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let sequence = NonNegativeI64::try_from(sequence_raw).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                1,
+                rusqlite::types::Type::Integer,
+                Box::new(e),
+            )
+        })?;
+        Ok(RootState {
+            hash: Self::hash_from_bytes(&hash_bytes),
+            sequence,
+        })
+    }
+
+    /// Fetch every version of every entity (or only the entities in `ids`),
+    /// grouped by entity ID and capped at `limit_per` versions each.
+    ///
+    /// `version_cols` must start with the per-entity id column (`id_col`) so
+    /// that `mapper` reads column index 0 as the entity id; `card_versions`
+    /// and `tag_versions` have no top-level `id` column.
+    fn get_all_histories<T: blazelist_protocol::Entity>(
+        conn: &Connection,
+        version_cols: &str,
+        table: &str,
+        id_col: &str,
+        mapper: fn(&rusqlite::Row) -> rusqlite::Result<T>,
+        limit_per: Option<u32>,
+        ids: Option<&[Uuid]>,
+    ) -> Result<HashMap<Uuid, Vec<T>>, StorageError> {
+        // Build SQL depending on whether we're filtering by ids.
+        let rows: Vec<T> = if let Some(ids) = ids {
+            if ids.is_empty() {
+                return Ok(HashMap::new());
+            }
+            let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
+            let sql = format!(
+                "SELECT {version_cols} FROM {table} \
+                 WHERE {id_col} IN ({}) ORDER BY {id_col}, count ASC",
+                placeholders.join(", ")
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let params: Vec<&[u8]> = ids.iter().map(|id| id.as_bytes().as_slice()).collect();
+            let params_ref: Vec<&dyn rusqlite::types::ToSql> = params
+                .iter()
+                .map(|b| b as &dyn rusqlite::types::ToSql)
+                .collect();
+            stmt.query_map(params_ref.as_slice(), mapper)?
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            let sql = format!(
+                "SELECT {version_cols} FROM {table} \
+                 ORDER BY {id_col}, count ASC"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            stmt.query_map([], mapper)?.collect::<Result<Vec<_>, _>>()?
+        };
+
+        // Group by entity ID, applying the per-entity limit.
+        let mut result: HashMap<Uuid, Vec<T>> = HashMap::new();
+        for entity in rows {
+            let entry = result.entry(entity.id()).or_default();
+            if let Some(limit) = limit_per
+                && entry.len() >= limit as usize
+            {
+                continue;
+            }
+            entry.push(entity);
+        }
+
+        Ok(result)
+    }
 }
 
 impl Storage for SqliteStorage {
@@ -238,22 +316,7 @@ impl Storage for SqliteStorage {
 
     fn get_root(&self) -> Result<RootState, StorageError> {
         let conn = self.reader.lock().unwrap();
-        let (hash_bytes, sequence_raw): (Vec<u8>, i64) = conn.query_row(
-            "SELECT hash, sequence FROM root_state WHERE id = 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        let sequence = NonNegativeI64::try_from(sequence_raw).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                1,
-                rusqlite::types::Type::Integer,
-                Box::new(e),
-            )
-        })?;
-        Ok(RootState {
-            hash: Self::hash_from_bytes(&hash_bytes),
-            sequence,
-        })
+        Self::read_root_state(&conn)
     }
 
     // -- Sync ----------------------------------------------------------------
@@ -312,22 +375,7 @@ impl Storage for SqliteStorage {
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
-        let (hash_bytes, sequence_raw): (Vec<u8>, i64) = tx.query_row(
-            "SELECT hash, sequence FROM root_state WHERE id = 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        let root_sequence = NonNegativeI64::try_from(sequence_raw).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                1,
-                rusqlite::types::Type::Integer,
-                Box::new(e),
-            )
-        })?;
-        let root = RootState {
-            hash: Self::hash_from_bytes(&hash_bytes),
-            sequence: root_sequence,
-        };
+        let root = Self::read_root_state(&tx)?;
 
         Ok(ChangeSet {
             cards,
@@ -434,25 +482,14 @@ impl Storage for SqliteStorage {
         let tx = conn.transaction()?;
 
         // 1. Fetch root history entries (descending by sequence), with optional pagination.
-        let rh_sql = match (after_sequence, limit) {
-            (Some(after), Some(n)) => format!(
-                "SELECT sequence, hash, created_at FROM root_history \
-                 WHERE sequence < {} ORDER BY sequence DESC LIMIT {n}",
-                i64::from(after)
-            ),
-            (Some(after), None) => format!(
-                "SELECT sequence, hash, created_at FROM root_history \
-                 WHERE sequence < {} ORDER BY sequence DESC",
-                i64::from(after)
-            ),
-            (None, Some(n)) => format!(
-                "SELECT sequence, hash, created_at FROM root_history \
-                 ORDER BY sequence DESC LIMIT {n}"
-            ),
-            (None, None) => "SELECT sequence, hash, created_at FROM root_history \
-                             ORDER BY sequence DESC"
-                .to_string(),
-        };
+        let where_clause = after_sequence.map_or(String::new(), |after| {
+            format!("WHERE sequence < {} ", i64::from(after))
+        });
+        let limit_clause = limit.map_or(String::new(), |n| format!(" LIMIT {n}"));
+        let rh_sql = format!(
+            "SELECT sequence, hash, created_at FROM root_history \
+             {where_clause}ORDER BY sequence DESC{limit_clause}"
+        );
         let mut rh_stmt = tx.prepare(&rh_sql)?;
         let root_entries: Vec<(i64, Vec<u8>, i64)> = rh_stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
@@ -552,49 +589,15 @@ impl Storage for SqliteStorage {
         card_ids: Option<&[Uuid]>,
     ) -> Result<HashMap<Uuid, Vec<Card>>, StorageError> {
         let conn = self.reader.lock().unwrap();
-
-        // Build SQL depending on whether we're filtering by card_ids.
-        let rows: Vec<Card> = if let Some(ids) = card_ids {
-            if ids.is_empty() {
-                return Ok(HashMap::new());
-            }
-            let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
-            let sql = format!(
-                "SELECT {CARD_VERSION_COLS} FROM card_versions \
-                 WHERE card_id IN ({}) ORDER BY card_id, count ASC",
-                placeholders.join(", ")
-            );
-            let mut stmt = conn.prepare(&sql)?;
-            let params: Vec<&[u8]> = ids.iter().map(|id| id.as_bytes().as_slice()).collect();
-            let params_ref: Vec<&dyn rusqlite::types::ToSql> = params
-                .iter()
-                .map(|b| b as &dyn rusqlite::types::ToSql)
-                .collect();
-            stmt.query_map(params_ref.as_slice(), Self::card_from_row)?
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            let sql = format!(
-                "SELECT {CARD_VERSION_COLS} FROM card_versions \
-                 ORDER BY card_id, count ASC"
-            );
-            let mut stmt = conn.prepare(&sql)?;
-            stmt.query_map([], Self::card_from_row)?
-                .collect::<Result<Vec<_>, _>>()?
-        };
-
-        // Group by card ID, applying the per-card limit.
-        let mut result: HashMap<Uuid, Vec<Card>> = HashMap::new();
-        for card in rows {
-            let entry = result.entry(card.id()).or_default();
-            if let Some(limit) = limit_per_card
-                && entry.len() >= limit as usize
-            {
-                continue;
-            }
-            entry.push(card);
-        }
-
-        Ok(result)
+        Self::get_all_histories(
+            &conn,
+            CARD_VERSION_COLS,
+            "card_versions",
+            "card_id",
+            Self::card_from_row,
+            limit_per_card,
+            card_ids,
+        )
     }
 
     fn get_all_tag_histories(
@@ -603,46 +606,14 @@ impl Storage for SqliteStorage {
         tag_ids: Option<&[Uuid]>,
     ) -> Result<HashMap<Uuid, Vec<Tag>>, StorageError> {
         let conn = self.reader.lock().unwrap();
-
-        let rows: Vec<Tag> = if let Some(ids) = tag_ids {
-            if ids.is_empty() {
-                return Ok(HashMap::new());
-            }
-            let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
-            let sql = format!(
-                "SELECT {TAG_VERSION_COLS} FROM tag_versions \
-                 WHERE tag_id IN ({}) ORDER BY tag_id, count ASC",
-                placeholders.join(", ")
-            );
-            let mut stmt = conn.prepare(&sql)?;
-            let params: Vec<&[u8]> = ids.iter().map(|id| id.as_bytes().as_slice()).collect();
-            let params_ref: Vec<&dyn rusqlite::types::ToSql> = params
-                .iter()
-                .map(|b| b as &dyn rusqlite::types::ToSql)
-                .collect();
-            stmt.query_map(params_ref.as_slice(), Self::tag_from_row)?
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            let sql = format!(
-                "SELECT {TAG_VERSION_COLS} FROM tag_versions \
-                 ORDER BY tag_id, count ASC"
-            );
-            let mut stmt = conn.prepare(&sql)?;
-            stmt.query_map([], Self::tag_from_row)?
-                .collect::<Result<Vec<_>, _>>()?
-        };
-
-        let mut result: HashMap<Uuid, Vec<Tag>> = HashMap::new();
-        for tag in rows {
-            let entry = result.entry(tag.id()).or_default();
-            if let Some(limit) = limit_per_tag
-                && entry.len() >= limit as usize
-            {
-                continue;
-            }
-            entry.push(tag);
-        }
-
-        Ok(result)
+        Self::get_all_histories(
+            &conn,
+            TAG_VERSION_COLS,
+            "tag_versions",
+            "tag_id",
+            Self::tag_from_row,
+            limit_per_tag,
+            tag_ids,
+        )
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "blazelist-wasm"
-version = "3.0.0"
+version = "4.0.0"
 edition.workspace = true
 
 [lints]
@@ -36,6 +36,8 @@ web-sys = { version = "0.3", features = [
     "MouseEvent",
     "Navigator",
     "Node",
+    "PointerEvent",
+    "AddEventListenerOptions",
     "NodeList",
     "Notification",
     "NotificationOptions",

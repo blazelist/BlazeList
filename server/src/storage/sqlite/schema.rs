@@ -180,8 +180,8 @@ impl SqliteStorage {
         {
             let mut stmt =
                 conn.prepare("INSERT OR IGNORE INTO root_buckets (bucket, hash) VALUES (?1, ?2)")?;
-            for b in 0u16..256 {
-                stmt.execute(params![b as i64, ZERO_HASH.as_bytes().as_slice()])?;
+            for bucket_id in 0u8..=255 {
+                stmt.execute(params![bucket_id as i64, ZERO_HASH.as_bytes().as_slice()])?;
             }
         }
         Ok(())

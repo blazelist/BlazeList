@@ -1,3 +1,4 @@
+pub use crate::state::drag::DropEdge;
 use crate::state::query_params::{
     get_query_params, parse_due_date_filter_from_params, parse_filter_from_params,
     parse_linked_cards_from_params, parse_no_tags_from_params, parse_selected_card_from_params,
@@ -74,14 +75,41 @@ pub fn confirm_discard_changes(state: &AppState) -> bool {
     }
 }
 
-/// Switch to viewing a specific card. Guards unsaved changes, closes any open
-/// settings/shortcuts pane, clears editing state, and syncs query params.
-/// Returns `false` if the user cancels (due to unsaved changes).
-pub fn select_card_view(state: &AppState, card_id: Uuid) -> bool {
+/// Fire-and-forget flush of any in-flight priority-move burst. No-op when
+/// no burst is pending. Returns `true` if a burst was flushed.
+///
+/// Called by the selection / editor helpers below before mutating any of
+/// the `pub(in crate::state)` signals (`selected_card`, `editing`,
+/// `creating_new`, `creating_new_tag`), which is why those fields are
+/// visibility-restricted in the first place.
+#[cfg(target_arch = "wasm32")]
+pub(in crate::state) fn flush_pending_priority(state: &AppState) -> bool {
+    let had_burst = state
+        .pending_priority
+        .with_untracked(|burst| burst.is_some());
+    crate::state::pending_priority::flush(state);
+    debug_assert!(
+        state.pending_priority.with_untracked(Option::is_none),
+        "flush_pending_priority did not clear pending burst"
+    );
+    had_burst
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::state) fn flush_pending_priority(_state: &AppState) -> bool {
+    false
+}
+
+/// Change `selected_card` (card *or* tag UUID; `None` deselects).
+/// Guards unsaved changes, flushes any pending priority burst, and
+/// resets editing/creation/settings/shortcuts state. Returns `false`
+/// if the user cancels the discard prompt.
+pub fn set_selection(state: &AppState, target: Option<Uuid>) -> bool {
     if !confirm_discard_changes(state) {
         return false;
     }
-    state.selected_card.set(Some(card_id));
+    flush_pending_priority(state);
+    state.selected_card.set(target);
     state.editing.set(false);
     state.creating_new.set(false);
     state.creating_new_tag.set(false);
@@ -89,6 +117,107 @@ pub fn select_card_view(state: &AppState, card_id: Uuid) -> bool {
     state.shortcuts_open.set(false);
     sync_query_params(state);
     true
+}
+
+/// **Escape hatch — prefer [`set_selection`].** Sets `selected_card`
+/// without the discard prompt or burst flush. Two legitimate callers:
+/// `restore_from_query_params` (popstate; `CardDetail`'s `on_cleanup`
+/// still flushes when the old panel unmounts) and `version_history`'s
+/// force-rerender toggle (UUID is unchanged, so the burst still belongs
+/// to the same card).
+pub(crate) fn set_selection_without_flush(state: &AppState, target: Option<Uuid>) {
+    state.selected_card.set(target);
+}
+
+/// Open the new-card editor at `position`. Guards unsaved changes,
+/// flushes any pending priority burst, clears any existing selection,
+/// closes settings/shortcuts panes, and sets `creating_new = true`.
+/// Returns `false` if the user cancels.
+/// Write `value` only when it actually changes the signal. Leptos
+/// notifies subscribers on every `set` — including no-op writes like
+/// `false -> false` — and the pane-switch closure in `home.rs` tracks
+/// `settings_open`/`shortcuts_open`, so a redundant write there rebuilds
+/// the whole `CardDetail` subtree. That bounce unmounts a just-mounted
+/// `CardEditor`, whose `on_cleanup` clears the single-shot
+/// `new_card_prefill` — silently blanking a "New from this" fork.
+fn set_if_changed(signal: RwSignal<bool>, value: bool) {
+    if signal.get_untracked() != value {
+        signal.set(value);
+    }
+}
+
+pub fn start_new_card(state: &AppState, position: NewCardPosition) -> bool {
+    if !confirm_discard_changes(state) {
+        return false;
+    }
+    flush_pending_priority(state);
+    // Open the editor pane before clearing the selection so the
+    // `detail_open` memo never passes through a transient closed state,
+    // and use `set_if_changed` for the pane flags so a redundant
+    // `false -> false` notify can't remount the editor (see above) and
+    // drop the fork prefill.
+    state.new_card_position.set(position);
+    state.creating_new.set(true);
+    state.selected_card.set(None);
+    set_if_changed(state.editing, false);
+    set_if_changed(state.creating_new_tag, false);
+    set_if_changed(state.settings_open, false);
+    set_if_changed(state.shortcuts_open, false);
+    sync_query_params(state);
+    true
+}
+
+/// Open the new-tag form. Guards unsaved changes, flushes any pending
+/// priority burst, clears any existing selection, and sets
+/// `creating_new_tag = true`. Returns `false` if the user cancels.
+pub fn start_new_tag(state: &AppState) -> bool {
+    if !confirm_discard_changes(state) {
+        return false;
+    }
+    flush_pending_priority(state);
+    // Same ordering + `set_if_changed` rationale as `start_new_card`:
+    // open the new pane first, and avoid redundant pane-flag notifies
+    // that would remount the form mid-flow.
+    state.creating_new_tag.set(true);
+    state.selected_card.set(None);
+    set_if_changed(state.creating_new, false);
+    set_if_changed(state.editing, false);
+    set_if_changed(state.settings_open, false);
+    set_if_changed(state.shortcuts_open, false);
+    sync_query_params(state);
+    true
+}
+
+/// Flip `editing = true` on the currently-selected card. Flushes any
+/// pending priority burst first. No-op when no card is selected.
+pub fn open_editor(state: &AppState) {
+    if state.selected_card.with_untracked(Option::is_none) {
+        return;
+    }
+    flush_pending_priority(state);
+    state.editing.set(true);
+}
+
+/// Flip `editing = false`. Guards unsaved changes, flushes the priority
+/// burst, and clears `has_unsaved_changes`. Returns `false` if the user
+/// cancels.
+pub fn close_editor(state: &AppState) -> bool {
+    if !confirm_discard_changes(state) {
+        return false;
+    }
+    flush_pending_priority(state);
+    state.editing.set(false);
+    state.has_unsaved_changes.set(false);
+    true
+}
+
+/// Drop the creation flags and any prefill, without selecting a new
+/// entity. Callers must guard unsaved changes themselves; no flush
+/// because a not-yet-created card can't have a priority burst.
+pub fn finish_creation_flow(state: &AppState) {
+    state.creating_new.set(false);
+    state.creating_new_tag.set(false);
+    state.new_card_prefill.set(None);
 }
 
 thread_local! {
@@ -118,15 +247,6 @@ fn initial_detail_expanded_from_viewport() -> bool {
 
 pub fn get_client() -> Option<Rc<Client>> {
     CLIENT.with(|c| c.borrow().clone())
-}
-
-/// Auto-save status indicator state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AutoSaveStatus {
-    Idle,
-    Countdown(u32),
-    Saving,
-    Saved,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,6 +281,8 @@ pub enum SubMenu {
     Sort,
     /// Linked-cards filter sub-menu.
     LinkedCards,
+    /// Tag filter mode sub-menu (OR / AND / NOR / NAND).
+    TagFilterMode,
 }
 
 /// Toast notification shown after a swipe action, allowing the user to undo.
@@ -198,18 +320,24 @@ pub struct AppState {
     pub tag_filter_mode: RwSignal<TagFilterMode>,
     pub no_tags_filter: RwSignal<bool>,
     pub search_query: RwSignal<String>,
-    pub selected_card: RwSignal<Option<Uuid>>,
+    /// Currently selected card or tag UUID (`None` = empty detail panel).
+    /// Visibility-restricted; mutate via [`set_selection`] (or, rarely,
+    /// [`set_selection_without_flush`]).
+    pub(in crate::state) selected_card: RwSignal<Option<Uuid>>,
     pub sidebar_visible: RwSignal<bool>,
     pub sidebar_width: RwSignal<f64>,
     pub detail_width: RwSignal<f64>,
     pub connection_status: RwSignal<ConnectionStatus>,
     pub server_url: RwSignal<String>,
-    pub creating_new: RwSignal<bool>,
-    pub creating_new_tag: RwSignal<bool>,
+    /// Visibility-restricted; mutate via [`start_new_card`].
+    pub(in crate::state) creating_new: RwSignal<bool>,
+    /// Visibility-restricted; mutate via [`start_new_tag`].
+    pub(in crate::state) creating_new_tag: RwSignal<bool>,
     /// Optional prefilled values for the next new card. Cleared when the
     /// creating_new flag is lowered (save or cancel).
     pub new_card_prefill: RwSignal<Option<NewCardPrefill>>,
-    pub editing: RwSignal<bool>,
+    /// Visibility-restricted; mutate via [`open_editor`] / [`close_editor`].
+    pub(in crate::state) editing: RwSignal<bool>,
     pub has_unsaved_changes: RwSignal<bool>,
     pub last_synced: RwSignal<Option<DateTime<Utc>>>,
     /// Number of operations in the last sync (cards + tags + deletes).
@@ -226,26 +354,24 @@ pub struct AppState {
     pub linked_card_filter: RwSignal<Vec<Uuid>>,
     /// Device-local setting: show markdown preview by default when editing.
     pub show_preview: RwSignal<bool>,
-    /// Device-local setting: whether push debounce is enabled.
-    pub debounce_enabled: RwSignal<bool>,
-    /// Device-local setting: push debounce delay in seconds.
-    pub debounce_delay_secs: RwSignal<u32>,
-    /// Device-local setting: auto-save cards while editing.
-    pub auto_save_enabled: RwSignal<bool>,
-    /// Device-local setting: seconds to wait before auto-saving.
-    pub auto_save_delay_secs: RwSignal<u32>,
-    /// Auto-save status, visible globally in the header.
-    pub auto_save_status: RwSignal<AutoSaveStatus>,
+    /// Device-local setting: primary toggle for the card-move debounce.
+    /// When `false`, every move pushes immediately.
+    pub priority_debounce_enabled: RwSignal<bool>,
+    /// Device-local setting: delay (ms) that a card-move burst waits
+    /// before flushing as a single coalesced push. Ignored when
+    /// `priority_debounce_enabled` is `false`.
+    pub priority_debounce_delay_ms: RwSignal<u32>,
     /// Whether the settings panel is open (shown in the detail panel area).
     pub settings_open: RwSignal<bool>,
     /// Device-local setting: periodically sync with server.
     pub auto_sync_enabled: RwSignal<bool>,
-    /// Device-local setting: seconds between auto-syncs.
-    pub auto_sync_interval_secs: RwSignal<u32>,
-    /// Countdown to next auto-sync (0 = inactive/just synced).
-    pub auto_sync_countdown: RwSignal<u32>,
-    /// Countdown to next debounced push (0 = idle).
-    pub push_debounce_countdown: RwSignal<u32>,
+    /// Device-local setting: milliseconds between auto-syncs.
+    pub auto_sync_interval_ms: RwSignal<u32>,
+    /// Countdown to next auto-sync in milliseconds (0 = inactive/just synced).
+    pub auto_sync_countdown_ms: RwSignal<u32>,
+    /// Milliseconds remaining until the in-flight priority burst flushes.
+    /// `0` = idle. Re-armed to the configured delay on each new move.
+    pub priority_burst_countdown_ms: RwSignal<u32>,
     /// Device-local setting: enable keyboard shortcuts.
     pub keyboard_shortcuts_enabled: RwSignal<bool>,
     /// Device-local setting: include tags in search.
@@ -256,24 +382,52 @@ pub struct AppState {
     pub ui_density: RwSignal<String>,
     /// Whether the keyboard shortcuts pane is open.
     pub shortcuts_open: RwSignal<bool>,
-    /// Pending card versions queued for debounced push.
-    pub pending_versions: RwSignal<Vec<Card>>,
-    /// ID of the card currently being debounced.
-    pub pending_card_id: RwSignal<Option<Uuid>>,
-    /// JS setTimeout handle for the active debounce timer.
-    pub debounce_timeout_handle: RwSignal<i32>,
+    /// In-flight priority-move burst (`None` = no burst pending). Only
+    /// one burst exists at a time. Visibility-restricted; mutate via
+    /// [`crate::state::pending_priority`] (`enqueue_move` / `flush` /
+    /// `discard_for`).
+    pub(in crate::state) pending_priority:
+        RwSignal<Option<crate::state::pending_priority::PriorityBurst>>,
+    /// `setTimeout` handle for the active priority-burst timer
+    /// (`0` = no timer armed).
+    pub priority_burst_timer_handle: RwSignal<i32>,
     /// Where the next new card should be placed.
     pub new_card_position: RwSignal<NewCardPosition>,
     /// Cards queued for push while offline. Flushed on reconnect.
     pub offline_queue: RwSignal<Vec<Card>>,
     /// Device-local setting: enable touch swipe gestures on cards.
     pub touch_swipe_enabled: RwSignal<bool>,
-    /// Device-local setting: swipe right trigger threshold in px.
-    pub swipe_threshold_right: RwSignal<u32>,
-    /// Device-local setting: swipe left trigger threshold in px.
-    pub swipe_threshold_left: RwSignal<u32>,
+    /// Device-local setting: swipe right trigger threshold in px in
+    /// `cycle` swipe-left mode.
+    pub swipe_threshold_right_cycle: RwSignal<u32>,
+    /// Device-local setting: swipe right trigger threshold in px in
+    /// `levels` swipe-left mode.
+    pub swipe_threshold_right_levels: RwSignal<u32>,
+    /// Device-local setting: swipe left trigger threshold in px (used in
+    /// `cycle` swipe-left mode).
+    pub swipe_threshold_left_cycle: RwSignal<u32>,
+    /// Device-local setting: swipe left trigger threshold in px in
+    /// `levels` swipe-left mode. Doubles as the start of the Today zone —
+    /// the additive zone widths extend outward from this point.
+    pub swipe_threshold_left_levels: RwSignal<u32>,
     /// Device-local setting: swipe undo toast dismiss timeout in milliseconds.
     pub swipe_undo_timeout_ms: RwSignal<u32>,
+    /// Device-local setting: swipe-left interaction mode.
+    /// `"levels"` = swipe distance picks the action; `"cycle"` = each swipe
+    /// advances through today / tomorrow / in-2-days / clear.
+    pub swipe_left_mode: RwSignal<String>,
+    /// Device-local setting: width (px) of the Today zone in levels-mode
+    /// swipe-left. Zones extend outward from
+    /// `swipe_threshold_left_levels` and are additive (Tomorrow zone
+    /// starts at `threshold_l_levels + this_width`).
+    pub swipe_levels_zone_today_width: RwSignal<u32>,
+    /// Device-local setting: width (px) of the Tomorrow zone in
+    /// levels-mode swipe-left.
+    pub swipe_levels_zone_tomorrow_width: RwSignal<u32>,
+    /// Device-local setting: width (px) of the In-2-days ("Soon") zone in
+    /// levels-mode swipe-left. Beyond this zone the swipe enters the
+    /// open-ended Clear-due region.
+    pub swipe_levels_zone_soon_width: RwSignal<u32>,
     /// Last sync error message, displayed in the sync indicator.
     pub last_sync_error: RwSignal<Option<String>>,
     /// Device-local setting: clear tag search input after selecting a tag.
@@ -298,6 +452,38 @@ pub struct AppState {
     /// ("x ago") at all. Defaults to off — users who want it can
     /// opt in via settings.
     pub show_card_time: RwSignal<bool>,
+    /// Device-local setting: extinguish a Blazed card when its due
+    /// date is set or changed. Default on.
+    pub extinguish_on_due_set: RwSignal<bool>,
+    /// Device-local setting: also extinguish when the due date is
+    /// cleared. Gated on `extinguish_on_due_set` — the parent must be
+    /// on for this to fire. Default off.
+    pub extinguish_on_due_clear: RwSignal<bool>,
+    /// Device-local setting: clear a card's due date when blazing it.
+    /// Only fires on the Extinguished → Blazed transition; blazing an
+    /// already-Blazed card or extinguishing leaves the due date
+    /// untouched. Default off.
+    pub clear_due_on_blaze: RwSignal<bool>,
+    /// Device-local setting: enable drag-and-drop card reordering.
+    /// Off by default; routes the drop through the same priority-burst
+    /// debounce as the Shift+J / Shift+K keyboard shortcuts.
+    pub drag_and_drop_enabled: RwSignal<bool>,
+    /// Device-local setting: drag-and-drop activation mode.
+    /// `"anywhere"` (default, desktop-friendly) — pointerdown anywhere
+    /// on the card + a small movement threshold starts the drag.
+    /// `"handle"` (mobile-friendly) — only the card's leading number
+    /// starts the drag, so native scroll and existing swipes still
+    /// work on the rest of the card.
+    pub drag_and_drop_mode: RwSignal<String>,
+    /// ID of the card currently being dragged, or `None`. Session-only
+    /// state — never persisted. The CardItem component reads this to
+    /// dim the source via CSS and to gate the swipe handler.
+    pub drag_active_card: RwSignal<Option<Uuid>>,
+    /// Active drop target: the card the pointer is hovering and which
+    /// edge (above / below) the source would land on. Per-card Memos
+    /// on this signal mean only the formerly- and currently-targeted
+    /// cards re-render on each drop-target change. Session-only.
+    pub drag_drop_target: RwSignal<Option<(Uuid, DropEdge)>>,
     /// Session-only UI mode: detail panel takes the full main-layout
     /// area when true, otherwise sits as a side panel on the right.
     /// Default derives from viewport width at startup — phones get
@@ -314,6 +500,10 @@ pub struct AppState {
     /// Set to `true` by the `d` keyboard shortcut to trigger delete confirmation
     /// in the CardDetail component. The component resets it to `false` after handling.
     pub delete_requested: RwSignal<bool>,
+    /// Set to `true` by the `Ctrl+S` keyboard shortcut to trigger a
+    /// save-and-stay-in-editor action while editing or creating a card.
+    /// The CardEditor resets it to `false` after handling.
+    pub save_requested: RwSignal<bool>,
     /// Brief toast message (e.g. "Copied!") that auto-dismisses. `None` = hidden.
     pub copy_toast: RwSignal<Option<String>>,
     /// Handle for the copy-toast auto-dismiss timeout so repeated copies reset the timer.
@@ -333,6 +523,8 @@ pub fn clear_all_state(state: &AppState) -> bool {
     if !confirm_discard_changes(state) {
         return false;
     }
+    // Don't silently lose an in-flight move if the user hits reset mid-burst.
+    flush_pending_priority(state);
     state.filter.set(CardFilter::Extinguished);
     state.due_date_filter.set(DueDateFilter::All);
     state.include_overdue.set(false);
@@ -351,6 +543,38 @@ pub fn clear_all_state(state: &AppState) -> bool {
     state.shortcuts_open.set(false);
     sync_query_params(state);
     true
+}
+
+/// Apply the "Today" quick-filter: clears every other filter so the user
+/// lands on a clean "what needs my attention today" view. Blaze filter
+/// becomes Active, due-date becomes Today + include-overdue, and tag /
+/// search / linked-card filters are all cleared. Shared by the Today
+/// button in the filter bar and the `d` then `n` keyboard shortcut.
+pub fn apply_today_quick_filter(state: &AppState) {
+    state.filter.set(CardFilter::Extinguished);
+    state.due_date_filter.set(DueDateFilter::Today);
+    state.include_overdue.set(true);
+    state.tag_filter.set(Vec::new());
+    state.tag_filter_mode.set(TagFilterMode::Or);
+    state.no_tags_filter.set(false);
+    state.linked_card_filter.set(Vec::new());
+    state.search_query.set(String::new());
+    sync_query_params(state);
+}
+
+/// Apply a "show linked cards" filter from the already-assembled list of
+/// UUIDs (`ids`). Callers build `ids` — including the source-card prepend —
+/// and pass the finished `Vec`. Sets the linked-card filter to `ids`, shows
+/// all cards, and clears the search / tag / no-tags filters so the linked
+/// set isn't further narrowed. Shared by the "Filter Linked" button (and its
+/// forward/back/direct variants) and the linked-cards keyboard sub-menu.
+pub fn apply_linked_card_filter(state: &AppState, ids: Vec<Uuid>) {
+    state.linked_card_filter.set(ids);
+    state.filter.set(CardFilter::All);
+    state.search_query.set(String::new());
+    state.tag_filter.set(Vec::new());
+    state.no_tags_filter.set(false);
+    sync_query_params(state);
 }
 
 impl AppState {
@@ -394,7 +618,7 @@ impl AppState {
             tag_filter: RwSignal::new({
                 let tags = parse_tags_from_params(&params);
                 if parse_no_tags_from_params(&params)
-                    && parse_tag_mode_from_params(&params) == TagFilterMode::And
+                    && !parse_tag_mode_from_params(&params).allows_no_tags()
                 {
                     Vec::new()
                 } else {
@@ -403,7 +627,7 @@ impl AppState {
             }),
             tag_filter_mode: RwSignal::new({
                 let mode = parse_tag_mode_from_params(&params);
-                if parse_no_tags_from_params(&params) && mode == TagFilterMode::And {
+                if parse_no_tags_from_params(&params) && !mode.allows_no_tags() {
                     TagFilterMode::Or
                 } else {
                     mode
@@ -430,30 +654,40 @@ impl AppState {
             last_sync_duration_ms: RwSignal::new(None),
             linked_card_filter: RwSignal::new(parse_linked_cards_from_params(&params)),
             show_preview: RwSignal::new(settings::load_show_preview()),
-            debounce_enabled: RwSignal::new(settings::load_debounce_enabled()),
-            debounce_delay_secs: RwSignal::new(settings::load_debounce_delay()),
-            auto_save_enabled: RwSignal::new(settings::load_auto_save()),
-            auto_save_delay_secs: RwSignal::new(settings::load_auto_save_delay()),
-            auto_save_status: RwSignal::new(AutoSaveStatus::Idle),
+            priority_debounce_enabled: RwSignal::new(settings::load_priority_debounce_enabled()),
+            priority_debounce_delay_ms: RwSignal::new(settings::load_priority_debounce_delay_ms()),
             settings_open: RwSignal::new(false),
             auto_sync_enabled: RwSignal::new(settings::load_auto_sync()),
-            auto_sync_interval_secs: RwSignal::new(settings::load_auto_sync_interval()),
-            auto_sync_countdown: RwSignal::new(0),
-            push_debounce_countdown: RwSignal::new(0),
+            auto_sync_interval_ms: RwSignal::new(settings::load_auto_sync_interval_ms()),
+            auto_sync_countdown_ms: RwSignal::new(0),
+            priority_burst_countdown_ms: RwSignal::new(0),
             keyboard_shortcuts_enabled: RwSignal::new(settings::load_keyboard_shortcuts()),
             search_tags: RwSignal::new(settings::load_search_tags()),
             ui_scale: RwSignal::new(settings::load_ui_scale()),
             ui_density: RwSignal::new(settings::load_ui_density()),
             shortcuts_open: RwSignal::new(false),
-            pending_versions: RwSignal::new(Vec::new()),
-            pending_card_id: RwSignal::new(None),
-            debounce_timeout_handle: RwSignal::new(0),
+            pending_priority: RwSignal::new(None),
+            priority_burst_timer_handle: RwSignal::new(0),
             new_card_position: RwSignal::new(NewCardPosition::Bottom),
             offline_queue: RwSignal::new(Vec::new()),
             touch_swipe_enabled: RwSignal::new(settings::load_touch_swipe()),
-            swipe_threshold_right: RwSignal::new(settings::load_swipe_threshold_right()),
-            swipe_threshold_left: RwSignal::new(settings::load_swipe_threshold_left()),
+            swipe_threshold_right_cycle: RwSignal::new(settings::load_swipe_threshold_right_cycle()),
+            swipe_threshold_right_levels: RwSignal::new(
+                settings::load_swipe_threshold_right_levels(),
+            ),
+            swipe_threshold_left_cycle: RwSignal::new(settings::load_swipe_threshold_left_cycle()),
+            swipe_threshold_left_levels: RwSignal::new(settings::load_swipe_threshold_left_levels()),
             swipe_undo_timeout_ms: RwSignal::new(settings::load_swipe_undo_timeout_ms()),
+            swipe_left_mode: RwSignal::new(settings::load_swipe_left_mode()),
+            swipe_levels_zone_today_width: RwSignal::new(
+                settings::load_swipe_levels_zone_today_width(),
+            ),
+            swipe_levels_zone_tomorrow_width: RwSignal::new(
+                settings::load_swipe_levels_zone_tomorrow_width(),
+            ),
+            swipe_levels_zone_soon_width: RwSignal::new(
+                settings::load_swipe_levels_zone_soon_width(),
+            ),
             last_sync_error: RwSignal::new(None),
             clear_tag_search: RwSignal::new(settings::load_clear_tag_search()),
             default_sidebar_width: RwSignal::new(settings::load_default_sidebar_width()),
@@ -465,11 +699,19 @@ impl AppState {
             recursive_links: RwSignal::new(settings::load_recursive_links()),
             show_list_link_counts: RwSignal::new(settings::load_show_list_link_counts()),
             show_card_time: RwSignal::new(settings::load_show_card_time()),
+            extinguish_on_due_set: RwSignal::new(settings::load_extinguish_on_due_set()),
+            extinguish_on_due_clear: RwSignal::new(settings::load_extinguish_on_due_clear()),
+            clear_due_on_blaze: RwSignal::new(settings::load_clear_due_on_blaze()),
+            drag_and_drop_enabled: RwSignal::new(settings::load_drag_and_drop_enabled()),
+            drag_and_drop_mode: RwSignal::new(settings::load_drag_and_drop_mode()),
+            drag_active_card: RwSignal::new(None),
+            drag_drop_target: RwSignal::new(None),
             detail_expanded: RwSignal::new(initial_detail_expanded_from_viewport()),
             link_graph_cache: RwSignal::new(HashMap::new()),
             link_cache_progress: RwSignal::new((0, 0)),
             sub_menu: RwSignal::new(None),
             delete_requested: RwSignal::new(false),
+            save_requested: RwSignal::new(false),
             copy_toast: RwSignal::new(None),
             copy_toast_timeout: RwSignal::new(None),
             error_toast: RwSignal::new(None),
@@ -493,6 +735,62 @@ impl AppState {
     /// misleading.
     pub fn reorder_allowed(self) -> bool {
         self.sort_order.get().is_default()
+    }
+
+    /// `blazed` value to use after a due-date mutation. Only ever
+    /// flips Blazed → Extinguished.
+    pub fn blazed_after_due_change(
+        &self,
+        current_blazed: bool,
+        new_due: Option<DateTime<Utc>>,
+    ) -> bool {
+        if !current_blazed {
+            return false;
+        }
+        let on_set = self.extinguish_on_due_set.get_untracked();
+        let extinguish = if new_due.is_some() {
+            on_set
+        } else {
+            on_set && self.extinguish_on_due_clear.get_untracked()
+        };
+        !extinguish
+    }
+
+    /// Due date to use after a blaze-state mutation. Mirrors
+    /// [`Self::blazed_after_due_change`] in the opposite direction:
+    /// only clears the due date on the Extinguished → Blazed
+    /// transition, and only when the `clear_due_on_blaze` setting is
+    /// enabled.
+    pub fn due_after_blaze_change(
+        &self,
+        current_due: Option<DateTime<Utc>>,
+        was_blazed: bool,
+        new_blazed: bool,
+    ) -> Option<DateTime<Utc>> {
+        if !was_blazed && new_blazed && self.clear_due_on_blaze.get_untracked() {
+            None
+        } else {
+            current_due
+        }
+    }
+
+    // Read-only accessors for the `pub(in crate::state)` signals above:
+    // components can `.get()` / `.get_untracked()` but not `.set()`.
+
+    pub fn selected_card(&self) -> Signal<Option<Uuid>> {
+        Signal::from(self.selected_card)
+    }
+
+    pub fn editing(&self) -> Signal<bool> {
+        Signal::from(self.editing)
+    }
+
+    pub fn creating_new(&self) -> Signal<bool> {
+        Signal::from(self.creating_new)
+    }
+
+    pub fn creating_new_tag(&self) -> Signal<bool> {
+        Signal::from(self.creating_new_tag)
     }
 
     /// Derived signal: filtered cards based on current filter, tag selections, and search query.

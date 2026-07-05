@@ -6,6 +6,7 @@
 //!
 //! Wire format: `[4-byte big-endian u32 length][postcard payload]`
 
+use super::js_value_to_string;
 use js_sys::Uint8Array;
 use serde::{Serialize, de::DeserializeOwned};
 use wasm_bindgen::JsValue;
@@ -49,15 +50,7 @@ impl std::error::Error for WireError {}
 
 impl From<JsValue> for WireError {
     fn from(val: JsValue) -> Self {
-        let msg = val
-            .as_string()
-            .or_else(|| {
-                js_sys::JSON::stringify(&val)
-                    .ok()
-                    .and_then(|s| s.as_string())
-            })
-            .unwrap_or_else(|| format!("{val:?}"));
-        WireError::JsError(msg)
+        Self::JsError(js_value_to_string(&val))
     }
 }
 

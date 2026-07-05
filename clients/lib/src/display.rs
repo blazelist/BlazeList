@@ -10,11 +10,15 @@ use comrak::{Arena, Options, parse_document};
 use uuid::Uuid;
 
 /// Regex matching UUID-formatted strings (8-4-4-4-12 hex) that appear
-/// at the start of text or after whitespace. This naturally excludes
-/// UUIDs embedded in URLs (after `/`, `=`, `?`, etc.).
+/// at the start of text, after whitespace, or right after an opening
+/// bracket (`(`, `[`, `{`) that itself follows whitespace or the start
+/// of text. This naturally excludes UUIDs embedded in URLs (after `/`,
+/// `=`, `?`, etc.) and in markdown link/reference targets like
+/// `[text](UUID)` or `[text][UUID]`, while still matching natural
+/// prose like `... (UUID) ...`, `... [UUID] ...`, and `... {UUID} ...`.
 static UUID_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(
-        r"(?:^|\s)([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})",
+        r"(?:^|\s)[(\[{]?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})",
     )
     .expect("UUID regex is valid")
 });
@@ -118,7 +122,9 @@ pub fn toggle_task_item(content: &str, index: usize) -> Option<String> {
                 let toggled = if check_byte == b' ' { "x" } else { " " };
                 // prefix_len points to the '[', so replace [.] (3 bytes)
                 result.push_str(&line[..prefix_len]);
-                result.push_str(&format!("[{toggled}]"));
+                result.push('[');
+                result.push_str(toggled);
+                result.push(']');
                 result.push_str(&line[prefix_len + 3..]);
                 found = true;
             } else {
@@ -273,37 +279,40 @@ pub fn expand_linked_cards(card_id: Uuid, all_cards: &[Card]) -> Vec<Uuid> {
     let mut queue = std::collections::VecDeque::new();
 
     // Seed queue with direct links from the starting card.
-    if let Some(card) = card_map.get(&card_id) {
-        for id in extract_card_links(card.content(), card_id) {
-            if visited.insert(id) {
-                queue.push_back(id);
-            }
-        }
-    }
-    for id in extract_back_links(card_id, all_cards) {
-        if visited.insert(id) {
-            queue.push_back(id);
-        }
-    }
+    enqueue_neighbors(card_id, &card_map, all_cards, &mut visited, &mut queue);
 
     // BFS: keep expanding until no new cards are found.
     let mut result = Vec::new();
     while let Some(current) = queue.pop_front() {
         result.push(current);
-        if let Some(card) = card_map.get(&current) {
-            for id in extract_card_links(card.content(), current) {
-                if visited.insert(id) {
-                    queue.push_back(id);
-                }
-            }
-        }
-        for id in extract_back_links(current, all_cards) {
+        enqueue_neighbors(current, &card_map, all_cards, &mut visited, &mut queue);
+    }
+    result
+}
+
+/// Enqueue `node`'s not-yet-visited forward (content) and back links.
+///
+/// Shared by both the seed step and the BFS loop of [`expand_linked_cards`];
+/// the forward-then-back enqueue order is identical at both call sites.
+fn enqueue_neighbors(
+    node: Uuid,
+    card_map: &HashMap<Uuid, &Card>,
+    all_cards: &[Card],
+    visited: &mut HashSet<Uuid>,
+    queue: &mut std::collections::VecDeque<Uuid>,
+) {
+    if let Some(card) = card_map.get(&node) {
+        for id in extract_card_links(card.content(), node) {
             if visited.insert(id) {
                 queue.push_back(id);
             }
         }
     }
-    result
+    for id in extract_back_links(node, all_cards) {
+        if visited.insert(id) {
+            queue.push_back(id);
+        }
+    }
 }
 
 /// Forward, backward, and mutual link counts for a card.
@@ -884,6 +893,57 @@ mod tests {
     }
 
     #[test]
+    fn extract_card_links_in_brackets_matches() {
+        let own = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let linked = Uuid::parse_str("54c831d3-9b2c-400c-8344-10295de18f1b").unwrap();
+
+        // Bug regression: UUID in parens with no internal spaces was
+        // previously not matched because the regex required whitespace
+        // immediately before the UUID.
+        let result = extract_card_links(&format!("Lorem ipsum ({linked})"), own);
+        assert_eq!(result, vec![linked], "(UUID) in prose should match");
+
+        // Same bug for square and curly brackets.
+        let result = extract_card_links(&format!("Lorem ipsum [{linked}]"), own);
+        assert_eq!(result, vec![linked], "[UUID] in prose should match");
+
+        let result = extract_card_links(&format!("Lorem ipsum {{{linked}}}"), own);
+        assert_eq!(result, vec![linked], "{{UUID}} in prose should match");
+
+        // Variants with internal whitespace already worked — guard
+        // against regressions.
+        let result = extract_card_links(&format!("Lorem ipsum ( {linked} )"), own);
+        assert_eq!(result, vec![linked], "( UUID ) with spaces should match");
+
+        let result = extract_card_links(&format!("Lorem ipsum (dolar {linked})"), own);
+        assert_eq!(
+            result,
+            vec![linked],
+            "(text UUID) with prefix text should match"
+        );
+
+        // Brackets at the start of the text.
+        let result = extract_card_links(&format!("({linked})"), own);
+        assert_eq!(result, vec![linked], "(UUID) at start of text should match");
+        let result = extract_card_links(&format!("[{linked}]"), own);
+        assert_eq!(result, vec![linked], "[UUID] at start of text should match");
+    }
+
+    #[test]
+    fn extract_card_links_in_markdown_reference_link_excluded() {
+        let own = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let linked = Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap();
+        // Reference-style markdown link `[text][label]` — the `[` is
+        // glued to `]`, so it shouldn't count as a prose bracket.
+        let content = format!("[linked card][{linked}]");
+        let result = extract_card_links(&content, own);
+        assert!(
+            result.is_empty(),
+            "UUID in markdown reference-style link should be excluded"
+        );
+    }
+
+    #[test]
     fn extract_card_links_glued_text_excluded() {
         let own = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
         let linked = Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap();
@@ -1196,6 +1256,41 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
     }
 
     #[test]
+    fn compute_all_link_counts_recursive_transitive_chain() {
+        use chrono::DateTime;
+
+        let t = DateTime::from_timestamp_millis(1_700_000_000_000).unwrap();
+        let id_a = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let id_b = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
+        let id_c = Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").unwrap();
+
+        // A -> B -> C: each link is one-directional, forming a chain.
+        let cards = vec![
+            Card::first(id_a, format!("See {id_b}"), 100, vec![], false, t, None),
+            Card::first(id_b, format!("See {id_c}"), 100, vec![], false, t, None),
+            Card::first(id_c, "End".into(), 100, vec![], false, t, None),
+        ];
+
+        let counts = compute_all_link_counts_recursive(&cards);
+
+        // `transitive` is the count of additional reachable cards beyond the
+        // direct links: expand_linked_cards(card).len() - (forward+back+mutual).
+        // A: direct forward B (1); reaches C transitively -> transitive 1.
+        assert_eq!(counts[&id_a].forward, 1);
+        assert_eq!(counts[&id_a].back, 0);
+        assert_eq!(counts[&id_a].mutual, 0);
+        assert_eq!(counts[&id_a].transitive, 1);
+        // B: direct forward C (1) + back from A (1) = 2; expand{A,C} = 2 -> 0.
+        assert_eq!(counts[&id_b].forward, 1);
+        assert_eq!(counts[&id_b].back, 1);
+        assert_eq!(counts[&id_b].transitive, 0);
+        // C: direct back from B (1); reaches A transitively -> transitive 1.
+        assert_eq!(counts[&id_c].forward, 0);
+        assert_eq!(counts[&id_c].back, 1);
+        assert_eq!(counts[&id_c].transitive, 1);
+    }
+
+    #[test]
     fn compute_all_link_counts_self_ref_excluded() {
         use chrono::DateTime;
 
@@ -1396,6 +1491,32 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
         let html = "<p>aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa</p>";
         let result = linkify_card_uuids(html, &card_ids);
         assert_eq!(result, html);
+    }
+
+    #[test]
+    fn linkify_card_uuids_wraps_id_inside_brackets() {
+        let id = Uuid::parse_str("54c831d3-9b2c-400c-8344-10295de18f1b").unwrap();
+        let card_ids: std::collections::HashSet<Uuid> = [id].into_iter().collect();
+
+        for (open, close) in [('(', ')'), ('[', ']'), ('{', '}')] {
+            let html = format!("<p>Lorem ipsum {open}{id}{close}</p>");
+            let result = linkify_card_uuids(&html, &card_ids);
+
+            // The UUID inside brackets should be wrapped, and the
+            // surrounding brackets should remain intact in the output.
+            assert!(
+                result.contains(&format!("data-card-id=\"{id}\"")),
+                "UUID not linkified for brackets {open}{close} (result: {result})"
+            );
+            assert!(
+                result.contains(&format!("{open}<span class=\"card-uuid-link\"")),
+                "opening bracket {open} missing or detached from link span"
+            );
+            assert!(
+                result.contains(&format!("</span>{close}</p>")),
+                "closing bracket {close} missing or detached from link span"
+            );
+        }
     }
 
     #[test]

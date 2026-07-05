@@ -1,7 +1,7 @@
 use crate::components::hooks::{handle_code_copy_click, use_click_outside_close};
 use crate::state::store::{
-    AppState, AutoSaveStatus, DueDatePreset, DueDateStatus, NewCardPosition, due_date_status,
-    format_due_date_badge, get_client, sync_query_params, tag_chip_style,
+    AppState, DueDatePreset, DueDateStatus, NewCardPosition, due_date_status,
+    format_due_date_badge, get_client, open_editor, set_selection, tag_chip_style,
 };
 use crate::state::sync::push_card_or_queue;
 use blazelist_client_lib::client::Client as _;
@@ -13,18 +13,56 @@ use blazelist_protocol::{Card, Entity, PushItem, Utc};
 use chrono::DateTime;
 use leptos::prelude::*;
 use uuid::Uuid;
-use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_name = "setInterval")]
-    fn set_interval_js(handler: &js_sys::Function, timeout: i32) -> i32;
-    #[wasm_bindgen(js_name = "clearInterval")]
-    fn clear_interval_js(handle: i32);
-    #[wasm_bindgen(js_name = "setTimeout")]
-    fn set_timeout_js(handler: &js_sys::Function, timeout: i32) -> i32;
-    #[wasm_bindgen(js_name = "clearTimeout")]
-    fn clear_timeout_js(handle: i32);
+/// Remove `tag_id` and any tag that transitively requires it, then re-add
+/// anything still implied by the remainder. `graph` must be built from the
+/// global `state.tags` (not from the selected set) so the closure reflects
+/// the full implication structure.
+fn remove_editor_tag_cascade(graph: &TagGraph, selected_tags: RwSignal<Vec<Uuid>>, tag_id: Uuid) {
+    selected_tags.update(|tags| {
+        tags.retain(|t| *t != tag_id);
+        tags.retain(|t| !graph.closure_of(&[*t]).contains(&tag_id));
+        let to_add = graph.closure_of(tags);
+        for id in to_add {
+            if !tags.contains(&id) {
+                tags.push(id);
+            }
+        }
+    });
+}
+
+/// Toggle `tag_id` in the editor's selected-tag set, cascading implications
+/// in both directions: deselecting a tag also drops anything that requires
+/// it (then re-closes the remainder), while selecting adds the tag's full
+/// transitive closure. Rebuilds the implication graph from `state.tags`
+/// (NOT `selected_tags`) on every call, then optionally clears the tag
+/// search box per the `clear_tag_search` setting.
+fn toggle_editor_tag(
+    state: &AppState,
+    selected_tags: RwSignal<Vec<Uuid>>,
+    tag_search: RwSignal<String>,
+    tag_id: Uuid,
+) {
+    // Build a graph from the current tag set so we can run closure_of for
+    // cascade-add / block-remove.
+    let graph = TagGraph::from_tags(&state.tags.get_untracked());
+    if selected_tags.get_untracked().contains(&tag_id) {
+        remove_editor_tag_cascade(&graph, selected_tags, tag_id);
+    } else {
+        // Cascade-add: add the clicked tag plus its entire transitive closure.
+        let to_add = graph.closure_of(&[tag_id]);
+        selected_tags.update(|tags| {
+            for new_t in to_add {
+                if !tags.contains(&new_t) {
+                    tags.push(new_t);
+                }
+            }
+        });
+    }
+    if state.clear_tag_search.get_untracked() {
+        tag_search.set(String::new());
+    }
 }
 
 #[component]
@@ -37,13 +75,11 @@ pub fn CardEditor(
     let is_editing = editing_card.is_some();
     let textarea_ref = NodeRef::<leptos::html::Textarea>::new();
 
-    if !is_editing {
-        Effect::new(move |_| {
-            if let Some(el) = textarea_ref.get() {
-                let _ = el.focus();
-            }
-        });
-    }
+    Effect::new(move |_| {
+        if let Some(el) = textarea_ref.get() {
+            let _ = el.focus();
+        }
+    });
 
     // For a new card, consume any stored prefill (e.g. from "New from this").
     let prefill = (!is_editing)
@@ -74,7 +110,7 @@ pub fn CardEditor(
     let show_preview = RwSignal::new(state.show_preview.get_untracked());
     let tag_search = RwSignal::new(String::new());
 
-    // Track the "last saved" snapshot so dirty detection resets after auto-save.
+    // Track the baseline snapshot for dirty detection.
     //
     // When the editor mounts with a prefill (e.g. "New from this"), the
     // baseline is an EMPTY card so the prefilled content/tags/due-date
@@ -116,237 +152,13 @@ pub fn CardEditor(
     });
 
     let stored_editing = StoredValue::new(editing_card.clone());
-    // Tracks whether a server-side card exists (true for edits, becomes
-    // true after auto-save creates a new card).
-    let card_created = RwSignal::new(is_editing);
-
-    // --- Auto-save machinery ---
-    let auto_save_status = state.auto_save_status;
-    let interval_handle = RwSignal::new(0i32);
-    let saved_timeout_handle = RwSignal::new(0i32);
-
-    // Clear all auto-save timers.
-    let clear_auto_save_timers = move || {
-        let ih = interval_handle.get_untracked();
-        if ih != 0 {
-            clear_interval_js(ih);
-            interval_handle.set(0);
-        }
-        let sh = saved_timeout_handle.get_untracked();
-        if sh != 0 {
-            clear_timeout_js(sh);
-            saved_timeout_handle.set(0);
-        }
-    };
-
-    // Auto-save: watch for dirty changes and manage countdown.
-    {
-        Effect::new(move |_| {
-            let dirty = state.has_unsaved_changes.get();
-            let auto_save = state.auto_save_enabled.get();
-            let delay = state.auto_save_delay_secs.get();
-
-            if !dirty || !auto_save {
-                clear_auto_save_timers();
-                if !dirty {
-                    // Don't overwrite Saved status
-                    if auto_save_status.get_untracked() != AutoSaveStatus::Saved {
-                        auto_save_status.set(AutoSaveStatus::Idle);
-                    }
-                }
-                return;
-            }
-
-            // Dirty and auto-save enabled: start countdown if not already running.
-            // This avoids restarting the timer on every keystroke (debounce),
-            // so the save fires promptly after the initial change.
-            let current_status = auto_save_status.get_untracked();
-            if matches!(
-                current_status,
-                AutoSaveStatus::Countdown(_) | AutoSaveStatus::Saving
-            ) {
-                return;
-            }
-            clear_auto_save_timers();
-            auto_save_status.set(AutoSaveStatus::Countdown(delay));
-
-            let cb = Closure::<dyn Fn()>::new(move || {
-                let current = auto_save_status.get_untracked();
-                match current {
-                    AutoSaveStatus::Countdown(1) => {
-                        // Time's up — trigger auto-save.
-                        let ih = interval_handle.get_untracked();
-                        if ih != 0 {
-                            clear_interval_js(ih);
-                            interval_handle.set(0);
-                        }
-                        auto_save_status.set(AutoSaveStatus::Saving);
-
-                        let text = content.get_untracked();
-                        let selected_due = due_date.get_untracked();
-                        let editing = stored_editing.get_value();
-
-                        if text.trim().is_empty() {
-                            auto_save_status.set(AutoSaveStatus::Idle);
-                            return;
-                        }
-
-                        // Ensure tag set is closed under implications.
-                        let graph = TagGraph::from_tags(&state.tags.get_untracked());
-                        let tags: Vec<Uuid> = graph
-                            .closure_of(&selected_tags.get_untracked())
-                            .into_iter()
-                            .collect();
-
-                        if let Some(existing) = editing {
-                            let card = existing.next(
-                                text.clone(),
-                                existing.priority(),
-                                tags.clone(),
-                                existing.blazed(),
-                                Utc::now(),
-                                selected_due,
-                            );
-
-                            // Optimistic local update.
-                            state.upsert_card(card.clone());
-                            leptos::task::spawn_local(async move {
-                                push_card_or_queue(&state, card.clone()).await;
-                                // Update base snapshot so dirty resets.
-                                stored_editing.set_value(Some(card));
-                                orig_content.set(text);
-                                let mut sorted_tags = tags;
-                                sorted_tags.sort();
-                                orig_tags.set(sorted_tags);
-                                orig_due_date.set(selected_due);
-
-                                auto_save_status.set(AutoSaveStatus::Saved);
-                                // Clear "Saved" after 2s.
-                                let reset_cb = Closure::once(move || {
-                                    if auto_save_status.get_untracked() == AutoSaveStatus::Saved {
-                                        auto_save_status.set(AutoSaveStatus::Idle);
-                                    }
-                                    saved_timeout_handle.set(0);
-                                });
-                                let func = reset_cb.into_js_value();
-                                let h = set_timeout_js(func.unchecked_ref(), 2000);
-                                saved_timeout_handle.set(h);
-                            });
-                        } else {
-                            // New card auto-save: create the card and push.
-                            let new_id = Uuid::new_v4();
-                            let mut cards_for_placement = state.cards.get_untracked();
-                            blazelist_client_lib::filter::sort_by_priority(
-                                &mut cards_for_placement,
-                            );
-                            let position = state.new_card_position.get_untracked();
-                            let insert_pos = match position {
-                                NewCardPosition::Top => InsertPosition::Top,
-                                NewCardPosition::Bottom => InsertPosition::Bottom,
-                                NewCardPosition::Above(ref_id) => {
-                                    match cards_for_placement.iter().position(|c| c.id() == ref_id)
-                                    {
-                                        Some(idx) => InsertPosition::At(idx),
-                                        None => InsertPosition::Bottom,
-                                    }
-                                }
-                                NewCardPosition::Below(ref_id) => {
-                                    match cards_for_placement.iter().position(|c| c.id() == ref_id)
-                                    {
-                                        Some(idx) => InsertPosition::At(idx + 1),
-                                        None => InsertPosition::Bottom,
-                                    }
-                                }
-                            };
-                            let placement = place_card(&cards_for_placement, insert_pos);
-                            let (priority, shifted) = match placement {
-                                Placement::Simple(p) => (p, Vec::new()),
-                                Placement::Rebalanced { priority, shifted } => (priority, shifted),
-                            };
-                            let card = Card::first(
-                                new_id,
-                                text.clone(),
-                                priority,
-                                tags.clone(),
-                                false,
-                                Utc::now(),
-                                selected_due,
-                            );
-                            let shifted_cards = if shifted.is_empty() {
-                                Vec::new()
-                            } else {
-                                build_shifted_versions(&shifted, &cards_for_placement)
-                            };
-                            leptos::task::spawn_local(async move {
-                                if let Some(client) = get_client() {
-                                    if shifted_cards.is_empty() {
-                                        if let Err(e) = client.push_card(card.clone()).await {
-                                            tracing::error!(%e, "Auto-save new card failed");
-                                            auto_save_status.set(AutoSaveStatus::Idle);
-                                            return;
-                                        }
-                                    } else {
-                                        let mut items: Vec<PushItem> = shifted_cards
-                                            .into_iter()
-                                            .map(|c| PushItem::Cards(vec![c]))
-                                            .collect();
-                                        items.push(PushItem::Cards(vec![card.clone()]));
-                                        if let Err(e) = client.push_batch(items).await {
-                                            tracing::error!(%e, "Auto-save new card failed");
-                                            auto_save_status.set(AutoSaveStatus::Idle);
-                                            return;
-                                        }
-                                    }
-                                } else {
-                                    // Offline: add card to local state and queue for sync.
-                                    state.upsert_card(card.clone());
-                                    push_card_or_queue(&state, card.clone()).await;
-                                }
-                                // Keep the editor alive — update internal state so
-                                // subsequent auto-saves use the existing-card path.
-                                state.upsert_card(card.clone());
-                                stored_editing.set_value(Some(card));
-                                orig_content.set(text);
-                                let mut sorted_tags = tags;
-                                sorted_tags.sort();
-                                orig_tags.set(sorted_tags);
-                                orig_due_date.set(selected_due);
-                                card_created.set(true);
-                                auto_save_status.set(AutoSaveStatus::Saved);
-                                state.selected_card.set(Some(new_id));
-                                sync_query_params(&state);
-                                let reset_cb = Closure::once(move || {
-                                    if auto_save_status.get_untracked() == AutoSaveStatus::Saved {
-                                        auto_save_status.set(AutoSaveStatus::Idle);
-                                    }
-                                    saved_timeout_handle.set(0);
-                                });
-                                let func = reset_cb.into_js_value();
-                                let h = set_timeout_js(func.unchecked_ref(), 2000);
-                                saved_timeout_handle.set(h);
-                            });
-                        }
-                    }
-                    AutoSaveStatus::Countdown(n) if n > 1 => {
-                        auto_save_status.set(AutoSaveStatus::Countdown(n - 1));
-                    }
-                    _ => {}
-                }
-            });
-            let func = cb.into_js_value();
-            let h = set_interval_js(func.unchecked_ref(), 1000);
-            interval_handle.set(h);
-        });
-    }
-
-    on_cleanup(move || {
-        clear_auto_save_timers();
-    });
 
     // --- Save handler (manual save / new card) ---
     // Works offline: creates the card locally and queues the push for when
-    // connectivity is restored.
-    let on_submit = move |_| {
+    // connectivity is restored. `stay == true` keeps the editor open with
+    // the saved card as the new baseline; new-card flows additionally
+    // transition into the editing flow for the just-created card.
+    let do_save = move |stay: bool| {
         let state = state;
         let on_save = on_save;
         let text = content.get_untracked();
@@ -356,22 +168,38 @@ pub fn CardEditor(
         }
         // Ensure tag set is closed under implications before saving.
         let graph = TagGraph::from_tags(&state.tags.get_untracked());
-        let tags: Vec<Uuid> = graph
+        let mut sorted_tags: Vec<Uuid> = graph
             .closure_of(&selected_tags.get_untracked())
             .into_iter()
             .collect();
-        // Stop any in-flight auto-save countdown.
-        clear_auto_save_timers();
-        auto_save_status.set(AutoSaveStatus::Idle);
+        sorted_tags.sort();
 
         let editing = stored_editing.get_value();
+        // Skip saving when nothing actually changed — otherwise we'd
+        // create a new version with only `modified_at` differing.
+        if let Some(existing) = &editing
+            && text == existing.content()
+            && sorted_tags == existing.tags()
+            && selected_due == existing.due_date()
+        {
+            if !stay {
+                on_save.run(());
+            }
+            return;
+        }
         leptos::task::spawn_local(async move {
             let card = if let Some(existing) = editing {
+                // Skip the auto-extinguish path when only content/tags changed.
+                let new_blazed = if selected_due != existing.due_date() {
+                    state.blazed_after_due_change(existing.blazed(), selected_due)
+                } else {
+                    existing.blazed()
+                };
                 existing.next(
                     text,
                     existing.priority(),
-                    tags,
-                    existing.blazed(),
+                    sorted_tags,
+                    new_blazed,
                     Utc::now(),
                     selected_due,
                 )
@@ -401,7 +229,7 @@ pub fn CardEditor(
                         Uuid::new_v4(),
                         text.clone(),
                         priority,
-                        tags,
+                        sorted_tags,
                         false,
                         Utc::now(),
                         selected_due,
@@ -411,7 +239,7 @@ pub fn CardEditor(
                             Uuid::new_v4(),
                             text.clone(),
                             priority,
-                            tags,
+                            sorted_tags,
                             false,
                             Utc::now(),
                             selected_due,
@@ -423,8 +251,17 @@ pub fn CardEditor(
                         }
                         let new_id = card.id();
                         state.upsert_card(card.clone());
-                        state.selected_card.set(Some(new_id));
-                        sync_query_params(&state);
+                        // Refresh the dirty-detection snapshot and clear
+                        // `has_unsaved_changes` synchronously — Leptos
+                        // Effects are async-scheduled, so without the
+                        // explicit clear the next `set_selection` /
+                        // `close_editor` would prompt to discard.
+                        stored_editing.set_value(Some(card.clone()));
+                        orig_content.set(card.content().to_string());
+                        orig_tags.set(card.tags().to_vec());
+                        orig_due_date.set(card.due_date());
+                        state.has_unsaved_changes.set(false);
+                        set_selection(&state, Some(new_id));
                         // Push (or queue) all shifted + new card.
                         if let Some(client) = get_client() {
                             let mut items: Vec<PushItem> = shifted_cards
@@ -434,26 +271,59 @@ pub fn CardEditor(
                             items.push(PushItem::Cards(vec![card.clone()]));
                             if let Err(e) = client.push_batch(items).await {
                                 tracing::warn!(%e, "Batch push failed, queuing");
-                                push_card_or_queue(&state, card).await;
+                                push_card_or_queue(&state, card.clone()).await;
                             }
                         } else {
-                            push_card_or_queue(&state, card).await;
+                            push_card_or_queue(&state, card.clone()).await;
                         }
-                        on_save.run(());
+                        if stay {
+                            // Baseline already refreshed above; for new-card
+                            // flows flip back into editing for the just-created
+                            // card (set_selection cleared `editing`).
+                            if !is_editing {
+                                open_editor(&state);
+                            }
+                        } else {
+                            on_save.run(());
+                        }
                         return;
                     }
                 }
             };
             let new_id = card.id();
             state.upsert_card(card.clone());
+            // Post-save dirty-flag dance: clear `has_unsaved_changes`
+            // synchronously because Leptos Effects are async-scheduled
+            // (see the `Rebalanced` match arm above for full detail).
+            stored_editing.set_value(Some(card.clone()));
+            orig_content.set(card.content().to_string());
+            orig_tags.set(card.tags().to_vec());
+            orig_due_date.set(card.due_date());
+            state.has_unsaved_changes.set(false);
             if !is_editing {
-                state.selected_card.set(Some(new_id));
-                sync_query_params(&state);
+                set_selection(&state, Some(new_id));
             }
-            on_save.run(());
+            if stay {
+                if !is_editing {
+                    open_editor(&state);
+                }
+            } else {
+                on_save.run(());
+            }
             push_card_or_queue(&state, card).await;
         });
     };
+
+    let on_submit = move |_| do_save(false);
+    let on_submit_stay = move |_| do_save(true);
+
+    // Ctrl+S, surfaced by the global keyboard handler.
+    Effect::new(move |_| {
+        if state.save_requested.get() {
+            state.save_requested.set(false);
+            do_save(true);
+        }
+    });
 
     let due_group_ref = NodeRef::<leptos::html::Div>::new();
     use_click_outside_close(due_dropdown_open, due_group_ref);
@@ -479,8 +349,6 @@ pub fn CardEditor(
         blazelist_client_lib::display::wrap_code_blocks_with_copy_button(&html)
     };
 
-    let save_label = move || if card_created.get() { "Update" } else { "Save" };
-
     let editor_body_class = move || {
         if show_preview.get() {
             "editor-body"
@@ -505,25 +373,6 @@ pub fn CardEditor(
         }
     };
 
-    let auto_save_indicator = move || {
-        if !state.auto_save_enabled.get() {
-            return String::new();
-        }
-        match auto_save_status.get() {
-            AutoSaveStatus::Idle => String::new(),
-            AutoSaveStatus::Countdown(n) => format!("Auto-saving in {n}s\u{2026}"),
-            AutoSaveStatus::Saving => "Saving\u{2026}".to_string(),
-            AutoSaveStatus::Saved => "Saved".to_string(),
-        }
-    };
-
-    let auto_save_class = move || match auto_save_status.get() {
-        AutoSaveStatus::Saved => "auto-save-status auto-save-saved",
-        AutoSaveStatus::Saving => "auto-save-status auto-save-saving",
-        AutoSaveStatus::Countdown(_) => "auto-save-status auto-save-countdown",
-        AutoSaveStatus::Idle => "auto-save-status",
-    };
-
     let on_cancel_clone = on_cancel;
 
     view! {
@@ -540,7 +389,6 @@ pub fn CardEditor(
                                 on:change=move |_| show_preview.update(|v| *v = !*v)
                             />
                         </label>
-                        <span class=auto_save_class>{auto_save_indicator}</span>
                     </div>
                     <div class="editor-body-row">
                         <div class=editor_body_class>
@@ -552,7 +400,6 @@ pub fn CardEditor(
                                 on:keydown=move |ev: web_sys::KeyboardEvent| {
                                     if ev.key() == "Enter" && (ev.ctrl_key() || ev.meta_key()) {
                                         ev.prevent_default();
-                                        // Trigger the save button click
                                         on_submit(ev.unchecked_into());
                                     }
                                 }
@@ -586,35 +433,7 @@ pub fn CardEditor(
                                         let tags = filtered_editor_tags.get_untracked();
                                         if let Some(first_tag) = tags.first() {
                                             let tag_id = first_tag.id();
-                                            let graph = TagGraph::from_tags(&state.tags.get_untracked());
-                                            if selected_tags.get_untracked().contains(&tag_id) {
-                                                // Remove this tag and any tag that
-                                                // transitively requires it, then re-add
-                                                // anything still implied by the remainder.
-                                                selected_tags.update(|tags| {
-                                                    tags.retain(|t| *t != tag_id);
-                                                    tags.retain(|t| !graph.closure_of(&[*t]).contains(&tag_id));
-                                                    let to_add = graph.closure_of(tags);
-                                                    for id in to_add {
-                                                        if !tags.contains(&id) {
-                                                            tags.push(id);
-                                                        }
-                                                    }
-                                                });
-                                            } else {
-                                                // Cascade-select: add transitive closure.
-                                                let to_add = graph.closure_of(&[tag_id]);
-                                                selected_tags.update(|tags| {
-                                                    for new_t in to_add {
-                                                        if !tags.contains(&new_t) {
-                                                            tags.push(new_t);
-                                                        }
-                                                    }
-                                                });
-                                            }
-                                            if state.clear_tag_search.get_untracked() {
-                                                tag_search.set(String::new());
-                                            }
+                                            toggle_editor_tag(&state, selected_tags, tag_search, tag_id);
                                         }
                                     }
                                 }
@@ -624,41 +443,10 @@ pub fn CardEditor(
                                 filtered_editor_tags.get().into_iter().map(|tag| {
                                     let tag_id = tag.id();
                                     let title = tag.title().to_string();
-                                    let color = tag.color().map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b));
+                                    let color = tag.color().map(|c| blazelist_client_lib::color::format_tag_hex(&c));
                                     let is_selected = move || selected_tags.get().contains(&tag_id);
                                     let toggle = move |_| {
-                                        // Build a graph from the current tag set so we can run
-                                        // closure_of for cascade-add / block-remove.
-                                        let graph = TagGraph::from_tags(&state.tags.get_untracked());
-                                        if selected_tags.get_untracked().contains(&tag_id) {
-                                            // Remove this tag and any tag that
-                                            // transitively requires it, then re-add
-                                            // anything still implied by the remainder.
-                                            selected_tags.update(|tags| {
-                                                tags.retain(|t| *t != tag_id);
-                                                tags.retain(|t| !graph.closure_of(&[*t]).contains(&tag_id));
-                                                let to_add = graph.closure_of(tags);
-                                                for id in to_add {
-                                                    if !tags.contains(&id) {
-                                                        tags.push(id);
-                                                    }
-                                                }
-                                            });
-                                        } else {
-                                            // Cascade-add: add the clicked tag plus its entire
-                                            // transitive closure.
-                                            let to_add = graph.closure_of(&[tag_id]);
-                                            selected_tags.update(|tags| {
-                                                for new_t in to_add {
-                                                    if !tags.contains(&new_t) {
-                                                        tags.push(new_t);
-                                                    }
-                                                }
-                                            });
-                                        }
-                                        if state.clear_tag_search.get_untracked() {
-                                            tag_search.set(String::new());
-                                        }
+                                        toggle_editor_tag(&state, selected_tags, tag_search, tag_id);
                                     };
                                     let item_class = move || if is_selected() { "editor-tag-item active" } else { "editor-tag-item" };
                                     let border_style = color
@@ -690,16 +478,7 @@ pub fn CardEditor(
                             let remove = move |ev: web_sys::MouseEvent| {
                                 ev.stop_propagation();
                                 let graph = TagGraph::from_tags(&state.tags.get_untracked());
-                                selected_tags.update(|tags| {
-                                    tags.retain(|t| *t != tag_id);
-                                    tags.retain(|t| !graph.closure_of(&[*t]).contains(&tag_id));
-                                    let to_add = graph.closure_of(tags);
-                                    for id in to_add {
-                                        if !tags.contains(&id) {
-                                            tags.push(id);
-                                        }
-                                    }
-                                });
+                                remove_editor_tag_cascade(&graph, selected_tags, tag_id);
                             };
                             Some(view! {
                                 <span class="tag-chip" style=style>
@@ -791,7 +570,8 @@ pub fn CardEditor(
                         <button class="btn-cancel" on:click=move |_| cb.run(())>"Cancel"</button>
                     }
                 })}
-                <button class="btn-save" on:click=on_submit>{save_label}</button>
+                <button class="btn-save-stay" on:click=on_submit_stay title="Save and keep editing (Ctrl+S)">"Save"</button>
+                <button class="btn-save" on:click=on_submit>"Save & Close"</button>
             </div>
         </div>
     }

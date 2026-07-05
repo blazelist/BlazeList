@@ -100,8 +100,7 @@ impl std::fmt::Display for StorageError {
                 expected_hash,
             } => write!(
                 f,
-                "root hash mismatch at sequence {}: expected {}",
-                sequence, expected_hash
+                "root hash mismatch at sequence {sequence}: expected {expected_hash}"
             ),
             StorageError::IncompatibleVersion { stored, current } => write!(
                 f,

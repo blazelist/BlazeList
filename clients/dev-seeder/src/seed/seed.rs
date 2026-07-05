@@ -159,7 +159,7 @@ pub(super) fn resolve_priority(priority: i64, used: &BTreeSet<i64>) -> i64 {
 }
 
 /// Scan the full `used` set and return the midpoint of the largest gap.
-fn find_largest_gap_midpoint(used: &BTreeSet<i64>) -> i64 {
+pub(super) fn find_largest_gap_midpoint(used: &BTreeSet<i64>) -> i64 {
     let mut best_gap_midpoint: i64 = MAX_PRIORITY / 2;
     let mut best_gap: i128 = 0;
 
@@ -179,6 +179,29 @@ fn find_largest_gap_midpoint(used: &BTreeSet<i64>) -> i64 {
     }
 
     best_gap_midpoint
+}
+
+/// Resolve `raw` against `used`, record the result, and return it.
+///
+/// Convenience wrapper around [`resolve_priority`] that also inserts the
+/// resolved priority into the `used` set so it can't be reused.
+fn claim_priority(raw: i64, used: &mut BTreeSet<i64>) -> i64 {
+    let p = resolve_priority(raw, used);
+    used.insert(p);
+    p
+}
+
+/// Apply a small deterministic shift to `current` and re-claim the slot.
+///
+/// Picks a `±500K` jitter (negligible vs the inter-card priority step),
+/// frees the old priority, and claims the shifted one (resolving any
+/// collision deterministically).
+fn shift_priority(rng: &mut ChaCha8Rng, current: i64, used: &mut BTreeSet<i64>) -> i64 {
+    let shift = (rng.next_u64() % 1_000_000) as i64 - 500_000;
+    let raw = current.saturating_add(shift);
+    // Remove the old priority and resolve the new one.
+    used.remove(&current);
+    claim_priority(raw, used)
 }
 
 /// Generate `num_tags` tag version chains deterministically.
@@ -321,9 +344,7 @@ fn generate_cards(
             let id = gen_uuid(rng);
             let content = gen_card_content(rng, i);
             let raw_priority = (i64::MAX as i128 - step * (i as i128 + 1)) as i64;
-            let resolved = resolve_priority(raw_priority, used_priorities);
-            used_priorities.insert(resolved);
-            let priority = resolved;
+            let priority = claim_priority(raw_priority, used_priorities);
 
             // Tag assignment distribution:
             //   ~20% of cards: no tags
@@ -409,8 +430,14 @@ fn generate_card_history(
         let mut blazed = prev.blazed();
         let mut due_date = prev.due_date();
 
-        // Pick 1-3 fields to change.
-        let num_changes = 1 + (rng.next_u32() as usize % 3);
+        // Pick how many fields to change. Real users edit one field at a
+        // time far more often than they batch changes, so heavily skew
+        // toward 1: ~80% one, ~17% two, ~3% three.
+        let num_changes = match rng.next_u32() % 100 {
+            0..80 => 1,
+            80..97 => 2,
+            _ => 3,
+        };
         let edits = pick_card_edits(rng, num_changes);
 
         for edit in &edits {
@@ -433,14 +460,7 @@ fn generate_card_history(
                     }
                 },
                 CardEdit::Priority => {
-                    // Small shift (±500K) — negligible vs the inter-card step.
-                    let shift = (rng.next_u64() % 1_000_000) as i64 - 500_000;
-                    let raw = priority.saturating_add(shift);
-                    // Remove the old priority and resolve the new one.
-                    used_priorities.remove(&priority);
-                    let resolved = resolve_priority(raw, used_priorities);
-                    used_priorities.insert(resolved);
-                    priority = resolved;
+                    priority = shift_priority(rng, priority, used_priorities);
                 }
                 CardEdit::Tags => {
                     if !tag_ids.is_empty() {
@@ -555,7 +575,7 @@ fn capitalize_first(s: &str) -> String {
 /// Cycles through several content patterns to exercise different Markdown features.
 /// Biased toward longer content — most patterns produce multi-paragraph cards.
 fn gen_card_content(rng: &mut ChaCha8Rng, index: usize) -> String {
-    let content = match index % 8 {
+    let content = match index % 12 {
         // Short-ish sentence
         0 => {
             let s: String = Sentence(8..20).fake_with_rng(rng);
@@ -642,9 +662,91 @@ fn gen_card_content(rng: &mut ChaCha8Rng, index: usize) -> String {
                 items.join("\n")
             )
         }
+        // GFM table with heading, intro, and a trailing note
+        8 => {
+            let heading: String = Sentence(3..6).fake_with_rng(rng);
+            let intro: String = Sentence(8..14).fake_with_rng(rng);
+            let num_cols = 2 + (rng.next_u32() as usize % 3); // 2-4 columns
+            let num_rows = 3 + (rng.next_u32() as usize % 5); // 3-7 rows
+
+            let header_cells: Vec<String> = (0..num_cols)
+                .map(|_| {
+                    let words: Vec<String> = Words(1..3).fake_with_rng(rng);
+                    capitalize_first(&words.join(" "))
+                })
+                .collect();
+            let separator: Vec<&str> = (0..num_cols).map(|_| "---").collect();
+            let rows: Vec<String> = (0..num_rows)
+                .map(|_| {
+                    let cells: Vec<String> = (0..num_cols)
+                        .map(|_| {
+                            let words: Vec<String> = Words(1..4).fake_with_rng(rng);
+                            words.join(" ")
+                        })
+                        .collect();
+                    format!("| {} |", cells.join(" | "))
+                })
+                .collect();
+            let note: String = Sentence(6..12).fake_with_rng(rng);
+
+            format!(
+                "## {heading}\n\n{intro}\n\n| {} |\n| {} |\n{}\n\n**Note:** {note}",
+                header_cells.join(" | "),
+                separator.join(" | "),
+                rows.join("\n"),
+            )
+        }
+        // Multi-paragraph blockquote with an attribution line. Exercises
+        // the `blockquote > :last-child` margin reset across several
+        // quoted paragraphs.
+        9 => {
+            let intro: String = Sentence(6..12).fake_with_rng(rng);
+            let q1: String = Sentence(10..20).fake_with_rng(rng);
+            let q2: String = Sentence(8..18).fake_with_rng(rng);
+            let words: Vec<String> = Words(2..4).fake_with_rng(rng);
+            let attribution = capitalize_first(&words.join(" "));
+            format!("{intro}\n\n> {q1}\n>\n> {q2}\n>\n> — {attribution}")
+        }
+        // Nested blockquote (quoted-reply style). Exercises the nested
+        // `>` quote spacing the new styling targets.
+        10 => {
+            let intro: String = Sentence(5..10).fake_with_rng(rng);
+            let outer: String = Sentence(8..16).fake_with_rng(rng);
+            let inner: String = Sentence(8..16).fake_with_rng(rng);
+            let reply: String = Sentence(8..16).fake_with_rng(rng);
+            format!("{intro}\n\n> {outer}\n>\n> > {inner}\n>\n> {reply}")
+        }
+        // Blockquote wrapping a lead-in paragraph and a bullet list, so
+        // the quote's last child is a `<ul>` rather than a `<p>` —
+        // exercises the last-child margin reset on non-paragraph blocks.
+        11 => {
+            let lead: String = Sentence(6..12).fake_with_rng(rng);
+            let quote_intro: String = Sentence(5..10).fake_with_rng(rng);
+            let n = 3 + (rng.next_u32() as usize % 3);
+            let items: Vec<String> = (0..n)
+                .map(|_| {
+                    let text: String = Sentence(4..9).fake_with_rng(rng);
+                    format!("> - {text}")
+                })
+                .collect();
+            format!("{lead}\n\n> {quote_intro}\n>\n{}", items.join("\n"))
+        }
         _ => unreachable!(),
     };
     capitalize_first(&content)
+}
+
+/// Pick a small random, closure-completed tag set for a fresh card.
+///
+/// ~25% of the time (or whenever no tags exist) returns no tags; otherwise
+/// 1–3 tags closed under the implication graph.
+fn random_card_tags(rng: &mut ChaCha8Rng, tag_ids: &[Uuid], graph: &TagGraph) -> Vec<Uuid> {
+    if tag_ids.is_empty() || rng.next_u32().is_multiple_of(4) {
+        vec![]
+    } else {
+        let n = 1 + (rng.next_u32() as usize % 3.min(tag_ids.len()));
+        closed_tags(graph, &pick_tags(rng, tag_ids, n))
+    }
 }
 
 /// Generate deleted cards with random priorities.
@@ -665,17 +767,9 @@ fn generate_deleted_cards(
             let content = gen_card_content(rng, i + 3);
 
             // Random priority across full i64 range, resolved to avoid collisions.
-            let raw = rng.next_u64() as i64;
-            let resolved = resolve_priority(raw, used_priorities);
-            used_priorities.insert(resolved);
-            let priority = resolved;
+            let priority = claim_priority(rng.next_u64() as i64, used_priorities);
 
-            let tags = if tag_ids.is_empty() || rng.next_u32().is_multiple_of(4) {
-                vec![]
-            } else {
-                let n = 1 + (rng.next_u32() as usize % 3.min(tag_ids.len()));
-                closed_tags(graph, &pick_tags(rng, tag_ids, n))
-            };
+            let tags = random_card_tags(rng, tag_ids, graph);
 
             let blazed = rng.next_u32() % 100 < 20;
             let created_at = gen_timestamp(rng, base_time);
@@ -698,16 +792,8 @@ fn make_fresh_card(
     let id = gen_uuid(rng);
     let content_idx = rng.next_u32() as usize;
     let content = gen_card_content(rng, content_idx);
-    let raw = rng.next_u64() as i64;
-    let resolved = resolve_priority(raw, used_priorities);
-    used_priorities.insert(resolved);
-    let priority = resolved;
-    let tags = if tag_ids.is_empty() || rng.next_u32().is_multiple_of(4) {
-        vec![]
-    } else {
-        let n = 1 + (rng.next_u32() as usize % 3.min(tag_ids.len()));
-        closed_tags(graph, &pick_tags(rng, tag_ids, n))
-    };
+    let priority = claim_priority(rng.next_u64() as i64, used_priorities);
+    let tags = random_card_tags(rng, tag_ids, graph);
     let blazed = rng.next_u32() % 100 < 30;
     let created_at = now - Duration::minutes((rng.next_u32() % 120) as i64);
     let due_date = gen_due_date(rng, now);
@@ -738,12 +824,7 @@ fn make_card_update(
                 content = format!("{content}\n\n**Update:** {note}");
             }
             CardEdit::Priority => {
-                let shift = (rng.next_u64() % 1_000_000) as i64 - 500_000;
-                let raw = priority.saturating_add(shift);
-                used_priorities.remove(&priority);
-                let resolved = resolve_priority(raw, used_priorities);
-                used_priorities.insert(resolved);
-                priority = resolved;
+                priority = shift_priority(rng, priority, used_priorities);
             }
             CardEdit::Tags => {
                 if !tag_ids.is_empty() {
@@ -770,6 +851,48 @@ fn make_fresh_tag(rng: &mut ChaCha8Rng, now: DateTime<Utc>) -> Tag {
     let color = random_tag_color(rng);
     let created_at = now - Duration::minutes((rng.next_u32() % 120) as i64);
     Tag::first(id, title, color, created_at)
+}
+
+/// Advance the round-robin card cursor, update that card head in place, and
+/// return the new version as a ready-to-push [`PushItem`].
+#[allow(clippy::too_many_arguments)]
+fn next_card_update(
+    rng: &mut ChaCha8Rng,
+    card_heads: &mut [Card],
+    idx: &mut usize,
+    live_tag_ids: &[Uuid],
+    graph: &TagGraph,
+    base_time: DateTime<Utc>,
+    used_priorities: &mut BTreeSet<i64>,
+) -> PushItem {
+    let i = *idx % card_heads.len();
+    *idx += 1;
+    let updated = make_card_update(
+        rng,
+        &card_heads[i],
+        live_tag_ids,
+        graph,
+        base_time,
+        used_priorities,
+    );
+    card_heads[i] = updated.clone();
+    PushItem::Cards(vec![updated])
+}
+
+/// Advance the round-robin tag cursor, rename that tag head in place, and
+/// return the new version as a ready-to-push [`PushItem`].
+fn next_tag_update(
+    rng: &mut ChaCha8Rng,
+    tag_heads: &mut [Tag],
+    idx: &mut usize,
+    base_time: DateTime<Utc>,
+) -> PushItem {
+    let i = *idx % tag_heads.len();
+    *idx += 1;
+    let prev = &tag_heads[i];
+    let updated = prev.next(mutate_tag_title(rng, prev.title()), prev.color(), base_time);
+    tag_heads[i] = updated.clone();
+    PushItem::Tags(vec![updated])
 }
 
 /// Generate 120 extra operations for a rich, diverse sequence history.
@@ -840,18 +963,15 @@ fn generate_extra_ops(
 
     // 15 card updates
     for _ in 0..15 {
-        let idx = card_update_idx % card_heads.len();
-        card_update_idx += 1;
-        let updated = make_card_update(
+        ops.push(vec![next_card_update(
             rng,
-            &card_heads[idx],
+            &mut card_heads,
+            &mut card_update_idx,
             live_tag_ids,
             graph,
             base_time,
             used_priorities,
-        );
-        card_heads[idx] = updated.clone();
-        ops.push(vec![PushItem::Cards(vec![updated])]);
+        )]);
     }
 
     // 10 more card creates
@@ -862,12 +982,12 @@ fn generate_extra_ops(
 
     // 8 tag updates
     for _ in 0..8 {
-        let idx = tag_update_idx % tag_heads.len();
-        tag_update_idx += 1;
-        let prev = &tag_heads[idx];
-        let updated = prev.next(mutate_tag_title(rng, prev.title()), prev.color(), base_time);
-        tag_heads[idx] = updated.clone();
-        ops.push(vec![PushItem::Tags(vec![updated])]);
+        ops.push(vec![next_tag_update(
+            rng,
+            &mut tag_heads,
+            &mut tag_update_idx,
+            base_time,
+        )]);
     }
 
     // ── Phase C: Small batches of 2–5 mixed operations (12 ops) ──
@@ -877,7 +997,8 @@ fn generate_extra_ops(
         let mut batch = Vec::with_capacity(batch_size);
         for _ in 0..batch_size {
             match rng.next_u32() % 4 {
-                0 => {
+                // Arms 0 and 2 both create a fresh card → 2/4 fresh-card weighting.
+                0 | 2 => {
                     batch.push(PushItem::Cards(vec![make_fresh_card(
                         rng,
                         live_tag_ids,
@@ -887,36 +1008,23 @@ fn generate_extra_ops(
                     )]));
                 }
                 1 => {
-                    let idx = card_update_idx % card_heads.len();
-                    card_update_idx += 1;
-                    let updated = make_card_update(
+                    batch.push(next_card_update(
                         rng,
-                        &card_heads[idx],
+                        &mut card_heads,
+                        &mut card_update_idx,
                         live_tag_ids,
                         graph,
                         base_time,
                         used_priorities,
-                    );
-                    card_heads[idx] = updated.clone();
-                    batch.push(PushItem::Cards(vec![updated]));
-                }
-                2 => {
-                    batch.push(PushItem::Cards(vec![make_fresh_card(
-                        rng,
-                        live_tag_ids,
-                        graph,
-                        base_time,
-                        used_priorities,
-                    )]));
+                    ));
                 }
                 _ => {
-                    let idx = tag_update_idx % tag_heads.len();
-                    tag_update_idx += 1;
-                    let prev = &tag_heads[idx];
-                    let updated =
-                        prev.next(mutate_tag_title(rng, prev.title()), prev.color(), base_time);
-                    tag_heads[idx] = updated.clone();
-                    batch.push(PushItem::Tags(vec![updated]));
+                    batch.push(next_tag_update(
+                        rng,
+                        &mut tag_heads,
+                        &mut tag_update_idx,
+                        base_time,
+                    ));
                 }
             }
         }
@@ -964,27 +1072,23 @@ fn generate_extra_ops(
                 )])]);
             }
             1 => {
-                let idx = card_update_idx % card_heads.len();
-                card_update_idx += 1;
-                let updated = make_card_update(
+                ops.push(vec![next_card_update(
                     rng,
-                    &card_heads[idx],
+                    &mut card_heads,
+                    &mut card_update_idx,
                     live_tag_ids,
                     graph,
                     base_time,
                     used_priorities,
-                );
-                card_heads[idx] = updated.clone();
-                ops.push(vec![PushItem::Cards(vec![updated])]);
+                )]);
             }
             2 => {
-                let idx = tag_update_idx % tag_heads.len();
-                tag_update_idx += 1;
-                let prev = &tag_heads[idx];
-                let updated =
-                    prev.next(mutate_tag_title(rng, prev.title()), prev.color(), base_time);
-                tag_heads[idx] = updated.clone();
-                ops.push(vec![PushItem::Tags(vec![updated])]);
+                ops.push(vec![next_tag_update(
+                    rng,
+                    &mut tag_heads,
+                    &mut tag_update_idx,
+                    base_time,
+                )]);
             }
             _ => {
                 // Mixed batch: two new cards in one sequence.

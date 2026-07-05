@@ -1,7 +1,9 @@
+use crate::components::drag_drop::{is_drag_in_flight, start_pointer_drag, start_touch_drag};
 use crate::components::link_indicators::link_indicators_view;
+use crate::state::drag::DragMode;
+use crate::state::pending_priority;
 use crate::state::store::{
-    AppState, SwipeToast, confirm_discard_changes, format_due_date_badge, format_relative_time,
-    select_card_view, sync_query_params,
+    AppState, DropEdge, SwipeToast, format_due_date_badge, format_relative_time, set_selection,
 };
 use crate::state::sync::push_card_or_queue;
 use blazelist_client_lib::display::LinkCounts;
@@ -21,6 +23,60 @@ extern "C" {
     fn set_timeout_js(handler: &js_sys::Function, timeout: i32) -> i32;
     #[wasm_bindgen(js_name = "clearTimeout")]
     fn clear_timeout_js(handle: i32);
+}
+
+/// Map a swipe offset to a "levels mode" zone (1–4), or `None` if the
+/// swipe hasn't crossed the trigger threshold yet.
+///
+/// Zones extend outward from `threshold_l` and are additive: each width
+/// argument is the size (px) of one zone.
+///   1 — Today      (width = `today_w`)
+///   2 — Tomorrow   (width = `tomorrow_w`)
+///   3 — In 2 days  (width = `soon_w`)
+///   4 — Clear due  (open-ended, beyond zone 3)
+fn levels_zone(
+    offset: f64,
+    threshold_l: f64,
+    today_w: f64,
+    tomorrow_w: f64,
+    soon_w: f64,
+) -> Option<u8> {
+    let adx = offset.abs();
+    if adx < threshold_l {
+        return None;
+    }
+    let z2 = threshold_l + today_w;
+    let z3 = z2 + tomorrow_w;
+    let z4 = z3 + soon_w;
+    Some(if adx < z2 {
+        1
+    } else if adx < z3 {
+        2
+    } else if adx < z4 {
+        3
+    } else {
+        4
+    })
+}
+
+/// Background-color class for a given levels-mode zone.
+fn levels_zone_class(zone: u8) -> &'static str {
+    match zone {
+        1 => "swipe-bg-due-today",
+        2 => "swipe-bg-due-tomorrow",
+        3 => "swipe-bg-due-soon",
+        _ => "swipe-bg-due-clear",
+    }
+}
+
+/// Text label for a given levels-mode zone.
+fn levels_zone_label(zone: u8) -> &'static str {
+    match zone {
+        1 => "Today",
+        2 => "Tomorrow",
+        3 => "In 2 days",
+        _ => "Clear due",
+    }
 }
 
 fn show_swipe_toast(state: &AppState, message: String, original_card: Card) {
@@ -78,15 +134,11 @@ pub fn CardItem(
     });
 
     let on_click = move |_| {
-        let current = state.selected_card.get_untracked();
+        let current = state.selected_card().get_untracked();
         if current == Some(card_id) {
-            if !confirm_discard_changes(&state) {
-                return;
-            }
-            state.selected_card.set(None);
-            sync_query_params(&state);
+            set_selection(&state, None);
         } else {
-            select_card_view(&state, card_id);
+            set_selection(&state, Some(card_id));
         }
     };
 
@@ -95,7 +147,7 @@ pub fn CardItem(
         if is_blazed() {
             cls.push_str(" blazed");
         }
-        if state.selected_card.get() == Some(card_id) {
+        if state.selected_card().get() == Some(card_id) {
             cls.push_str(" selected");
         }
         cls
@@ -155,7 +207,7 @@ pub fn CardItem(
             if let Some(t) = tags_state.iter().find(|t| t.id() == *tag_id) {
                 match t.color() {
                     Some(c) => {
-                        let hex = format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
+                        let hex = blazelist_client_lib::color::format_tag_hex(&c);
                         colored.push((t.title().to_lowercase(), hex));
                     }
                     None => {
@@ -232,6 +284,16 @@ pub fn CardItem(
             if !state.touch_swipe_enabled.get_untracked() {
                 return;
             }
+            // A drag is armed or in flight — let it own the gesture.
+            if is_drag_in_flight() {
+                return;
+            }
+            // Single-touch only. A second finger landing on the body
+            // while another is on the card number would otherwise
+            // seed swipe state that latches.
+            if ev.touches().length() != 1 {
+                return;
+            }
             if let Some(touch) = ev.touches().get(0) {
                 tsx.set(touch.client_x() as f64);
                 tsy.set(touch.client_y() as f64);
@@ -249,6 +311,12 @@ pub fn CardItem(
             if !state.touch_swipe_enabled.get_untracked() {
                 return;
             }
+            // A drag owns the gesture. The card number (the handle-mode
+            // grip) sits inside the card body, so its touch events
+            // bubble through here — bail rather than double as a swipe.
+            if is_drag_in_flight() {
+                return;
+            }
             if let Some(touch) = ev.touches().get(0) {
                 let dx = touch.client_x() as f64 - tsx.get();
                 let dy = touch.client_y() as f64 - tsy.get();
@@ -261,8 +329,13 @@ pub fn CardItem(
                 }
                 if sw.get() {
                     ev.prevent_default();
-                    let threshold_r = state.swipe_threshold_right.get_untracked() as f64;
-                    let threshold_l = state.swipe_threshold_left.get_untracked() as f64;
+                    let levels_mode = state.swipe_left_mode.get_untracked() == "levels";
+                    let threshold_r = if levels_mode {
+                        state.swipe_threshold_right_levels.get_untracked() as f64
+                    } else {
+                        state.swipe_threshold_right_cycle.get_untracked() as f64
+                    };
+                    let threshold_l = state.swipe_threshold_left_cycle.get_untracked() as f64;
                     let offset = if dx > 0.0 {
                         if dx <= threshold_r {
                             dx
@@ -271,6 +344,10 @@ pub fn CardItem(
                             let brake = threshold_r * 1.2;
                             threshold_r + brake * extra / (extra + brake)
                         }
+                    } else if levels_mode {
+                        // Direct 1:1 motion so the user can reach the further
+                        // zones (Tomorrow / In 2 days / Clear) by swiping further.
+                        dx
                     } else {
                         let adx = dx.abs();
                         if adx <= threshold_l {
@@ -290,6 +367,11 @@ pub fn CardItem(
     let on_touchend = {
         let sw = swiping.clone();
         move |_: web_sys::TouchEvent| {
+            // A drag owns the gesture (swipe_offset stayed 0 because
+            // on_touchmove bailed) — let the drag's own handlers finish.
+            if is_drag_in_flight() {
+                return;
+            }
             if !state.touch_swipe_enabled.get_untracked() || !sw.get() {
                 swipe_offset.set(0.0);
                 return;
@@ -301,8 +383,17 @@ pub fn CardItem(
             let Some(c) = read_card(card_id, &card_map, &state) else {
                 return;
             };
-            let threshold_r = state.swipe_threshold_right.get_untracked() as f64;
-            let threshold_l = state.swipe_threshold_left.get_untracked() as f64;
+            let levels_mode = state.swipe_left_mode.get_untracked() == "levels";
+            let threshold_r = if levels_mode {
+                state.swipe_threshold_right_levels.get_untracked() as f64
+            } else {
+                state.swipe_threshold_right_cycle.get_untracked() as f64
+            };
+            let threshold_l = if levels_mode {
+                state.swipe_threshold_left_levels.get_untracked() as f64
+            } else {
+                state.swipe_threshold_left_cycle.get_untracked() as f64
+            };
             if offset > threshold_r {
                 let msg = if c.blazed() {
                     "Extinguished \u{1F680}".to_string()
@@ -310,16 +401,19 @@ pub fn CardItem(
                     "Blazed \u{1F525}".to_string()
                 };
                 let original = c.clone();
+                let new_blazed = !c.blazed();
+                let new_due = state.due_after_blaze_change(c.due_date(), c.blazed(), new_blazed);
                 let updated = c.next(
                     c.content().to_string(),
                     c.priority(),
                     c.tags().to_vec(),
-                    !c.blazed(),
+                    new_blazed,
                     Utc::now(),
-                    c.due_date(),
+                    new_due,
                 );
                 state.upsert_card(updated.clone());
                 leptos::task::spawn_local(async move {
+                    pending_priority::flush_now(&state).await;
                     push_card_or_queue(&state, updated).await;
                 });
                 show_swipe_toast(&state, msg, original);
@@ -329,34 +423,57 @@ pub fn CardItem(
                 let tomorrow = today + chrono::Duration::days(1);
                 let in_two = today + chrono::Duration::days(2);
 
-                // Toggle mode: cycle based on current due date.
-                let current_date = c.due_date().map(|d| d.date_naive());
-                let (new_due, msg) = if current_date == Some(today_date) {
-                    (Some(tomorrow), "Due: Tomorrow".to_string())
-                } else if current_date == Some(today_date + chrono::Days::new(1)) {
-                    (
-                        Some(in_two),
-                        format!(
-                            "Due: {}",
-                            (today_date + chrono::Days::new(2)).format("%Y-%m-%d")
+                let (new_due, msg) = if levels_mode {
+                    // Levels mode: swipe distance picks the action directly.
+                    let today_w = state.swipe_levels_zone_today_width.get_untracked() as f64;
+                    let tomorrow_w = state.swipe_levels_zone_tomorrow_width.get_untracked() as f64;
+                    let soon_w = state.swipe_levels_zone_soon_width.get_untracked() as f64;
+                    let zone =
+                        levels_zone(offset, threshold_l, today_w, tomorrow_w, soon_w).unwrap_or(1);
+                    match zone {
+                        1 => (Some(today), "Due: Today".to_string()),
+                        2 => (Some(tomorrow), "Due: Tomorrow".to_string()),
+                        3 => (
+                            Some(in_two),
+                            format!(
+                                "Due: {}",
+                                (today_date + chrono::Days::new(2)).format("%Y-%m-%d")
+                            ),
                         ),
-                    )
-                } else if current_date == Some(today_date + chrono::Days::new(2)) {
-                    (None, "Due: Cleared".to_string())
+                        _ => (None, "Due: Cleared".to_string()),
+                    }
                 } else {
-                    (Some(today), "Due: Today".to_string())
+                    // Cycle mode: each swipe advances based on the current due date.
+                    let current_date = c.due_date().map(|d| d.date_naive());
+                    if current_date == Some(today_date) {
+                        (Some(tomorrow), "Due: Tomorrow".to_string())
+                    } else if current_date == Some(today_date + chrono::Days::new(1)) {
+                        (
+                            Some(in_two),
+                            format!(
+                                "Due: {}",
+                                (today_date + chrono::Days::new(2)).format("%Y-%m-%d")
+                            ),
+                        )
+                    } else if current_date == Some(today_date + chrono::Days::new(2)) {
+                        (None, "Due: Cleared".to_string())
+                    } else {
+                        (Some(today), "Due: Today".to_string())
+                    }
                 };
                 let original = c.clone();
+                let new_blazed = state.blazed_after_due_change(c.blazed(), new_due);
                 let updated = c.next(
                     c.content().to_string(),
                     c.priority(),
                     c.tags().to_vec(),
-                    c.blazed(),
+                    new_blazed,
                     Utc::now(),
                     new_due,
                 );
                 state.upsert_card(updated.clone());
                 leptos::task::spawn_local(async move {
+                    pending_priority::flush_now(&state).await;
                     push_card_or_queue(&state, updated).await;
                 });
                 show_swipe_toast(&state, msg, original);
@@ -375,29 +492,44 @@ pub fn CardItem(
 
     let swipe_bg_class = move || {
         let offset = swipe_offset.get();
-        let threshold_r = state.swipe_threshold_right.get() as f64;
-        let threshold_l = state.swipe_threshold_left.get() as f64;
+        let levels_mode = state.swipe_left_mode.get() == "levels";
+        let threshold_r = if levels_mode {
+            state.swipe_threshold_right_levels.get() as f64
+        } else {
+            state.swipe_threshold_right_cycle.get() as f64
+        };
+        let threshold_l = if levels_mode {
+            state.swipe_threshold_left_levels.get() as f64
+        } else {
+            state.swipe_threshold_left_cycle.get() as f64
+        };
         let right_kind = if is_blazed() {
             "swipe-bg-extinguish"
         } else {
             "swipe-bg-blaze"
         };
         if offset >= threshold_r {
-            match right_kind {
-                "swipe-bg-extinguish" => "swipe-bg swipe-bg-extinguish swipe-commit",
-                _ => "swipe-bg swipe-bg-blaze swipe-commit",
-            }
+            format!("swipe-bg {right_kind} swipe-commit")
         } else if offset > 40.0 {
-            match right_kind {
-                "swipe-bg-extinguish" => "swipe-bg swipe-bg-extinguish",
-                _ => "swipe-bg swipe-bg-blaze",
+            format!("swipe-bg {right_kind}")
+        } else if levels_mode {
+            let today_w = state.swipe_levels_zone_today_width.get() as f64;
+            let tomorrow_w = state.swipe_levels_zone_tomorrow_width.get() as f64;
+            let soon_w = state.swipe_levels_zone_soon_width.get() as f64;
+            if let Some(zone) = levels_zone(offset, threshold_l, today_w, tomorrow_w, soon_w) {
+                format!("swipe-bg {} swipe-commit", levels_zone_class(zone))
+            } else if offset < -55.0 {
+                // Pre-trigger hint: the next zone is Today.
+                format!("swipe-bg {}", levels_zone_class(1))
+            } else {
+                "swipe-bg".to_string()
             }
         } else if offset <= -threshold_l {
-            "swipe-bg swipe-bg-due swipe-commit"
+            "swipe-bg swipe-bg-due swipe-commit".to_string()
         } else if offset < -55.0 {
-            "swipe-bg swipe-bg-due"
+            "swipe-bg swipe-bg-due".to_string()
         } else {
-            "swipe-bg"
+            "swipe-bg".to_string()
         }
     };
 
@@ -423,38 +555,115 @@ pub fn CardItem(
         if offset > 40.0 {
             if is_blazed() { "Extinguish" } else { "Blaze" }
         } else if offset < -55.0 {
-            let today_date = blazelist_protocol::Utc::now().date_naive();
-            let current_date = current_card
-                .get()
-                .and_then(|c| c.due_date())
-                .map(|d| d.date_naive());
-            if current_date == Some(today_date) {
-                "Tomorrow"
-            } else if current_date == Some(today_date + chrono::Days::new(1)) {
-                "In 2 days"
-            } else if current_date == Some(today_date + chrono::Days::new(2)) {
-                "Clear due"
+            if state.swipe_left_mode.get() == "levels" {
+                let threshold_l = state.swipe_threshold_left_levels.get() as f64;
+                let today_w = state.swipe_levels_zone_today_width.get() as f64;
+                let tomorrow_w = state.swipe_levels_zone_tomorrow_width.get() as f64;
+                let soon_w = state.swipe_levels_zone_soon_width.get() as f64;
+                // Below the trigger threshold the user hasn't picked an
+                // action yet — hint at the first zone (Today) so the label
+                // matches the pre-trigger background.
+                let zone =
+                    levels_zone(offset, threshold_l, today_w, tomorrow_w, soon_w).unwrap_or(1);
+                levels_zone_label(zone)
             } else {
-                "Today"
+                let today_date = blazelist_protocol::Utc::now().date_naive();
+                let current_date = current_card
+                    .get()
+                    .and_then(|c| c.due_date())
+                    .map(|d| d.date_naive());
+                if current_date == Some(today_date) {
+                    "Tomorrow"
+                } else if current_date == Some(today_date + chrono::Days::new(1)) {
+                    "In 2 days"
+                } else if current_date == Some(today_date + chrono::Days::new(2)) {
+                    "Clear due"
+                } else {
+                    "Today"
+                }
             }
         } else {
             ""
         }
     };
 
+    // Per-card derived signals for the drag-related class bits.
+    // Leptos dedups Memo outputs by PartialEq, so when the global
+    // `drag_drop_target` flips between two cards, only the two
+    // affected cards' `wrapper_class` closures re-evaluate — the
+    // other 998 CardItems short-circuit out of the dirty chain.
+    let is_drag_source: Memo<bool> =
+        Memo::new(move |_| state.drag_active_card.get() == Some(card_id));
+    let drop_edge_for_me: Memo<Option<DropEdge>> = Memo::new(move |_| {
+        if state.drag_active_card.get() == Some(card_id) {
+            return None;
+        }
+        match state.drag_drop_target.get() {
+            Some((id, edge)) if id == card_id => Some(edge),
+            _ => None,
+        }
+    });
+
     let wrapper_class = move || {
         let mut cls = String::from("card-item-wrapper");
         if is_blazed() {
             cls.push_str(" blazed");
         }
-        if state.selected_card.get() == Some(card_id) {
+        if state.selected_card().get() == Some(card_id) {
             cls.push_str(" selected");
+        }
+        if is_drag_source.get() {
+            cls.push_str(" drag-source");
+        }
+        match drop_edge_for_me.get() {
+            Some(DropEdge::Above) => cls.push_str(" drag-target-above"),
+            Some(DropEdge::Below) => cls.push_str(" drag-target-below"),
+            None => {}
         }
         cls
     };
 
+    // Untracked read of the primary toggle + mode for use inside event
+    // handlers (which run outside any reactive scope). Returns `None`
+    // when the feature is off; otherwise the live mode.
+    let active_drag_mode = move || -> Option<DragMode> {
+        if !state.drag_and_drop_enabled.get_untracked() {
+            return None;
+        }
+        Some(DragMode::from_str_or_default(
+            &state.drag_and_drop_mode.get_untracked(),
+        ))
+    };
+
+    let on_wrapper_pointerdown = move |ev: web_sys::PointerEvent| {
+        // Anywhere-mode only — handle mode routes pointerdown via the
+        // card number's own listener so activation surfaces match the
+        // label.
+        if active_drag_mode() != Some(DragMode::Anywhere) {
+            return;
+        }
+        start_pointer_drag(state, card_id, ev);
+    };
+    let on_handle_touchstart = move |ev: web_sys::TouchEvent| {
+        if active_drag_mode() != Some(DragMode::Handle) {
+            return;
+        }
+        start_touch_drag(state, card_id, ev);
+    };
+    let on_handle_pointerdown = move |ev: web_sys::PointerEvent| {
+        // Handle mode + mouse / pen: route through the card number so
+        // the user gets a consistent activation surface on every device.
+        if active_drag_mode() != Some(DragMode::Handle) {
+            return;
+        }
+        ev.stop_propagation();
+        start_pointer_drag(state, card_id, ev);
+    };
+
+    let card_id_attr = card_id.to_string();
+
     view! {
-        <div class=wrapper_class>
+        <div class=wrapper_class data-card-id=card_id_attr on:pointerdown=on_wrapper_pointerdown>
             <div class=swipe_bg_class>
                 <span class="swipe-label" style=swipe_label_style>{swipe_label}</span>
             </div>
@@ -466,7 +675,11 @@ pub fn CardItem(
                 on:touchmove=on_touchmove
                 on:touchend=on_touchend
             >
-                <span class="card-number">{move || number.get()}</span>
+                <span
+                    class="card-number"
+                    on:touchstart=on_handle_touchstart
+                    on:pointerdown=on_handle_pointerdown
+                >{move || number.get()}</span>
                 <div class=move || preview_data.get().1>
                     {move || preview_data.get().0}
                 </div>

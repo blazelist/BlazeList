@@ -1,5 +1,4 @@
 use blazelist_client_lib::filter::{DueDateFilter, SortOrder, TagFilterMode};
-use blazelist_client_lib::tag_graph::TagGraph;
 use blazelist_protocol::CardFilter;
 use uuid::Uuid;
 
@@ -21,47 +20,35 @@ pub fn parse_filter_from_params(params: &web_sys::UrlSearchParams) -> CardFilter
 }
 
 pub fn parse_due_date_filter_from_params(params: &web_sys::UrlSearchParams) -> DueDateFilter {
-    match params.get("f.due").as_deref() {
-        Some("overdue") => DueDateFilter::Overdue,
-        Some("today") => DueDateFilter::Today,
-        Some("today-upcoming") | Some("upcoming") => DueDateFilter::TodayAndUpcoming,
-        Some("upcoming-tomorrow") => DueDateFilter::UpcomingTomorrow,
-        Some("upcoming-week") => DueDateFilter::UpcomingWeek,
-        Some("upcoming-2weeks") => DueDateFilter::UpcomingTwoWeeks,
-        _ => DueDateFilter::All,
-    }
-}
-
-fn due_date_filter_to_str(f: DueDateFilter) -> &'static str {
-    match f {
-        DueDateFilter::All => "all",
-        DueDateFilter::Overdue => "overdue",
-        DueDateFilter::Today => "today",
-        DueDateFilter::TodayAndUpcoming => "today-upcoming",
-        DueDateFilter::UpcomingTomorrow => "upcoming-tomorrow",
-        DueDateFilter::UpcomingWeek => "upcoming-week",
-        DueDateFilter::UpcomingTwoWeeks => "upcoming-2weeks",
-    }
+    // `from_url_value` maps unknown/missing tokens to `All` and keeps the
+    // legacy `upcoming` alias for `TodayAndUpcoming`.
+    DueDateFilter::from_url_value(params.get("f.due").as_deref().unwrap_or(""))
 }
 
 pub fn parse_tag_mode_from_params(params: &web_sys::UrlSearchParams) -> TagFilterMode {
-    match params.get("f.tag_mode").as_deref() {
-        Some("and") => TagFilterMode::And,
-        _ => TagFilterMode::Or,
-    }
+    params
+        .get("f.tag_mode")
+        .map(|s| TagFilterMode::from_url_value(&s))
+        .unwrap_or(TagFilterMode::Or)
 }
 
-pub fn parse_tags_from_params(params: &web_sys::UrlSearchParams) -> Vec<Uuid> {
-    let all = params.get_all("f.tag");
-    let mut tags = Vec::new();
+/// Parse a repeated query parameter into a list of UUIDs, silently skipping
+/// any value that is not a valid UUID.
+fn parse_uuid_list(params: &web_sys::UrlSearchParams, key: &str) -> Vec<Uuid> {
+    let all = params.get_all(key);
+    let mut ids = Vec::new();
     for i in 0..all.length() {
         if let Some(s) = all.get(i).as_string()
             && let Ok(id) = s.parse::<Uuid>()
         {
-            tags.push(id);
+            ids.push(id);
         }
     }
-    tags
+    ids
+}
+
+pub fn parse_tags_from_params(params: &web_sys::UrlSearchParams) -> Vec<Uuid> {
+    parse_uuid_list(params, "f.tag")
 }
 
 pub fn parse_no_tags_from_params(params: &web_sys::UrlSearchParams) -> bool {
@@ -73,16 +60,7 @@ pub fn parse_selected_card_from_params(params: &web_sys::UrlSearchParams) -> Opt
 }
 
 pub fn parse_linked_cards_from_params(params: &web_sys::UrlSearchParams) -> Vec<Uuid> {
-    let all = params.get_all("f.linked");
-    let mut links = Vec::new();
-    for i in 0..all.length() {
-        if let Some(s) = all.get(i).as_string()
-            && let Ok(id) = s.parse::<Uuid>()
-        {
-            links.push(id);
-        }
-    }
-    links
+    parse_uuid_list(params, "f.linked")
 }
 
 pub fn parse_sort_from_params(params: &web_sys::UrlSearchParams) -> SortOrder {
@@ -112,8 +90,8 @@ fn build_query_string(state: &AppState) -> String {
     }
 
     let due = state.due_date_filter.get_untracked();
-    if due != DueDateFilter::All {
-        params.set("f.due", due_date_filter_to_str(due));
+    if let Some(val) = due.url_value() {
+        params.set("f.due", val);
     }
 
     if state.include_overdue.get_untracked() {
@@ -126,8 +104,8 @@ fn build_query_string(state: &AppState) -> String {
     }
 
     let mode = state.tag_filter_mode.get_untracked();
-    if mode == TagFilterMode::And {
-        params.set("f.tag_mode", "and");
+    if let Some(val) = mode.url_value() {
+        params.set("f.tag_mode", val);
     }
 
     if state.no_tags_filter.get_untracked() {
@@ -216,18 +194,15 @@ pub fn restore_from_query_params(state: &AppState) {
         .tag_filter_mode
         .set(parse_tag_mode_from_params(&params));
     state.no_tags_filter.set(parse_no_tags_from_params(&params));
-    // Close the tag filter under the implication graph so URL-driven
-    // filter state always satisfies the implies invariant.
-    let mut url_tags = parse_tags_from_params(&params);
-    if !url_tags.is_empty() {
-        let graph = TagGraph::from_tags(&state.tags.get_untracked());
-        let closed = graph.closure_of(&url_tags);
-        url_tags = closed.into_iter().collect();
-    }
-    state.tag_filter.set(url_tags);
-    state
-        .selected_card
-        .set(parse_selected_card_from_params(&params));
+    state.tag_filter.set(parse_tags_from_params(&params));
+    // Popstate / forward-stack restore. Use the without-flush escape
+    // hatch (documented at `set_selection_without_flush`): the user
+    // pressed back/forward, so the URL is the source of truth for the
+    // selection. Committing the in-flight burst here would push moves
+    // the user implicitly walked away from. The on_cleanup on
+    // CardDetail still flushes when the panel tears down, so no burst
+    // is leaked.
+    super::store::set_selection_without_flush(state, parse_selected_card_from_params(&params));
     state
         .linked_card_filter
         .set(parse_linked_cards_from_params(&params));

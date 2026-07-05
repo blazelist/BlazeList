@@ -3,6 +3,7 @@
 //! Wraps the browser's WebTransport API to provide a Rust-friendly interface
 //! for creating connections and opening bidirectional streams.
 
+use super::js_value_to_string;
 use js_sys::Uint8Array;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
@@ -34,15 +35,7 @@ impl std::error::Error for ConnectionError {}
 
 impl From<JsValue> for ConnectionError {
     fn from(val: JsValue) -> Self {
-        let msg = val
-            .as_string()
-            .or_else(|| {
-                js_sys::JSON::stringify(&val)
-                    .ok()
-                    .and_then(|s| s.as_string())
-            })
-            .unwrap_or_else(|| format!("{val:?}"));
-        ConnectionError::JsError(msg)
+        Self::JsError(js_value_to_string(&val))
     }
 }
 

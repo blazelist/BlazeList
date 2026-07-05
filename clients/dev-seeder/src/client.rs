@@ -25,7 +25,7 @@ impl Client {
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
             .with_no_client_auth();
-        client_crypto.alpn_protocols = vec![b"blazelist/0".to_vec()];
+        client_crypto.alpn_protocols = vec![blazelist_protocol::ALPN_PROTOCOL.to_vec()];
 
         let mut transport = quinn::TransportConfig::default();
         transport.keep_alive_interval(Some(std::time::Duration::from_secs(5)));

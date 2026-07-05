@@ -80,20 +80,30 @@ pub fn SyncIndicator() -> impl IntoView {
     };
 
     let debounce_text = move || {
-        let countdown = state.push_debounce_countdown.get();
-        if countdown > 0 {
-            Some(format!("Pushing in {countdown}s"))
+        let ms = state.priority_burst_countdown_ms.get();
+        if ms == 0 {
+            return None;
+        }
+        // Whole-second rounding above 1 s avoids flicker on round defaults;
+        // sub-second window shows a "now" string.
+        if ms >= 1_000 {
+            let secs = ms.div_ceil(1_000);
+            Some(format!("Pushing card priority change in {secs}s"))
         } else {
-            None
+            Some("Pushing card priority change...".to_string())
         }
     };
 
     let auto_sync_text = move || {
-        let countdown = state.auto_sync_countdown.get();
-        if countdown > 0 && state.auto_sync_enabled.get() {
-            Some(format!("Syncing in {countdown}s"))
+        let countdown_ms = state.auto_sync_countdown_ms.get();
+        if countdown_ms == 0 || !state.auto_sync_enabled.get() {
+            return None;
+        }
+        if countdown_ms >= 1_000 {
+            let secs = countdown_ms.div_ceil(1_000);
+            Some(format!("Syncing in {secs}s"))
         } else {
-            None
+            Some("Syncing now\u{2026}".to_string())
         }
     };
 

@@ -3,7 +3,7 @@ use crate::components::timestamp::Timestamp;
 use crate::components::toast::show_error_toast;
 use crate::components::version_history::TagVersionHistory;
 use crate::state::store::{
-    AppState, confirm_discard_changes, get_client, sync_query_params, tag_chip_style,
+    AppState, confirm_discard_changes, get_client, set_selection, tag_chip_style,
 };
 use blazelist_client_lib::client::Client as _;
 use blazelist_client_lib::error::ClientError;
@@ -52,7 +52,7 @@ pub fn TagDetail() -> impl IntoView {
     let init_inputs = move |tag: &Tag| {
         title_input.set(tag.title().to_string());
         if let Some(c) = tag.color() {
-            let hex = format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
+            let hex = blazelist_client_lib::color::format_tag_hex(&c);
             color_input.set(hex.clone());
             use_color.set(true);
             orig_color.set(hex);
@@ -71,7 +71,7 @@ pub fn TagDetail() -> impl IntoView {
 
     // Reset editing state when the selected tag changes.
     Effect::new(move |_| {
-        let tag_id = match state.selected_card.get() {
+        let tag_id = match state.selected_card().get() {
             Some(id) => id,
             None => return,
         };
@@ -95,18 +95,18 @@ pub fn TagDetail() -> impl IntoView {
     });
 
     let on_close = move |_| {
-        if !confirm_discard_changes(&state) {
+        if !set_selection(&state, None) {
             return;
         }
+        // `set_selection` clears its own cluster; the local `editing`
+        // (tag-edit inline form) and global `has_unsaved_changes` live
+        // outside it.
         editing.set(false);
         state.has_unsaved_changes.set(false);
-        state.selected_card.set(None);
-        state.editing.set(false);
-        sync_query_params(&state);
     };
 
     let start_editing = move || {
-        if let Some(tag_id) = state.selected_card.get_untracked()
+        if let Some(tag_id) = state.selected_card().get_untracked()
             && let Some(tag) = state.tags.get_untracked().iter().find(|t| t.id() == tag_id)
         {
             init_inputs(tag);
@@ -142,7 +142,7 @@ pub fn TagDetail() -> impl IntoView {
                 return;
             };
 
-            let tag_id = match state.selected_card.get_untracked() {
+            let tag_id = match state.selected_card().get_untracked() {
                 Some(id) => id,
                 None => return,
             };
@@ -226,7 +226,7 @@ pub fn TagDetail() -> impl IntoView {
         if !editing.get() {
             return Vec::new();
         }
-        let tag_id = match state.selected_card.get() {
+        let tag_id = match state.selected_card().get() {
             Some(id) => id,
             None => return Vec::new(),
         };
@@ -247,7 +247,7 @@ pub fn TagDetail() -> impl IntoView {
     });
 
     let save_changes = move || {
-        let tag_id = match state.selected_card.get_untracked() {
+        let tag_id = match state.selected_card().get_untracked() {
             Some(id) => id,
             None => return,
         };
@@ -288,7 +288,7 @@ pub fn TagDetail() -> impl IntoView {
     let deleting = RwSignal::new(false);
 
     let do_delete = move || {
-        let tag_id = match state.selected_card.get_untracked() {
+        let tag_id = match state.selected_card().get_untracked() {
             Some(id) => id,
             None => return,
         };
@@ -355,10 +355,50 @@ pub fn TagDetail() -> impl IntoView {
             state
                 .tag_filter
                 .update(|tags| tags.retain(|t| *t != tag_id));
-            state.selected_card.set(None);
+            set_selection(&state, None);
             deleting.set(false);
-            sync_query_params(&state);
         });
+    };
+
+    // Render a labelled chip list of related tags (clickable to navigate,
+    // but inert while editing). Shared by the read-only "Transitively
+    // implies" and "Implied by" sections, which differ only by label and
+    // source list.
+    let chip_section = move |label: &'static str,
+                             items: Vec<(Uuid, String, Option<rgb::RGB8>)>|
+          -> AnyView {
+        let editing_now = editing.get();
+        let chips: Vec<_> = items
+            .into_iter()
+            .map(|(id, title, color)| {
+                let style = tag_chip_style(&color);
+                let on_click = move |_| {
+                    if editing.get_untracked() {
+                        return;
+                    }
+                    set_selection(&state, Some(id));
+                };
+                view! { <span class="tag-chip detail-tag-chip-link" style=style on:click=on_click>{title}</span> }
+            })
+            .collect();
+        let container_class = if editing_now {
+            "tag-implies-row"
+        } else {
+            "tag-implies-row detail-tag-chips"
+        };
+        view! {
+            <div class="tag-color-section">
+                <span class="tag-color-label">{label}</span>
+            </div>
+            <div class=container_class>
+                {if chips.is_empty() {
+                    view! { <span class="tag-color-hex due-not-set">"None"</span> }.into_any()
+                } else {
+                    chips.into_any()
+                }}
+            </div>
+        }
+        .into_any()
     };
 
     view! {
@@ -378,7 +418,7 @@ pub fn TagDetail() -> impl IntoView {
 
         // Title section
         {move || {
-            let tag_id = state.selected_card.get()?;
+            let tag_id = state.selected_card().get()?;
             let editing_now = editing.get();
             // When editing, use get_untracked to avoid auto-sync
             // destroying the input and losing the in-progress text.
@@ -419,7 +459,7 @@ pub fn TagDetail() -> impl IntoView {
         // Color section
         <div class="detail-section">
         {move || {
-            let tag_id = state.selected_card.get()?;
+            let tag_id = state.selected_card().get()?;
             let editing_now = editing.get();
 
             if editing_now {
@@ -428,7 +468,7 @@ pub fn TagDetail() -> impl IntoView {
                 }.into_any())
             } else {
                 let tag = state.tags.get().into_iter().find(|t| t.id() == tag_id)?;
-                let current_color = tag.color().map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b));
+                let current_color = tag.color().map(|c| blazelist_client_lib::color::format_tag_hex(&c));
 
                 Some(view! {
                     <div class="tag-color-section">
@@ -455,7 +495,7 @@ pub fn TagDetail() -> impl IntoView {
         // Implies section — direct implies only (editable in edit mode).
         <div class="detail-section">
         {move || {
-            let tag_id = state.selected_card.get()?;
+            let tag_id = state.selected_card().get()?;
             let editing_now = editing.get();
             let all_tags = state.tags.get();
 
@@ -471,7 +511,7 @@ pub fn TagDetail() -> impl IntoView {
                     })
                     .map(|t| (t.id(), t.title().to_string()))
                     .collect();
-                candidates.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+                candidates.sort_by_key(|a| a.1.to_lowercase());
 
                 let on_add = move |ev: web_sys::Event| {
                     let val = event_target_value(&ev);
@@ -505,7 +545,7 @@ pub fn TagDetail() -> impl IntoView {
                                     .unwrap_or_else(|| "unknown".to_string());
                                 (imp_id, title)
                             }).collect();
-                            items.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+                            items.sort_by_key(|a| a.1.to_lowercase());
                             items.into_iter().map(|(imp_id, title)| {
                                 let color = all.iter()
                                     .find(|t| t.id() == imp_id)
@@ -534,36 +574,17 @@ pub fn TagDetail() -> impl IntoView {
                     </div>
                 }.into_any())
             } else {
-                // Read mode: direct implies only.
+                // Read mode: direct implies only. Renders via the shared
+                // `chip_section` like the transitive / implied-by sections
+                // below (this arm only exists while `editing` is false, so
+                // the helper's editing-aware bits are inert here).
                 let tag = all_tags.iter().find(|t| t.id() == tag_id)?;
                 let mut direct: Vec<_> = tag.implies().iter().filter_map(|id| {
                     let t = all_tags.iter().find(|t| t.id() == *id)?;
                     Some((*id, t.title().to_string(), t.color()))
                 }).collect();
-                direct.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
-                let chips: Vec<_> = direct.into_iter().map(|(id, title, color)| {
-                    let style = tag_chip_style(&color);
-                    let on_click = move |_| {
-                        state.selected_card.set(Some(id));
-                        state.creating_new_tag.set(false);
-                        state.editing.set(false);
-                        state.creating_new.set(false);
-                        sync_query_params(&state);
-                    };
-                    view! { <span class="tag-chip detail-tag-chip-link" style=style on:click=on_click>{title}</span> }
-                }).collect();
-                Some(view! {
-                    <div class="tag-color-section">
-                        <span class="tag-color-label">"\u{2192} Implies"</span>
-                    </div>
-                    <div class="tag-implies-row detail-tag-chips">
-                        {if chips.is_empty() {
-                            view! { <span class="tag-color-hex due-not-set">"None"</span> }.into_any()
-                        } else {
-                            chips.into_any()
-                        }}
-                    </div>
-                }.into_any())
+                direct.sort_by_key(|a| a.1.to_lowercase());
+                Some(chip_section("\u{2192} Implies", direct))
             }
         }}
         </div>
@@ -572,7 +593,7 @@ pub fn TagDetail() -> impl IntoView {
         // read-only, visible in both read and edit mode.
         <div class="detail-section">
         {move || {
-            let tag_id = state.selected_card.get()?;
+            let tag_id = state.selected_card().get()?;
             let all_tags = state.tags.get();
             let tag = all_tags.iter().find(|t| t.id() == tag_id)?;
             let direct_ids: std::collections::HashSet<Uuid> =
@@ -587,42 +608,15 @@ pub fn TagDetail() -> impl IntoView {
                     Some((*id, t.title().to_string(), t.color()))
                 })
                 .collect();
-            transitive.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
-            let editing_now = editing.get();
-            let chips: Vec<_> = transitive.into_iter().map(|(id, title, color)| {
-                let style = tag_chip_style(&color);
-                let on_click = move |_| {
-                    if editing.get_untracked() {
-                        return;
-                    }
-                    state.selected_card.set(Some(id));
-                    state.creating_new_tag.set(false);
-                    state.editing.set(false);
-                    state.creating_new.set(false);
-                    sync_query_params(&state);
-                };
-                view! { <span class="tag-chip detail-tag-chip-link" style=style on:click=on_click>{title}</span> }
-            }).collect();
-            let container_class = if editing_now { "tag-implies-row" } else { "tag-implies-row detail-tag-chips" };
-            Some(view! {
-                <div class="tag-color-section">
-                    <span class="tag-color-label">"\u{2192} Transitively implies"</span>
-                </div>
-                <div class=container_class>
-                    {if chips.is_empty() {
-                        view! { <span class="tag-color-hex due-not-set">"None"</span> }.into_any()
-                    } else {
-                        chips.into_any()
-                    }}
-                </div>
-            })
+            transitive.sort_by_key(|a| a.1.to_lowercase());
+            Some(chip_section("\u{2192} Transitively implies", transitive))
         }}
         </div>
 
         // Implied-by section — read-only, visible in both modes.
         <div class="detail-section">
         {move || {
-            let tag_id = state.selected_card.get()?;
+            let tag_id = state.selected_card().get()?;
             let all_tags = state.tags.get();
             let graph = TagGraph::from_tags(&all_tags);
             let mut parents: Vec<_> = all_tags
@@ -630,35 +624,8 @@ pub fn TagDetail() -> impl IntoView {
                 .filter(|t| t.id() != tag_id && graph.closure_of(&[t.id()]).contains(&tag_id))
                 .map(|t| (t.id(), t.title().to_string(), t.color()))
                 .collect();
-            parents.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
-            let editing_now = editing.get();
-            let chips: Vec<_> = parents.into_iter().map(|(id, title, color)| {
-                let style = tag_chip_style(&color);
-                let on_click = move |_| {
-                    if editing.get_untracked() {
-                        return;
-                    }
-                    state.selected_card.set(Some(id));
-                    state.creating_new_tag.set(false);
-                    state.editing.set(false);
-                    state.creating_new.set(false);
-                    sync_query_params(&state);
-                };
-                view! { <span class="tag-chip detail-tag-chip-link" style=style on:click=on_click>{title}</span> }
-            }).collect();
-            let container_class = if editing_now { "tag-implies-row" } else { "tag-implies-row detail-tag-chips" };
-            Some(view! {
-                <div class="tag-color-section">
-                    <span class="tag-color-label">"\u{2190} Implied by"</span>
-                </div>
-                <div class=container_class>
-                    {if chips.is_empty() {
-                        view! { <span class="tag-color-hex due-not-set">"None"</span> }.into_any()
-                    } else {
-                        chips.into_any()
-                    }}
-                </div>
-            })
+            parents.sort_by_key(|a| a.1.to_lowercase());
+            Some(chip_section("\u{2190} Implied by", parents))
         }}
         </div>
 
@@ -731,7 +698,7 @@ pub fn TagDetail() -> impl IntoView {
                     }
                     if confirm_delete.get() > 0 {
                         let tag_title = move || {
-                            let tag_id = state.selected_card.get_untracked();
+                            let tag_id = state.selected_card().get_untracked();
                             let title = tag_id
                                 .and_then(|id| state.tags.get_untracked().into_iter().find(|t| t.id() == id))
                                 .map(|t| t.title().to_string())
@@ -760,7 +727,7 @@ pub fn TagDetail() -> impl IntoView {
         // Metadata
         <div class="detail-section">
         {move || {
-            let tag_id = state.selected_card.get()?;
+            let tag_id = state.selected_card().get()?;
             let tag = state.tags.get().into_iter().find(|t| t.id() == tag_id)?;
             let id_str = tag_id.to_string();
             let created = tag.created_at();
@@ -791,7 +758,7 @@ pub fn TagDetail() -> impl IntoView {
 
         // Version history
         {move || {
-            let tag_id = state.selected_card.get()?;
+            let tag_id = state.selected_card().get()?;
             Some(view! { <TagVersionHistory tag_id=tag_id /> })
         }}
     }

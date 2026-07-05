@@ -2,6 +2,7 @@ pub mod card_detail;
 pub mod card_editor;
 pub mod card_item;
 pub mod card_list;
+pub mod drag_drop;
 pub mod filter_bar;
 pub mod header;
 pub mod hooks;

@@ -3,7 +3,7 @@ use super::{Version, is_compatible};
 #[test]
 fn pkg_version_macro() {
     let v: Version = crate::pkg_version!();
-    assert_eq!(v, Version::new(3, 0, 0));
+    assert_eq!(v, Version::new(3, 1, 0));
 }
 
 #[test]

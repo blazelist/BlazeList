@@ -1,6 +1,6 @@
 use crate::components::card_item::CardItem;
 use crate::components::hooks::use_click_outside_close;
-use crate::state::store::{AppState, NewCardPosition, confirm_discard_changes, sync_query_params};
+use crate::state::store::{AppState, NewCardPosition, start_new_card};
 use blazelist_protocol::{Card, Entity};
 use leptos::prelude::*;
 use std::collections::HashMap;
@@ -90,24 +90,19 @@ pub fn CardList() -> impl IntoView {
                 .collect();
             let grand_total = all_linked.len();
 
-            // Only process cards not already in the cache.
             let existing = state.link_graph_cache.get_untracked();
-            let card_ids: Vec<Uuid> = all_linked
-                .iter()
-                .copied()
-                .filter(|id| !existing.contains_key(id))
-                .collect();
 
             // Build a map of card ID → blake3 hash of content, but only for
-            // cards that actually need it: cache entries (to detect content
-            // changes) and new cache candidates (to store alongside the
-            // entry). Previously this hashed every card in the workspace on
-            // every edit, which was O(N) blake3 work per keystroke — a
-            // noticeable regression at 1000+ cards.
+            // cards that actually need it: existing cache entries (to detect
+            // content changes) and every currently-linked card (candidates to
+            // be (re)cached, including the component members filled below).
+            // Restricting to linked + cached cards keeps this far cheaper than
+            // hashing the whole workspace on every edit, which was an O(N)
+            // blake3 regression at 1000+ cards.
             let needed_hashes: std::collections::HashSet<Uuid> = existing
                 .keys()
                 .copied()
-                .chain(card_ids.iter().copied())
+                .chain(all_linked.iter().copied())
                 .collect();
             let content_hashes: HashMap<Uuid, [u8; 32]> = cards
                 .iter()
@@ -156,6 +151,23 @@ pub fn CardList() -> impl IntoView {
                 }
             }
 
+            // Recompute the work list from the POST-invalidation cache. This is
+            // deliberately done after selective invalidation so that entries
+            // just evicted above are re-queued for recomputation in this same
+            // pass. Computing it from the pre-invalidation cache (as before)
+            // meant evicted cards were silently dropped and only refilled on a
+            // *later* `state.cards` update — so a freshly edited card kept stale
+            // transitive counts until an unrelated change or an app restart
+            // happened to trigger another pass.
+            let card_ids: Vec<Uuid> = {
+                let cache = state.link_graph_cache.get_untracked();
+                all_linked
+                    .iter()
+                    .copied()
+                    .filter(|id| !cache.contains_key(id))
+                    .collect()
+            };
+
             if card_ids.is_empty() {
                 state.link_cache_progress.set((0, 0));
                 return;
@@ -168,6 +180,10 @@ pub fn CardList() -> impl IntoView {
             let cards = std::rc::Rc::new(cards);
             let content_hashes = std::rc::Rc::new(content_hashes);
             let offset = std::rc::Rc::new(std::cell::Cell::new(0usize));
+            // Cards already (re)filled in this pass. A single expansion fills an
+            // entire connected component at once, so once a card has been
+            // filled we skip it when the outer loop reaches it again.
+            let filled = std::cell::RefCell::new(std::collections::HashSet::<Uuid>::new());
             let js_fn: std::rc::Rc<std::cell::RefCell<Option<js_sys::Function>>> =
                 std::rc::Rc::new(std::cell::RefCell::new(None));
             let js_fn2 = js_fn.clone();
@@ -189,11 +205,43 @@ pub fn CardList() -> impl IntoView {
                     if idx >= card_ids.len() {
                         break;
                     }
-                    let cid = card_ids[idx];
-                    let expanded = blazelist_client_lib::display::expand_linked_cards(cid, &cards);
-                    let hash = content_hashes.get(&cid).copied().unwrap_or([0; 32]);
-                    batch.push((cid, hash, expanded));
                     offset.set(idx + 1);
+                    let cid = card_ids[idx];
+                    // Already filled as part of an earlier card's component.
+                    if filled.borrow().contains(&cid) {
+                        continue;
+                    }
+
+                    // `expand_linked_cards` returns the whole connected
+                    // component (it follows both forward and back links), so a
+                    // single expansion lets us (re)fill every member at once:
+                    // each member's reachable set is simply the rest of the
+                    // component. Beyond avoiding redundant per-card expansions,
+                    // this overwrites *stale* entries for cards that an edit
+                    // just merged into this component but that selective
+                    // invalidation left untouched (their own content was
+                    // unchanged) — the case that previously needed an app
+                    // restart to recompute.
+                    let mut component =
+                        blazelist_client_lib::display::expand_linked_cards(cid, &cards);
+                    component.push(cid);
+                    // Filled atomically — do NOT add a mid-loop `deadline` break:
+                    // `offset` has already advanced past `cid`, and the merged-in
+                    // stale members aren't in `card_ids`, so a partial fill would
+                    // strand them with no re-trigger, reintroducing the bug above.
+                    // To bound a very large component, skip it on `component.len()`
+                    // — never partial-fill. (The idle deadline is checked between
+                    // components by the outer `while`.)
+                    for &member in &component {
+                        let reachable: Vec<Uuid> = component
+                            .iter()
+                            .copied()
+                            .filter(|id| *id != member)
+                            .collect();
+                        let hash = content_hashes.get(&member).copied().unwrap_or([0; 32]);
+                        batch.push((member, hash, reachable));
+                        filled.borrow_mut().insert(member);
+                    }
                 }
 
                 // Single bulk update — triggers reactive subscribers once.
@@ -206,7 +254,13 @@ pub fn CardList() -> impl IntoView {
                 }
 
                 let processed = offset.get();
-                let remaining = card_ids.len() - processed;
+                // A single expansion can fill several queued cards (a whole
+                // component), so derive "remaining" from what's actually been
+                // filled rather than from how far the offset has advanced.
+                let remaining = card_ids
+                    .iter()
+                    .filter(|id| !filled.borrow().contains(id))
+                    .count();
                 state.link_cache_progress.set((grand_total, remaining));
 
                 // Persist to OPFS after every batch so progress survives reloads.
@@ -306,17 +360,9 @@ pub fn CardList() -> impl IntoView {
     use_click_outside_close(new_card_dropdown, new_card_group_ref);
 
     let start_creating = move |position: NewCardPosition| {
-        if !confirm_discard_changes(&state) {
-            return;
+        if start_new_card(&state, position) {
+            new_card_dropdown.set(false);
         }
-        state.selected_card.set(None);
-        state.editing.set(false);
-        state.new_card_position.set(position);
-        state.creating_new.set(true);
-        state.settings_open.set(false);
-        state.shortcuts_open.set(false);
-        new_card_dropdown.set(false);
-        sync_query_params(&state);
     };
 
     let on_new_card = move |_| {
@@ -336,7 +382,7 @@ pub fn CardList() -> impl IntoView {
                     {move || if new_card_dropdown.get() { "\u{25B4}" } else { "\u{25BE}" }}
                 </button>
                 {move || new_card_dropdown.get().then(|| {
-                    let has_selected = state.selected_card.get_untracked().is_some();
+                    let has_selected = state.selected_card().get_untracked().is_some();
                     view! {
                         <div class="new-card-dropdown-menu">
                             <button class="save-dropdown-item" on:click=move |_| {
@@ -349,7 +395,7 @@ pub fn CardList() -> impl IntoView {
                                 class="save-dropdown-item"
                                 disabled=!has_selected
                                 on:click=move |_| {
-                                    if let Some(id) = state.selected_card.get_untracked() {
+                                    if let Some(id) = state.selected_card().get_untracked() {
                                         start_creating(NewCardPosition::Above(id));
                                     }
                                 }
@@ -358,7 +404,7 @@ pub fn CardList() -> impl IntoView {
                                 class="save-dropdown-item"
                                 disabled=!has_selected
                                 on:click=move |_| {
-                                    if let Some(id) = state.selected_card.get_untracked() {
+                                    if let Some(id) = state.selected_card().get_untracked() {
                                         start_creating(NewCardPosition::Below(id));
                                     }
                                 }

@@ -9,6 +9,8 @@ const ID_B: Uuid = Uuid::from_bytes([16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 
 const TAG_ID: Uuid = Uuid::from_bytes([
     0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x47, 0x08, 0x89, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
 ]);
+const TAG_A: Uuid = Uuid::from_bytes([0xAA; 16]);
+const TAG_B: Uuid = Uuid::from_bytes([0xBB; 16]);
 
 fn ts(ms: i64) -> DateTime<Utc> {
     DateTime::from_timestamp_millis(ms).unwrap()
@@ -153,6 +155,22 @@ fn from_parts_with_tampered_hash_fails() {
         card.due_date(),
     );
     assert!(result.is_err());
+}
+
+#[test]
+fn first_sorts_tags() {
+    // Card::first sorts the incoming tags Vec, so tags() returns sorted
+    // output even when constructed from an unsorted input (TAG_A < TAG_B).
+    let c = Card::first(ID, "c".into(), 0, vec![TAG_B, TAG_A], false, ts(0), None);
+    assert_eq!(c.tags(), &[TAG_A, TAG_B]);
+}
+
+#[test]
+fn next_sorts_tags() {
+    // Card::next applies the same tag-sorting invariant as first.
+    let c1 = Card::first(ID, "c".into(), 0, vec![], false, ts(0), None);
+    let c2 = c1.next("c".into(), 0, vec![TAG_B, TAG_A], false, ts(1), None);
+    assert_eq!(c2.tags(), &[TAG_A, TAG_B]);
 }
 
 #[test]

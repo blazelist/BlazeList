@@ -95,6 +95,72 @@ server {
 
 ---
 
+### NixOS
+
+The repo ships a flake exposing `nixosModules.default` (`services.blazelist`):
+
+```nix
+{
+  inputs.blazelist.url = "github:blazelist/BlazeList";
+
+  outputs = { nixpkgs, blazelist, ... }: {
+    nixosConfigurations.my-host = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        blazelist.nixosModules.default
+        {
+          services.blazelist = {
+            enable = true;
+            bind   = "0.0.0.0";
+            dbPath = "/var/lib/blazelist/blazelist.db";
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+For pinned, signature-verified builds, use `lib.buildFromCommit` to fetch
+and GPG-verify a commit against the in-tree release signing key, then
+build it:
+
+```nix
+services.blazelist.package = blazelist.lib.${pkgs.system}.buildFromCommit {
+  rev  = "<full-commit-hash>";
+  hash = "sha256-..."; # from `nix-prefetch-git --rev <rev> <url>`
+  # For an unsigned fork, point to its URL and opt out of verification.
+  # The resulting store-path gets an `-unverified` suffix:
+  # url    = "https://example.org/me/BlazeList.git";
+  # verify = false;
+};
+```
+
+`verify` defaults to `true` — the build fails if the commit isn't signed
+by the key at [`release-signing-key.asc`](release-signing-key.asc).
+
+For sibling units (e.g. a `miniserve` sidecar serving user-uploaded
+assets next to the main server), reuse the same systemd hardening
+attrs the module applies internally:
+
+```nix
+systemd.services.my-blazelist-sidecar.serviceConfig =
+  blazelist.lib.${pkgs.system}.hardeningSettings // {
+    ExecStart = "...";
+    ReadWritePaths = [ "/var/lib/my-sidecar" ];
+  };
+```
+
+The attrset is safe for static-binary network services with the same
+threat model (no JIT, only `AF_INET`/`AF_INET6`/`AF_UNIX`/`AF_NETLINK`,
+only `@system-service` syscalls). See
+[`nix/hardening-settings.nix`](nix/hardening-settings.nix) for the
+full caveats.
+
+See [`nix/module.nix`](nix/module.nix) for the full option set.
+
+---
+
 ## Environment Variables
 
 All environment variables are optional. Built-in defaults are used when not set.
@@ -105,21 +171,25 @@ These override default values for WASM client settings. Served via the `/config`
 
 | Variable | Description | Default |
 |---|---|---|
-| `BLAZELIST_DEFAULT_AUTO_SAVE` | Auto-save cards while editing | `false` |
-| `BLAZELIST_DEFAULT_AUTO_SAVE_DELAY` | Auto-save delay in seconds | `5` |
 | `BLAZELIST_DEFAULT_AUTO_SYNC` | Periodic sync check with server | `true` |
-| `BLAZELIST_DEFAULT_AUTO_SYNC_INTERVAL` | Periodic sync check interval in seconds | `10` |
-| `BLAZELIST_DEFAULT_DEBOUNCE_ENABLED` | Enable push debounce (instant push when disabled) | `false` |
-| `BLAZELIST_DEFAULT_DEBOUNCE_DELAY` | Push debounce delay in seconds | `5` |
+| `BLAZELIST_DEFAULT_AUTO_SYNC_INTERVAL_MS` | Periodic sync check interval in milliseconds | `10000` |
+| `BLAZELIST_DEFAULT_PRIORITY_DEBOUNCE_ENABLED` | Coalesce bursts of card moves into one push | `true` |
+| `BLAZELIST_DEFAULT_PRIORITY_DEBOUNCE_DELAY_MS` | Card-move debounce window in milliseconds | `3000` |
 | `BLAZELIST_DEFAULT_KEYBOARD_SHORTCUTS` | Enable keyboard shortcuts | `true` |
 | `BLAZELIST_DEFAULT_SHOW_PREVIEW` | Show markdown preview when editing | `false` |
 | `BLAZELIST_DEFAULT_SEARCH_TAGS` | Include tag names in search | `true` |
 | `BLAZELIST_DEFAULT_UI_SCALE` | UI scale percentage | `100` |
 | `BLAZELIST_DEFAULT_UI_DENSITY` | UI density mode (`compact` or `cozy`) | `compact` |
 | `BLAZELIST_DEFAULT_TOUCH_SWIPE` | Enable touch swipe gestures on cards | `false` |
-| `BLAZELIST_DEFAULT_SWIPE_THRESHOLD_RIGHT` | Swipe right trigger distance in px | `100` |
-| `BLAZELIST_DEFAULT_SWIPE_THRESHOLD_LEFT` | Swipe left trigger distance in px | `90` |
+| `BLAZELIST_DEFAULT_SWIPE_THRESHOLD_RIGHT_CYCLE` | Swipe right trigger distance in px in `cycle` swipe-left mode | `135` |
+| `BLAZELIST_DEFAULT_SWIPE_THRESHOLD_RIGHT_LEVELS` | Swipe right trigger distance in px in `levels` swipe-left mode | `135` |
+| `BLAZELIST_DEFAULT_SWIPE_THRESHOLD_LEFT_CYCLE` | Swipe left trigger distance in px in `cycle` swipe-left mode | `115` |
+| `BLAZELIST_DEFAULT_SWIPE_THRESHOLD_LEFT_LEVELS` | Swipe left trigger distance in px in `levels` swipe-left mode (also marks the start of the Today zone) | `95` |
 | `BLAZELIST_DEFAULT_SWIPE_UNDO_TIMEOUT_MS` | Swipe undo toast dismiss timeout in milliseconds | `4000` |
+| `BLAZELIST_DEFAULT_SWIPE_LEFT_MODE` | Swipe-left mode: `levels` (distance picks the action) or `cycle` (each swipe advances) | `levels` |
+| `BLAZELIST_DEFAULT_SWIPE_LEVELS_ZONE_TODAY_WIDTH` | Levels-mode zone width (px) for the Today action (additive: zones extend outward from `SWIPE_THRESHOLD_LEFT_LEVELS`) | `75` |
+| `BLAZELIST_DEFAULT_SWIPE_LEVELS_ZONE_TOMORROW_WIDTH` | Levels-mode zone width (px) for the Tomorrow action | `60` |
+| `BLAZELIST_DEFAULT_SWIPE_LEVELS_ZONE_SOON_WIDTH` | Levels-mode zone width (px) for the In-2-days action; beyond it is the open-ended Clear-due region | `55` |
 | `BLAZELIST_DEFAULT_CLEAR_TAG_SEARCH` | Clear tag search input after selecting a tag | `true` |
 | `BLAZELIST_DEFAULT_OVERRIDE_SIDEBAR_WIDTH` | Enable sidebar width override | `false` |
 | `BLAZELIST_DEFAULT_SIDEBAR_WIDTH` | Default sidebar width in px (when override enabled) | `180` |
@@ -129,6 +199,11 @@ These override default values for WASM client settings. Served via the `/config`
 | `BLAZELIST_DEFAULT_SHOW_LIST_LINK_COUNTS` | Show transitive link counts in card list (computed in background) | `false` |
 | `BLAZELIST_DEFAULT_SHOW_DUE_TODAY_BUTTON` | Show Today quick-filter button beside due date dropdown | `true` |
 | `BLAZELIST_DEFAULT_SHOW_CARD_TIME` | Show the card-list relative-time label ("x ago") on each row | `false` |
+| `BLAZELIST_DEFAULT_EXTINGUISH_ON_DUE_SET` | Extinguish a Blazed card when its due date is set or changed | `true` |
+| `BLAZELIST_DEFAULT_EXTINGUISH_ON_DUE_CLEAR` | Also extinguish a Blazed card when its due date is cleared | `true` |
+| `BLAZELIST_DEFAULT_CLEAR_DUE_ON_BLAZE` | Clear a card's due date when blazing it | `true` |
+| `BLAZELIST_DEFAULT_DRAG_AND_DROP_ENABLED` | Enable drag-and-drop card reordering in the list (active only when sorted by priority) | `false` |
+| `BLAZELIST_DEFAULT_DRAG_AND_DROP_MODE` | Drag activation: `anywhere` (pointerdown anywhere on the card, desktop-friendly) or `handle` (the card's leading number only, mobile-friendly) | `anywhere` |
 
 Boolean values are compared against `"true"` (case-sensitive). Numeric values must be valid unsigned integers.
 
@@ -139,7 +214,7 @@ services:
   blazelist:
     environment:
       BLAZELIST_DEFAULT_AUTO_SYNC: "false"
-      BLAZELIST_DEFAULT_AUTO_SAVE_DELAY: "10"
+      BLAZELIST_DEFAULT_AUTO_SYNC_INTERVAL_MS: "30000"
 ```
 
 ### SQLite Tuning

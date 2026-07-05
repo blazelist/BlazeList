@@ -9,34 +9,25 @@ use crate::components::tag_detail::TagDetail;
 use crate::components::timestamp::Timestamp;
 use crate::components::toast::show_error_toast;
 use crate::components::version_history::VersionHistory;
+use crate::state::pending_priority;
 use crate::state::store::{
-    AppState, DueDatePreset, DueDateStatus, NewCardPosition, confirm_discard_changes,
-    due_date_status, format_due_date_badge, format_due_date_display, get_client, select_card_view,
+    AppState, DueDatePreset, DueDateStatus, NewCardPosition, apply_linked_card_filter,
+    close_editor, confirm_discard_changes, due_date_status, finish_creation_flow,
+    format_due_date_badge, format_due_date_display, get_client, open_editor, set_selection,
     sync_query_params, tag_chip_style,
 };
-use crate::state::sync::{push_card_or_queue, push_versions_or_queue};
+use crate::state::sync::push_card_or_queue;
 use blazelist_client_lib::client::Client as _;
 use blazelist_client_lib::display::LinkCounts;
 use blazelist_client_lib::error::ClientError;
-use blazelist_client_lib::priority::{
-    InsertPosition, Placement, build_shifted_versions, move_card,
-};
+use blazelist_client_lib::priority::{InsertPosition, Placement, move_card};
 use blazelist_client_lib::tag_graph::TagGraph;
-use blazelist_protocol::{Card, CardFilter, Entity, PushItem, Tag, Utc};
+use blazelist_protocol::{Card, Entity, Tag, Utc};
 use leptos::prelude::*;
 use uuid::Uuid;
 use wasm_bindgen::JsCast;
-use wasm_bindgen::prelude::*;
 
 const CARD_LINK_PREVIEW_MAX_WIDTH: usize = 80;
-
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_name = "setTimeout")]
-    fn set_timeout_js(handler: &js_sys::Function, timeout: i32) -> i32;
-    #[wasm_bindgen(js_name = "clearTimeout")]
-    fn clear_timeout_js(handle: i32);
-}
 
 fn render_markdown(
     content: &str,
@@ -57,107 +48,9 @@ fn render_markdown(
     blazelist_client_lib::display::wrap_code_blocks_with_copy_button(&html)
 }
 
-/// Flush pending debounced versions (fire-and-forget).
-pub(crate) fn flush_pending(state: &AppState) {
-    let handle = state.debounce_timeout_handle;
-    let pending = state.pending_versions;
-    let old = handle.get_untracked();
-    if old != 0 {
-        clear_timeout_js(old);
-        handle.set(0);
-        state.push_debounce_countdown.set(0);
-    }
-    let versions = pending.get_untracked();
-    pending.set(Vec::new());
-    if !versions.is_empty() {
-        let state = *state;
-        leptos::task::spawn_local(async move {
-            push_versions_or_queue(&state, versions).await;
-        });
-    }
-}
-
-/// Drain pending debounced versions and return them.
-fn drain_pending(state: &AppState) -> Vec<Card> {
-    let handle = state.debounce_timeout_handle;
-    let pending = state.pending_versions;
-    let old = handle.get_untracked();
-    if old != 0 {
-        clear_timeout_js(old);
-        handle.set(0);
-        state.push_debounce_countdown.set(0);
-    }
-    let versions = pending.get_untracked();
-    pending.set(Vec::new());
-    versions
-}
-
-/// Schedule a debounced push of a card version.
-pub(crate) fn schedule_push(updated: Card, state: AppState) {
-    let pending = state.pending_versions;
-    let pending_card_id = state.pending_card_id;
-    let handle = state.debounce_timeout_handle;
-
-    let card_id = updated.id();
-    state.cards.update(|cards| {
-        cards.retain(|c| c.id() != card_id);
-        cards.push(updated.clone());
-    });
-
-    if pending_card_id.get_untracked() != Some(card_id) {
-        let old_versions = pending.get_untracked();
-        if !old_versions.is_empty() {
-            pending.set(Vec::new());
-            leptos::task::spawn_local(async move {
-                push_versions_or_queue(&state, old_versions).await;
-            });
-        }
-    }
-    pending_card_id.set(Some(card_id));
-    pending.update(|v| v.push(updated));
-
-    let old = handle.get_untracked();
-    if old != 0 {
-        clear_timeout_js(old);
-    }
-
-    // When debounce is disabled, push immediately without a timeout.
-    if !state.debounce_enabled.get_untracked() {
-        let versions = pending.get_untracked();
-        pending.set(Vec::new());
-        handle.set(0);
-        pending_card_id.set(None);
-        state.push_debounce_countdown.set(0);
-        if !versions.is_empty() {
-            leptos::task::spawn_local(async move {
-                push_versions_or_queue(&state, versions).await;
-            });
-        }
-        return;
-    }
-
-    let cb = Closure::once(move || {
-        let versions = pending.get_untracked();
-        pending.set(Vec::new());
-        handle.set(0);
-        pending_card_id.set(None);
-        state.push_debounce_countdown.set(0);
-        if !versions.is_empty() {
-            leptos::task::spawn_local(async move {
-                push_versions_or_queue(&state, versions).await;
-            });
-        }
-    });
-    let func = cb.into_js_value();
-    let delay_secs = state.debounce_delay_secs.get_untracked();
-    let delay_ms = delay_secs as i32 * 1000;
-    state.push_debounce_countdown.set(delay_secs);
-    let new_handle = set_timeout_js(func.unchecked_ref(), delay_ms);
-    handle.set(new_handle);
-}
-
-/// Apply a move placement result: update the moved card locally and push
-/// shifted cards via batch if rebalancing occurred.
+/// Enqueue a move into the priority-debounce pipeline. `current` and
+/// `all_cards` must be the *pre-burst* snapshots — the burst anchors each
+/// sibling's version chain on its pre-burst base.
 pub(crate) fn apply_move_placement(
     placement: Placement,
     current: &Card,
@@ -166,49 +59,17 @@ pub(crate) fn apply_move_placement(
 ) {
     match placement {
         Placement::Simple(new_priority) => {
-            let updated = current.next(
-                current.content().to_string(),
-                new_priority,
-                current.tags().to_vec(),
-                current.blazed(),
-                Utc::now(),
-                current.due_date(),
-            );
-            schedule_push(updated, state);
+            pending_priority::enqueue_move(&state, current, new_priority, &[]);
         }
         Placement::Rebalanced { priority, shifted } => {
-            let updated = current.next(
-                current.content().to_string(),
-                priority,
-                current.tags().to_vec(),
-                current.blazed(),
-                Utc::now(),
-                current.due_date(),
-            );
-            let shifted_cards = build_shifted_versions(&shifted, all_cards);
-
-            // Update local state
-            state.upsert_card(updated.clone());
-            for sc in &shifted_cards {
-                state.upsert_card(sc.clone());
-            }
-
-            // Push batch: shifted cards + moved card.
-            // Batch pushes require a connection; queue the moved card on failure.
-            leptos::task::spawn_local(async move {
-                if let Some(client) = get_client() {
-                    let mut items: Vec<PushItem> = shifted_cards
-                        .into_iter()
-                        .map(|c| PushItem::Cards(vec![c]))
-                        .collect();
-                    items.push(PushItem::Cards(vec![updated.clone()]));
-                    match client.push_batch(items).await {
-                        Ok(_) => return,
-                        Err(e) => tracing::warn!(%e, "Batch push failed, queuing moved card"),
-                    }
-                }
-                push_card_or_queue(&state, updated).await;
-            });
+            let siblings_with_prev: Vec<(Card, i64)> = shifted
+                .iter()
+                .filter_map(|(sibling_id, new_priority)| {
+                    let prev = all_cards.iter().find(|c| c.id() == *sibling_id)?.clone();
+                    Some((prev, *new_priority))
+                })
+                .collect();
+            pending_priority::enqueue_move(&state, current, priority, &siblings_with_prev);
         }
     }
 }
@@ -224,12 +85,15 @@ pub fn CardDetail() -> impl IntoView {
     let due_group_ref = NodeRef::<leptos::html::Div>::new();
     use_click_outside_close(due_dropdown_open, due_group_ref);
 
+    // Picker that lets the user re-aim a new card's insertion position
+    // from inside the editor — only visible before the card is first
+    // saved (see render site below).
+    let position_dropdown_open = RwSignal::new(false);
+    let position_group_ref = NodeRef::<leptos::html::Div>::new();
+    use_click_outside_close(position_dropdown_open, position_group_ref);
+
     on_cleanup(move || {
-        let old = state.debounce_timeout_handle.get_untracked();
-        if old != 0 {
-            clear_timeout_js(old);
-        }
-        state.pending_versions.set(Vec::new());
+        pending_priority::flush(&state);
     });
 
     // Watch for keyboard-triggered delete request.
@@ -237,9 +101,9 @@ pub fn CardDetail() -> impl IntoView {
         if state.delete_requested.get() {
             state.delete_requested.set(false);
             // Only trigger if a card (not tag) is selected and not editing.
-            if state.selected_card.get_untracked().is_some()
-                && !state.editing.get_untracked()
-                && !state.creating_new.get_untracked()
+            if state.selected_card().get_untracked().is_some()
+                && !state.editing().get_untracked()
+                && !state.creating_new().get_untracked()
             {
                 confirm_delete.set(1);
             }
@@ -247,29 +111,33 @@ pub fn CardDetail() -> impl IntoView {
     });
 
     let close_action = move || {
-        if !confirm_discard_changes(&state) {
+        if !set_selection(&state, None) {
             return;
         }
-        flush_pending(&state);
-        state.selected_card.set(None);
-        state.creating_new.set(false);
-        state.creating_new_tag.set(false);
-        state.editing.set(false);
         state.has_unsaved_changes.set(false);
         confirm_delete.set(0);
-        sync_query_params(&state);
     };
     let on_close = move |_: web_sys::MouseEvent| close_action();
 
     view! {
         {move || {
             // --- Creating new card ---
-            if state.creating_new.get() {
-                let position_hint = move || {
+            if state.creating_new().get() {
+                // Snapshot the original Above/Below target UUID so we can keep
+                // offering "Add above …" / "Add below …" in the picker even
+                // after the user flips to Top/Bottom and back. Without this
+                // snapshot the options would vanish as soon as the live
+                // position no longer carries an id, leaving no way to go back.
+                let initial_ref_id: Option<Uuid> =
+                    match state.new_card_position.get_untracked() {
+                        NewCardPosition::Above(id) | NewCardPosition::Below(id) => Some(id),
+                        _ => None,
+                    };
+                // Use get_untracked when reading `state.cards` — auto-sync
+                // replacing cards must not destroy the editor and lose
+                // unsaved changes.
+                let position_label = move || {
                     let pos = state.new_card_position.get();
-                    // Use get_untracked to avoid the parent DynChild tracking
-                    // `state.cards` — auto-sync replacing cards must not
-                    // destroy the editor and lose unsaved changes.
                     let cards = state.cards.get_untracked();
                     match pos {
                         NewCardPosition::Bottom => "Adding to bottom".to_string(),
@@ -292,35 +160,96 @@ pub fn CardDetail() -> impl IntoView {
                         }
                     }
                 };
-                // If auto-save has already persisted this card, recover it
-                // so the editor survives a potential DynChild re-render.
-                let existing_card = state.selected_card.get_untracked()
-                    .and_then(|id| state.cards.get_untracked().into_iter().find(|c| c.id() == id));
+                // Resolve the snapshotted target into (id, preview). Stays
+                // stable across Top/Bottom flips because it ignores the
+                // live position.
+                let reference_card = move || -> Option<(Uuid, String)> {
+                    initial_ref_id.and_then(|id| {
+                        let cards = state.cards.get_untracked();
+                        cards.iter().find(|c| c.id() == id)
+                            .and_then(|c| blazelist_client_lib::display::card_preview(c.content(), 40))
+                            .map(|p| (id, p))
+                    })
+                };
                 let on_save_cb = move || {
-                    state.creating_new.set(false);
-                    state.new_card_prefill.set(None);
+                    // Post-save cleanup of creation-only state (prefill etc.);
+                    // `card_editor.rs` already called set_selection so creating_new
+                    // is already cleared.
+                    finish_creation_flow(&state);
                 };
                 let on_cancel_cb = Callback::new(move |_: ()| {
                     if !confirm_discard_changes(&state) { return; }
-                    state.creating_new.set(false);
-                    state.new_card_prefill.set(None);
+                    finish_creation_flow(&state);
                 });
-                let editor_view = if let Some(card) = existing_card {
-                    view! { <CardEditor editing_card=card on_save=on_save_cb on_cancel=on_cancel_cb /> }.into_any()
-                } else {
-                    view! { <CardEditor on_save=on_save_cb on_cancel=on_cancel_cb /> }.into_any()
-                };
+                let editor_view = view! { <CardEditor on_save=on_save_cb on_cancel=on_cancel_cb /> }.into_any();
                 return Some(view! {
                     <div class="card-detail">
                         <div class="detail-header">
                             <div class="detail-header-left">
-                                {move || if state.selected_card.get().is_some() {
+                                {move || if state.selected_card().get().is_some() {
                                     view! { <span class="detail-status editing">"Editing"</span> }.into_any()
                                 } else {
                                     view! { <span class="detail-status active">"New Card"</span> }.into_any()
                                 }}
-                                {move || state.selected_card.get().is_none().then(|| view! {
-                                    <span class="new-card-position-hint">{position_hint}</span>
+                                {move || state.selected_card().get().is_none().then(|| view! {
+                                    <div class="new-card-position-picker" node_ref=position_group_ref>
+                                        <button
+                                            class="new-card-position-toggle"
+                                            type="button"
+                                            on:click=move |ev: web_sys::MouseEvent| {
+                                                ev.stop_propagation();
+                                                position_dropdown_open.update(|v| *v = !*v);
+                                            }
+                                        >
+                                            <span class="new-card-position-hint">{position_label}</span>
+                                            <span class="new-card-position-caret">
+                                                {move || if position_dropdown_open.get() { "\u{25B4}" } else { "\u{25BE}" }}
+                                            </span>
+                                        </button>
+                                        {move || position_dropdown_open.get().then(|| {
+                                            let ref_card = reference_card();
+                                            view! {
+                                                <div class="new-card-dropdown-menu">
+                                                    <button
+                                                        class="save-dropdown-item"
+                                                        class:active=move || matches!(state.new_card_position.get(), NewCardPosition::Bottom)
+                                                        on:click=move |_| {
+                                                            state.new_card_position.set(NewCardPosition::Bottom);
+                                                            position_dropdown_open.set(false);
+                                                        }
+                                                    >"Add to bottom"</button>
+                                                    <button
+                                                        class="save-dropdown-item"
+                                                        class:active=move || matches!(state.new_card_position.get(), NewCardPosition::Top)
+                                                        on:click=move |_| {
+                                                            state.new_card_position.set(NewCardPosition::Top);
+                                                            position_dropdown_open.set(false);
+                                                        }
+                                                    >"Add to top"</button>
+                                                    {ref_card.clone().map(|(ref_id, preview)| view! {
+                                                        <button
+                                                            class="save-dropdown-item"
+                                                            class:active=move || matches!(state.new_card_position.get(), NewCardPosition::Above(_))
+                                                            on:click=move |_| {
+                                                                state.new_card_position.set(NewCardPosition::Above(ref_id));
+                                                                position_dropdown_open.set(false);
+                                                            }
+                                                        >{format!("Add above \u{201c}{preview}\u{201d}")}</button>
+                                                    })}
+                                                    {ref_card.map(|(ref_id, preview)| view! {
+                                                        <button
+                                                            class="save-dropdown-item"
+                                                            class:active=move || matches!(state.new_card_position.get(), NewCardPosition::Below(_))
+                                                            on:click=move |_| {
+                                                                state.new_card_position.set(NewCardPosition::Below(ref_id));
+                                                                position_dropdown_open.set(false);
+                                                            }
+                                                        >{format!("Add below \u{201c}{preview}\u{201d}")}</button>
+                                                    })}
+                                                </div>
+                                            }
+                                        })}
+                                    </div>
                                 })}
                                 {move || state.has_unsaved_changes.get().then(|| view! {
                                     <span class="unsaved-indicator">"(unsaved)"</span>
@@ -334,7 +263,7 @@ pub fn CardDetail() -> impl IntoView {
             }
 
             // --- Creating new tag ---
-            if state.creating_new_tag.get() {
+            if state.creating_new_tag().get() {
                 return Some(view! {
                     <div class="card-detail">
                         <NewTagForm on_close=move |()| close_action() />
@@ -343,7 +272,7 @@ pub fn CardDetail() -> impl IntoView {
             }
 
             // --- Selected card ---
-            let selected_id = state.selected_card.get();
+            let selected_id = state.selected_card().get();
             selected_id?;
             let selected_id = selected_id.unwrap();
 
@@ -362,7 +291,7 @@ pub fn CardDetail() -> impl IntoView {
             // Don't reactively track `cards` — auto-sync updating the
             // signal would destroy the component and lose version history
             // expansion state (and editor content when editing).
-            let editing_now = state.editing.get_untracked();
+            let editing_now = state.editing().get_untracked();
             let card = state.cards.get_untracked()
                 .into_iter().find(|c| c.id() == selected_id)
                 .or_else(|| {
@@ -469,7 +398,7 @@ pub fn CardDetail() -> impl IntoView {
                 let tag = all_tags.iter().find(|t| t.id() == *tid)?;
                 Some((*tid, tag.title().to_string(), tag.color()))
             }).collect();
-            card_tags_with_ids.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+            card_tags_with_ids.sort_by_key(|a| a.1.to_lowercase());
 
             let reorder_disabled;
             let filtered;
@@ -508,39 +437,40 @@ pub fn CardDetail() -> impl IntoView {
                 let current = state.cards.get_untracked().into_iter().find(|c| c.id() == card_id);
                 let Some(current) = current else { return };
                 if current.due_date() == new_due { return; }
+                let new_blazed = state.blazed_after_due_change(current.blazed(), new_due);
                 let next = current.next(
                     current.content().to_string(),
                     current.priority(),
                     current.tags().to_vec(),
-                    current.blazed(),
+                    new_blazed,
                     Utc::now(),
                     new_due,
                 );
                 state.upsert_card(next.clone());
                 let state = state;
                 leptos::task::spawn_local(async move {
+                    pending_priority::flush_now(&state).await;
                     push_card_or_queue(&state, next).await;
                 });
             };
 
             let on_blaze = move |_| {
-                let pending = drain_pending(&state);
                 let current = state.cards.get_untracked().into_iter().find(|c| c.id() == card_id);
                 let Some(current) = current else { return };
+                let new_blazed = !current.blazed();
+                let new_due = state.due_after_blaze_change(current.due_date(), current.blazed(), new_blazed);
                 let next = current.next(
                     current.content().to_string(),
                     current.priority(),
                     current.tags().to_vec(),
-                    !current.blazed(),
+                    new_blazed,
                     Utc::now(),
-                    current.due_date(),
+                    new_due,
                 );
                 state.upsert_card(next.clone());
                 let state = state;
                 leptos::task::spawn_local(async move {
-                    if !pending.is_empty() {
-                        push_versions_or_queue(&state, pending).await;
-                    }
+                    pending_priority::flush_now(&state).await;
                     push_card_or_queue(&state, next).await;
                 });
             };
@@ -550,13 +480,12 @@ pub fn CardDetail() -> impl IntoView {
             };
 
             let do_confirm_delete = move || {
-                let pending = drain_pending(&state);
+                // Drop this card's burst — a push would resurrect it on the
+                // server. Other cards' bursts were flushed when selection moved here.
+                pending_priority::discard_for(&state, card_id);
                 let state = state;
                 confirm_delete.set(0);
                 leptos::task::spawn_local(async move {
-                    if !pending.is_empty() {
-                        push_versions_or_queue(&state, pending).await;
-                    }
                     // Delete requires a live connection (not queued offline).
                     let Some(client) = get_client() else {
                         show_error_toast(state, "Can't delete cards while offline", 3000);
@@ -583,8 +512,7 @@ pub fn CardDetail() -> impl IntoView {
                         }
                     }
                     state.cards.update(|cards| cards.retain(|c| c.id() != card_id));
-                    state.selected_card.set(None);
-                    sync_query_params(&state);
+                    set_selection(&state, None);
                 });
             };
 
@@ -649,7 +577,7 @@ pub fn CardDetail() -> impl IntoView {
                 if let Some(current) = current {
                     let total = filtered.len();
                     if total == 0 { return; }
-                    let target_pos: usize = input_val.trim().parse().unwrap_or(1).max(1).min(total);
+                    let target_pos: usize = input_val.trim().parse().unwrap_or(1).clamp(1, total);
                     let cur_idx = match filtered.iter().position(|c| c.id() == card_id) {
                         Some(i) => i,
                         None => return,
@@ -661,8 +589,18 @@ pub fn CardDetail() -> impl IntoView {
             };
 
             let on_edit = move |_| {
-                flush_pending(&state);
-                state.editing.set(true);
+                open_editor(&state);
+            };
+
+            let content_for_copy = content_raw.clone();
+            let on_copy_content = move |_| {
+                copy_to_clipboard(&content_for_copy);
+                let preview = blazelist_client_lib::display::card_preview(&content_for_copy, 30);
+                let msg = match preview {
+                    Some(p) => format!("Copied content \u{2014} {p}"),
+                    None => "Copied content".to_string(),
+                };
+                show_copy_toast(state, &msg);
             };
 
             let on_content_click = move |ev: web_sys::MouseEvent| {
@@ -677,13 +615,7 @@ pub fn CardDetail() -> impl IntoView {
                         && let Some(card_id_str) = link_el.get_attribute("data-card-id")
                         && let Ok(target_id) = card_id_str.parse::<uuid::Uuid>()
                     {
-                        if !confirm_discard_changes(&state) {
-                            return;
-                        }
-                        flush_pending(&state);
-                        state.selected_card.set(Some(target_id));
-                        state.editing.set(false);
-                        sync_query_params(&state);
+                        set_selection(&state, Some(target_id));
                         return;
                     }
 
@@ -768,7 +700,11 @@ pub fn CardDetail() -> impl IntoView {
                     Utc::now(),
                     current_card.due_date(),
                 );
-                schedule_push(updated, state);
+                state.upsert_card(updated.clone());
+                leptos::task::spawn_local(async move {
+                    pending_priority::flush_now(&state).await;
+                    push_card_or_queue(&state, updated).await;
+                });
             };
             let card_for_editor = card.clone();
 
@@ -881,13 +817,7 @@ pub fn CardDetail() -> impl IntoView {
                                             let full_id = lid.to_string();
                                             view! {
                                                 <li class=item_class on:click=move |_| {
-                                                    if !confirm_discard_changes(&state) {
-                                                        return;
-                                                    }
-                                                    flush_pending(&state);
-                                                    state.selected_card.set(Some(lid));
-                                                    state.editing.set(false);
-                                                    sync_query_params(&state);
+                                                    set_selection(&state, Some(lid));
                                                 } title=full_id>
                                                     <span class=dir_class title=dir_tip>{direction}</span>
                                                     <span class="linked-card-id">{short_id}</span>
@@ -900,12 +830,7 @@ pub fn CardDetail() -> impl IntoView {
                                         <button class="btn-filter-linked" on:click=move |_| {
                                             let mut ids = all_linked_ids_for_filter.clone();
                                             ids.insert(0, card_id);
-                                            state.linked_card_filter.set(ids);
-                                            state.filter.set(CardFilter::All);
-                                            state.search_query.set(String::new());
-                                            state.tag_filter.set(Vec::new());
-                                            state.no_tags_filter.set(false);
-                                            sync_query_params(&state);
+                                            apply_linked_card_filter(&state, ids);
                                         } title="Filter by all linked cards">"Filter Linked"</button>
                                         <button class="btn-filter-linked-dropdown" on:click=move |_| {
                                             filter_dropdown_open.update(|v| *v = !*v);
@@ -927,35 +852,20 @@ pub fn CardDetail() -> impl IntoView {
                                                     <button class="filter-linked-option" on:click=move |_| {
                                                         let mut ids = fwd.clone();
                                                         ids.insert(0, card_id);
-                                                        state.linked_card_filter.set(ids);
-                                                        state.filter.set(CardFilter::All);
-                                                        state.search_query.set(String::new());
-                                                        state.tag_filter.set(Vec::new());
-                                                        state.no_tags_filter.set(false);
                                                         filter_dropdown_open.set(false);
-                                                        sync_query_params(&state);
+                                                        apply_linked_card_filter(&state, ids);
                                                     }>"\u{2192} Forward links only"</button>
                                                     <button class="filter-linked-option" on:click=move |_| {
                                                         let mut ids = bck.clone();
                                                         ids.insert(0, card_id);
-                                                        state.linked_card_filter.set(ids);
-                                                        state.filter.set(CardFilter::All);
-                                                        state.search_query.set(String::new());
-                                                        state.tag_filter.set(Vec::new());
-                                                        state.no_tags_filter.set(false);
                                                         filter_dropdown_open.set(false);
-                                                        sync_query_params(&state);
+                                                        apply_linked_card_filter(&state, ids);
                                                     }>"\u{2190} Back links only"</button>
                                                     <button class="filter-linked-option" on:click=move |_| {
                                                         let mut ids = direct_ids.clone();
                                                         ids.insert(0, card_id);
-                                                        state.linked_card_filter.set(ids);
-                                                        state.filter.set(CardFilter::All);
-                                                        state.search_query.set(String::new());
-                                                        state.tag_filter.set(Vec::new());
-                                                        state.no_tags_filter.set(false);
                                                         filter_dropdown_open.set(false);
-                                                        sync_query_params(&state);
+                                                        apply_linked_card_filter(&state, ids);
                                                     }>"\u{2194} Direct (forward + back)"</button>
                                                 </div>
                                             }
@@ -968,7 +878,7 @@ pub fn CardDetail() -> impl IntoView {
                 }
             };
 
-            let result = if state.editing.get() {
+            let result = if state.editing().get() {
                 view! {
                     <div class="card-detail">
                         <div class="detail-header">
@@ -982,11 +892,8 @@ pub fn CardDetail() -> impl IntoView {
                         </div>
                         <CardEditor
                             editing_card=card_for_editor
-                            on_save=move || state.editing.set(false)
-                            on_cancel=Callback::new(move |_: ()| {
-                                if !confirm_discard_changes(&state) { return; }
-                                state.editing.set(false);
-                            })
+                            on_save=move || { close_editor(&state); }
+                            on_cancel=Callback::new(move |_: ()| { close_editor(&state); })
                         />
                     </div>
                 }.into_any()
@@ -995,7 +902,27 @@ pub fn CardDetail() -> impl IntoView {
                     <div class="card-detail">
                         <div class="detail-header">
                             <span class=move || if is_blazed.get() { "detail-status blazed" } else { "detail-status active" }>{move || if is_blazed.get() { "Blazed" } else { "Active" }}</span>
-                            <div class="detail-header-nav">
+                            <div class="detail-header-actions">
+                                // Visual order via flex row-reverse is
+                                // [copy][prev][next][close]; DOM is reversed
+                                // so that copy (DOM-last) is the first to
+                                // wrap on narrow viewports.
+                                <button class="detail-nav-btn" on:click=on_close title="Close">"x"</button>
+                                <button
+                                    class="detail-nav-btn"
+                                    title="Next card (j)"
+                                    on:click=move |_| {
+                                        let filtered = state.filtered_cards().get_untracked();
+                                        let pos = filtered.iter().position(|c| c.id() == card_id);
+                                        if let Some(i) = pos && i + 1 < filtered.len() {
+                                            set_selection(&state, Some(filtered[i + 1].id()));
+                                        }
+                                    }
+                                    disabled=move || {
+                                        let filtered = state.filtered_cards().get_untracked();
+                                        filtered.last().map(|c| c.id()) == Some(card_id)
+                                    }
+                                >"\u{203A}"</button>
                                 <button
                                     class="detail-nav-btn"
                                     title="Previous card (k)"
@@ -1003,7 +930,7 @@ pub fn CardDetail() -> impl IntoView {
                                         let filtered = state.filtered_cards().get_untracked();
                                         let pos = filtered.iter().position(|c| c.id() == card_id);
                                         if let Some(i) = pos && i > 0 {
-                                            select_card_view(&state, filtered[i - 1].id());
+                                            set_selection(&state, Some(filtered[i - 1].id()));
                                         }
                                     }
                                     disabled=move || {
@@ -1013,28 +940,21 @@ pub fn CardDetail() -> impl IntoView {
                                 >"\u{2039}"</button>
                                 <button
                                     class="detail-nav-btn"
-                                    title="Next card (j)"
-                                    on:click=move |_| {
-                                        let filtered = state.filtered_cards().get_untracked();
-                                        let pos = filtered.iter().position(|c| c.id() == card_id);
-                                        if let Some(i) = pos && i + 1 < filtered.len() {
-                                            select_card_view(&state, filtered[i + 1].id());
-                                        }
-                                    }
-                                    disabled=move || {
-                                        let filtered = state.filtered_cards().get_untracked();
-                                        filtered.last().map(|c| c.id()) == Some(card_id)
-                                    }
-                                >"\u{203A}"</button>
+                                    title="Copy card content to clipboard"
+                                    on:click=on_copy_content
+                                >"\u{29C9}"</button>
                             </div>
-                            <button class="detail-close" on:click=on_close>"x"</button>
                         </div>
                         <div class="card-content" node_ref=content_node_ref inner_html=content_html on:click=on_content_click></div>
-                        {task_progress.map(|(done, total)| view! {
-                            <div class="detail-task-progress">
-                                <span class="meta-label">"Tasks"</span>
-                                <span class="meta-value">{format!("{done}/{total}")}</span>
-                            </div>
+                        {task_progress.map(|(done, total)| {
+                            // total > 0 is guaranteed when task_progress is Some.
+                            let pct = (done as f64 / total as f64 * 100.0).round() as u32;
+                            view! {
+                                <div class="detail-task-progress">
+                                    <span class="meta-label">"Tasks"</span>
+                                    <span class="meta-value">{format!("{done}/{total} ({pct}%)")}</span>
+                                </div>
+                            }
                         })}
 
                         // ── Tags (inline, only when present) ──
@@ -1312,9 +1232,11 @@ fn NewTagForm(on_close: impl Fn(()) + Copy + 'static) -> impl IntoView {
             }
             let tag_id = tag.id();
             state.tags.update(|tags| tags.push(tag));
-            state.creating_new_tag.set(false);
-            state.selected_card.set(Some(tag_id));
-            sync_query_params(&state);
+            // Clear `has_unsaved_changes` synchronously — Leptos Effects
+            // are async-scheduled, so the dirty Effect wouldn't propagate
+            // before `set_selection` reads the flag and prompts to discard.
+            state.has_unsaved_changes.set(false);
+            set_selection(&state, Some(tag_id));
         });
     };
 
@@ -1322,7 +1244,7 @@ fn NewTagForm(on_close: impl Fn(()) + Copy + 'static) -> impl IntoView {
         if !confirm_discard_changes(&state) {
             return;
         }
-        state.creating_new_tag.set(false);
+        finish_creation_flow(&state);
         sync_query_params(&state);
     };
 

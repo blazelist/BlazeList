@@ -9,6 +9,8 @@ This document covers the local development workflow for BlazeList.
 - [Trunk](https://trunkrs.dev/) (WASM build tool) — install with `cargo install trunk`
 - `wasm32-unknown-unknown` target — install with `rustup target add wasm32-unknown-unknown`
 
+Or get the whole toolchain via the bundled [Nix](https://nixos.org/) flake — see [Nix](#nix) below.
+
 ## Quick Start
 
 ```bash
@@ -113,6 +115,15 @@ just wasm-check          # Compile check only
 just wasm-clippy         # Run clippy lints
 ```
 
+> **WASM shadow stack:** the `wasm32-unknown-unknown` profile sets an 8 MiB
+> shadow stack via `-z stack-size` in [`.cargo/config.toml`](.cargo/config.toml).
+> The reactive view tree renders through a stack-heavy, by-value `into_owned`
+> recursion (the `AppState` context is a large `#[derive(Copy)]` struct captured
+> into many view closures), and rust-lld's default 1 MiB stack overflows in
+> debug builds — surfacing as an opaque `RuntimeError: memory access out of
+> bounds` deep in `tachys`. Don't lower it without re-checking the detail-panel
+> render.
+
 ## Build and Quality
 
 ```bash
@@ -160,3 +171,22 @@ just bind=0.0.0.0 dev
 | `just c` | `just check` |
 | `just d` | `just dev` |
 | `just t` | `just test` |
+
+## Nix
+
+The flake provides the full local toolchain plus deployment artifacts.
+
+```bash
+nix develop             # Drop into the dev shell (rust + wasm32 + trunk + just)
+nix build .#default     # Build server binary + WASM dist into ./result
+nix build .#blazelist-server      # Just the server binary
+nix build .#blazelist-wasm-dist   # Just the WASM client (post-processed sw.js)
+nix run                 # Start the server with the default flags
+nix flake check         # Eval-check the flake outputs
+```
+
+`inject-precache.sh` runs automatically inside the WASM derivation — not a
+manual step under Nix.
+
+For deploying via the bundled NixOS module (`services.blazelist`), see
+[DOCS.md → NixOS](DOCS.md#nixos).

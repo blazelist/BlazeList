@@ -46,12 +46,15 @@ pub fn webtransport_server_config(
     let ip = addr.ip();
     let port = addr.port();
 
-    // Use dual-stack (IPv4 + IPv6) for loopback/unspecified so that both
-    // `localhost` (::1) and `127.0.0.1` work. For a specific IP, bind directly.
+    // Linux won't route `127.0.0.1` traffic to a socket bound to `[::1]`
+    // even with `IPV6_V6ONLY=0`, so wtransport's `LocalDual` /
+    // `InAddrAnyDual` (which bind to the IPv6 loopback / wildcard) drop
+    // IPv4 clients. Only enable dual-stack when the user passed an IPv6
+    // address; bind IPv4 inputs directly.
     let builder = ServerConfig::builder();
-    let builder = if ip.is_loopback() {
+    let builder = if ip.is_ipv6() && ip.is_loopback() {
         builder.with_bind_config(IpBindConfig::LocalDual, port)
-    } else if ip.is_unspecified() {
+    } else if ip.is_ipv6() && ip.is_unspecified() {
         builder.with_bind_config(IpBindConfig::InAddrAnyDual, port)
     } else {
         builder.with_bind_address(addr)
@@ -146,7 +149,7 @@ pub async fn run_webtransport_server<S: Storage + Send + Sync + 'static>(
                                 }
                             };
 
-                            if matches!(request, Request::Subscribe) {
+                            if request.is_streaming() {
                                 // Subscribe: keep the stream open and push notifications.
                                 if write_message(&mut send, &Response::Ok).await.is_err() {
                                     return;
@@ -174,14 +177,7 @@ pub async fn run_webtransport_server<S: Storage + Send + Sync + 'static>(
                                 return;
                             }
 
-                            let is_mutation = matches!(
-                                request,
-                                Request::PushCardVersions(_)
-                                    | Request::PushTagVersions(_)
-                                    | Request::PushBatch(_)
-                                    | Request::DeleteCard { .. }
-                                    | Request::DeleteTag { .. }
-                            );
+                            let is_mutation = request.is_mutation();
                             let response = handle_request(storage.as_ref(), request);
                             let succeeded = !matches!(response, Response::Error(_));
                             let _ = write_message(&mut send, &response).await;

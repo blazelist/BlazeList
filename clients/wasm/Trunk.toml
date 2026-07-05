@@ -1,3 +1,9 @@
 [build]
 target = "index.html"
 dist = "dist"
+
+[serve]
+# Skip Trunk's hostname/address lookup so the startup banner only lists the
+# addresses we actually bind to. The lookup otherwise advertises entries like
+# `http://localhost.:PORT/` that don't necessarily resolve on the host.
+disable_address_lookup = true

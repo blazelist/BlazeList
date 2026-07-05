@@ -338,7 +338,11 @@ html:not(.show-card-time) .card-time {
     padding-left: 1rem;
 }
 
-.swipe-bg.swipe-bg-due {
+.swipe-bg.swipe-bg-due,
+.swipe-bg.swipe-bg-due-today,
+.swipe-bg.swipe-bg-due-tomorrow,
+.swipe-bg.swipe-bg-due-soon,
+.swipe-bg.swipe-bg-due-clear {
     opacity: 1;
     transition: opacity 0.05s, background-color 0.15s;
     justify-content: flex-end;
@@ -357,6 +361,26 @@ html:not(.show-card-time) .card-time {
     background: var(--due-today-subtle);
 }
 
+/* Levels mode: each zone gets its own background tint so the user
+   can see live which action will fire. Today is the same gold as
+   the cycle-mode "swipe-bg-due"; subsequent zones step toward a
+   neutral gray for "Clear due". */
+.swipe-bg.swipe-commit.swipe-bg-due-today {
+    background: var(--due-today-subtle);
+}
+
+.swipe-bg.swipe-commit.swipe-bg-due-tomorrow {
+    background: var(--due-overdue-subtle);
+}
+
+.swipe-bg.swipe-commit.swipe-bg-due-soon {
+    background: rgba(160, 112, 80, 0.16);
+}
+
+.swipe-bg.swipe-commit.swipe-bg-due-clear {
+    background: var(--due-upcoming-subtle);
+}
+
 .swipe-label {
     font-size: 0.7rem;
     font-weight: 600;
@@ -373,8 +397,21 @@ html:not(.show-card-time) .card-time {
     color: var(--extinguish);
 }
 
-.swipe-commit.swipe-bg-due .swipe-label {
+.swipe-commit.swipe-bg-due .swipe-label,
+.swipe-commit.swipe-bg-due-today .swipe-label {
     color: var(--due-today);
+}
+
+.swipe-commit.swipe-bg-due-tomorrow .swipe-label {
+    color: var(--due-overdue);
+}
+
+.swipe-commit.swipe-bg-due-soon .swipe-label {
+    color: #a07050;
+}
+
+.swipe-commit.swipe-bg-due-clear .swipe-label {
+    color: var(--due-upcoming);
 }
 
 /* Swipe action toast / undo bar */
@@ -491,4 +528,110 @@ html:not(.show-card-time) .card-time {
     pointer-events: none;
     max-width: 90vw;
     text-align: center;
+}
+
+/* ── Drag and drop reordering ───────────────────────────────────────
+   Two activation modes, gated entirely by classes set on <html> so
+   toggling never re-creates DOM:
+   - `html.dnd-on` — primary setting is enabled
+   - `html.dnd-mode-handle` — mode is `handle`
+   In `handle` mode the card's leading number is the drag grip: a
+   full-height column running flush against the state stripe, and the
+   only `touch-action: none` surface, so native scroll and the existing
+   swipes keep working everywhere else on the row. The hit area is
+   widened on every side with padding that is cancelled by an equal
+   negative margin, so the grip looks identical to the feature being
+   off — neither the digits nor the preview move at any digit count.
+   Anywhere mode and feature-off are untouched. */
+html.dnd-on.dnd-mode-handle .card-number {
+    touch-action: none;
+    /* The number IS the drag grip, so make it a big, forgiving target:
+       the FULL row height, reaching the state stripe on the left and the
+       preview on the right — all without moving the digits or the
+       preview. Horizontally, padding grows the hit box and an equal
+       negative margin cancels it; vertically, `align-self: stretch` +
+       equal negative block margins push the box out into the row's
+       top/bottom padding bands (which `stretch` alone leaves uncovered).
+       Reaches use the widest `.card-item` padding / gap (the mobile
+       breakpoint); the small overshoot at tighter densities is clipped
+       by the wrapper's `overflow: hidden`, so the grip is flush
+       everywhere. The 1.25rem of horizontal padding alone keeps even a
+       single-digit grip comfortably wide, with no `min-width` floor —
+       so the digits and preview sit exactly where they render with the
+       feature off. Nothing shifts. */
+    align-self: stretch;
+    display: flex;
+    align-items: center;
+    box-sizing: border-box;
+    margin-top: -0.5rem;
+    margin-bottom: -0.5rem;
+    padding-left: 0.75rem;
+    margin-left: -0.75rem;
+    padding-right: 0.5rem;
+    margin-right: -0.5rem;
+}
+@media (hover: hover) {
+    html.dnd-on.dnd-mode-handle .card-number {
+        cursor: grab;
+    }
+}
+
+/* Windows High Contrast / forced-colors: the drop indicators are
+   painted with a background that gets stripped, so repaint them with
+   the system highlight token. */
+@media (forced-colors: active) {
+    .card-item-wrapper.drag-target-above::before,
+    .card-item-wrapper.drag-target-below::after {
+        background: Highlight;
+        box-shadow: none;
+    }
+}
+
+/* Active drag — dim the source card. Wrapper class added by the
+   per-card `is_drag_source` Memo. */
+.card-item-wrapper.drag-source {
+    opacity: 0.45;
+}
+
+/* Drop indicator — a 3 px BlazeList-orange stripe on the edge the
+   source would land on. Drawn as ::before / ::after on the wrapper
+   so it sits between adjacent cards without disturbing layout. */
+.card-item-wrapper.drag-target-above::before,
+.card-item-wrapper.drag-target-below::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: var(--accent);
+    box-shadow: 0 0 6px var(--accent);
+    z-index: 5;
+    pointer-events: none;
+}
+.card-item-wrapper.drag-target-above::before {
+    top: 0;
+}
+.card-item-wrapper.drag-target-below::after {
+    bottom: 0;
+}
+
+/* Anywhere mode — give cards a grab cursor on hover so desktop users
+   see the affordance. Touch devices have no hover so this is
+   automatically dormant where it would be misleading. */
+@media (hover: hover) {
+    html.dnd-on:not(.dnd-mode-handle) .card-item {
+        cursor: grab;
+    }
+    html.dnd-on:not(.dnd-mode-handle) .card-item-wrapper.drag-source .card-item {
+        cursor: grabbing;
+    }
+}
+
+/* Disable text selection across the whole document while a drag is
+   in flight — otherwise a mouse drag from one card across the page
+   paints a selection sweep through every element it crosses. */
+body.blazelist-dragging {
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: grabbing;
 }

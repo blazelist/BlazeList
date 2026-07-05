@@ -415,10 +415,23 @@ mod tests {
     fn move_card_rebalance() {
         let cards = vec![make_card(102), make_card(101), make_card(100)];
         let card_id = cards[0].id();
+        // Removing the moved card leaves neighbors 101 and 100 — a gap of 1 with
+        // no integer between them — so inserting at At(1) must rebalance them
+        // apart rather than place simply.
         let result = move_card(&cards, card_id, InsertPosition::At(1));
-        // Either Simple or Rebalanced is fine, just verify it doesn't panic.
         match result {
-            Placement::Rebalanced { .. } | Placement::Simple(_) => {}
+            Placement::Rebalanced { priority, shifted } => {
+                // Both packed neighbors get redistributed...
+                assert_eq!(shifted.len(), 2, "both packed neighbors must be shifted");
+                // ...and the moved card lands strictly between their new priorities.
+                let highest = shifted.iter().map(|&(_, p)| p).max().unwrap();
+                let lowest = shifted.iter().map(|&(_, p)| p).min().unwrap();
+                assert!(
+                    lowest < priority && priority < highest,
+                    "new priority {priority} must sit between {lowest} and {highest}"
+                );
+            }
+            Placement::Simple(p) => panic!("packed neighbors must rebalance, got Simple({p})"),
         }
     }
 
@@ -735,7 +748,7 @@ mod tests {
     #[test]
     fn rebalance_long_chain_10_cards() {
         // 10 consecutive priorities, insert in the middle.
-        let cards: Vec<Card> = (0..10).rev().map(|i| make_card(i)).collect();
+        let cards: Vec<Card> = (0..10).rev().map(make_card).collect();
         let result = place_card(&cards, InsertPosition::At(5));
         assert!(matches!(result, Placement::Rebalanced { .. }));
         assert_valid_placement("chain 10", &cards, &result);
@@ -745,7 +758,7 @@ mod tests {
     fn rebalance_long_chain_20_cards() {
         // 20 consecutive priorities, insert at every position.
         // Top/Bottom get edge capping → Simple; interior positions → Rebalanced.
-        let cards: Vec<Card> = (0..20).rev().map(|i| make_card(i)).collect();
+        let cards: Vec<Card> = (0..20).rev().map(make_card).collect();
         for idx in 0..=20 {
             let pos = if idx == 0 {
                 InsertPosition::Top
@@ -916,9 +929,142 @@ mod tests {
     #[test]
     fn resolve_collision_long_packed_chain() {
         // 10 consecutive cards, collide in the middle.
-        let cards: Vec<Card> = (0..10).rev().map(|i| make_card(i)).collect();
+        let cards: Vec<Card> = (0..10).rev().map(make_card).collect();
         let result = resolve_collision(&cards, 5);
         assert!(matches!(result, Placement::Rebalanced { .. }));
         assert_valid_placement("collision chain", &cards, &result);
+    }
+
+    // -- build_shifted_versions tests --
+
+    /// Build a first-version card with non-default content/tags/blazed/due_date
+    /// so `build_shifted_versions` field-preservation can be observed.
+    fn make_rich_card(
+        priority: i64,
+        content: &str,
+        tags: Vec<Uuid>,
+        blazed: bool,
+        due_date: Option<chrono::DateTime<Utc>>,
+    ) -> Card {
+        Card::first(
+            Uuid::new_v4(),
+            content.to_string(),
+            priority,
+            tags,
+            blazed,
+            Utc::now(),
+            due_date,
+        )
+    }
+
+    #[test]
+    fn build_shifted_versions_applies_priority_and_preserves_other_fields() {
+        let tag_a = Uuid::new_v4();
+        let tag_b = Uuid::new_v4();
+        let due = Utc::now();
+
+        // Three distinct cards with varied content/tags/blazed/due_date.
+        let card0 = make_rich_card(1000, "alpha", vec![tag_b, tag_a], true, Some(due));
+        let card1 = make_rich_card(500, "beta", vec![], false, None);
+        let card2 = make_rich_card(100, "gamma", vec![tag_a], false, Some(due));
+        let all_cards = vec![card0.clone(), card1.clone(), card2.clone()];
+
+        // Shift a subset (card0 and card2) to new priorities; leave card1 alone.
+        let shifted = vec![(card0.id(), 1234i64), (card2.id(), -55i64)];
+
+        let result = build_shifted_versions(&shifted, &all_cards);
+
+        // Exactly the two shifted cards are returned, in `shifted` order.
+        assert_eq!(result.len(), 2, "only shifted cards should be returned");
+        assert_eq!(result[0].id(), card0.id());
+        assert_eq!(result[1].id(), card2.id());
+        // card1 (unshifted) must not appear.
+        assert!(
+            !result.iter().any(|c| c.id() == card1.id()),
+            "unshifted card must not be included"
+        );
+
+        // -- card0: priority updated, everything else preserved --
+        let new0 = &result[0];
+        assert_eq!(
+            new0.priority(),
+            1234,
+            "priority should be the shifted value"
+        );
+        assert_eq!(new0.content(), "alpha", "content preserved");
+        // tags() is sorted by the builder, so compare against the sorted form.
+        let mut expected_tags0 = vec![tag_b, tag_a];
+        expected_tags0.sort();
+        assert_eq!(new0.tags(), expected_tags0.as_slice(), "tags preserved");
+        assert!(new0.blazed(), "blazed preserved");
+        assert_eq!(new0.due_date(), Some(due), "due_date preserved");
+
+        // -- card2: priority updated, everything else preserved --
+        let new2 = &result[1];
+        assert_eq!(new2.priority(), -55, "priority should be the shifted value");
+        assert_eq!(new2.content(), "gamma", "content preserved");
+        assert_eq!(new2.tags(), &[tag_a], "tags preserved");
+        assert!(!new2.blazed(), "blazed preserved");
+        assert_eq!(new2.due_date(), Some(due), "due_date preserved");
+
+        // -- each is a `.next()` version: count incremented, ancestor linked --
+        assert_eq!(
+            u64::from(new0.count()),
+            2,
+            "next() version increments count from 1 -> 2"
+        );
+        assert_eq!(
+            u64::from(new2.count()),
+            2,
+            "next() version increments count from 1 -> 2"
+        );
+        assert_eq!(
+            new0.ancestor_hash(),
+            card0.hash(),
+            "ancestor_hash links to the original card's hash"
+        );
+        assert_eq!(
+            new2.ancestor_hash(),
+            card2.hash(),
+            "ancestor_hash links to the original card's hash"
+        );
+        // created_at is carried over from the original, not stamped fresh.
+        assert_eq!(
+            new0.created_at(),
+            card0.created_at(),
+            "created_at preserved across next()"
+        );
+        // The produced card verifies against its recomputed hash.
+        assert!(new0.verify(), "shifted card should have a valid hash");
+        assert!(new2.verify(), "shifted card should have a valid hash");
+    }
+
+    #[test]
+    fn build_shifted_versions_drops_unknown_ids_silently() {
+        let known = make_rich_card(300, "known", vec![], false, None);
+        let all_cards = vec![known.clone()];
+
+        // One id present in all_cards, one absent (never panics; absent dropped).
+        let missing = Uuid::new_v4();
+        let shifted = vec![(missing, 9999i64), (known.id(), 42i64)];
+
+        let result = build_shifted_versions(&shifted, &all_cards);
+
+        // The absent id is silently dropped via the filter_map fallthrough.
+        assert_eq!(result.len(), 1, "unknown id must be dropped, not panic");
+        assert_eq!(result[0].id(), known.id());
+        assert_eq!(result[0].priority(), 42);
+        assert!(
+            !result.iter().any(|c| c.id() == missing),
+            "the missing id must not produce a card"
+        );
+    }
+
+    #[test]
+    fn build_shifted_versions_empty_shifted_yields_empty() {
+        let card = make_rich_card(100, "x", vec![], false, None);
+        let all_cards = vec![card];
+        let result = build_shifted_versions(&[], &all_cards);
+        assert!(result.is_empty(), "no shifts -> no versions");
     }
 }

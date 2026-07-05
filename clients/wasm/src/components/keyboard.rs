@@ -10,13 +10,16 @@
 
 use crate::components::card_detail::apply_move_placement;
 use crate::components::settings_panel::switch_to_pane;
+use crate::state::pending_priority;
 use crate::state::store::{
-    AppState, DueDateFilter, NewCardPosition, SortOrder, SubMenu, confirm_discard_changes,
-    select_card_view, sync_query_params,
+    AppState, DueDateFilter, NewCardPosition, SortOrder, SubMenu, TagFilterMode,
+    apply_linked_card_filter, apply_today_quick_filter, close_editor, confirm_discard_changes,
+    finish_creation_flow, open_editor, set_selection, start_new_card as store_start_new_card,
+    start_new_tag, sync_query_params,
 };
 use crate::state::sync::push_card_or_queue;
 use blazelist_client_lib::priority::{InsertPosition, move_card};
-use blazelist_protocol::{CardFilter, Entity, Utc};
+use blazelist_protocol::{Card, CardFilter, Entity, Utc};
 use chrono::Days;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
@@ -108,6 +111,20 @@ fn handle_keydown(ev: web_sys::KeyboardEvent, state: AppState) {
         return;
     }
 
+    // Ctrl/Cmd+S triggers save-and-stay in the editor. Intercepted before
+    // the typing/modifier early-returns below so it fires from any focus
+    // inside the editor; outside the editor the event falls through to the
+    // browser's "Save page" default.
+    if (ev.ctrl_key() || ev.meta_key()) && key.eq_ignore_ascii_case("s") {
+        if state.keyboard_shortcuts_enabled.get_untracked()
+            && (state.editing().get_untracked() || state.creating_new().get_untracked())
+        {
+            state.save_requested.set(true);
+            ev.prevent_default();
+        }
+        return;
+    }
+
     // --- Sub-menu dispatch (highest priority after Escape) ---
     if let Some(menu) = state.sub_menu.get_untracked() {
         // Dismiss on q/Esc (Esc already handled above).
@@ -128,6 +145,7 @@ fn handle_keydown(ev: web_sys::KeyboardEvent, state: AppState) {
             SubMenu::DueDateFilter => handle_due_date_filter_submenu(&key, state),
             SubMenu::Sort => handle_sort_submenu(&key, state),
             SubMenu::LinkedCards => handle_linked_cards_submenu(&key, state),
+            SubMenu::TagFilterMode => handle_tag_filter_mode_submenu(&key, state),
         };
         // Close only if the key was recognized (or q/Esc above).
         // Unrecognized keys are silently ignored so the user can retry.
@@ -193,7 +211,7 @@ fn handle_keydown(ev: web_sys::KeyboardEvent, state: AppState) {
     }
 
     // Don't handle shortcuts while editing or creating
-    if state.editing.get_untracked() || state.creating_new.get_untracked() {
+    if state.editing().get_untracked() || state.creating_new().get_untracked() {
         return;
     }
 
@@ -222,52 +240,42 @@ fn handle_keydown(ev: web_sys::KeyboardEvent, state: AppState) {
 
         // New card at bottom
         "n" => {
-            start_new_card(state, NewCardPosition::Bottom);
+            store_start_new_card(&state, NewCardPosition::Bottom);
             ev.prevent_default();
         }
 
         // New card at top
         "N" => {
-            start_new_card(state, NewCardPosition::Top);
+            store_start_new_card(&state, NewCardPosition::Top);
             ev.prevent_default();
         }
 
         // New card below selected (no-op without selection)
         "o" => {
-            if let Some(id) = state.selected_card.get_untracked() {
-                start_new_card(state, NewCardPosition::Below(id));
+            if let Some(id) = state.selected_card().get_untracked() {
+                store_start_new_card(&state, NewCardPosition::Below(id));
             }
             ev.prevent_default();
         }
 
         // New card above selected (no-op without selection)
         "O" => {
-            if let Some(id) = state.selected_card.get_untracked() {
-                start_new_card(state, NewCardPosition::Above(id));
+            if let Some(id) = state.selected_card().get_untracked() {
+                store_start_new_card(&state, NewCardPosition::Above(id));
             }
             ev.prevent_default();
         }
 
         // Create new tag
         "Y" => {
-            if !confirm_discard_changes(&state) {
-                ev.prevent_default();
-                return;
-            }
-            state.selected_card.set(None);
-            state.creating_new.set(false);
-            state.editing.set(false);
-            state.creating_new_tag.set(true);
-            state.settings_open.set(false);
-            state.shortcuts_open.set(false);
-            sync_query_params(&state);
+            start_new_tag(&state);
             ev.prevent_default();
         }
 
         // Edit selected card
         "e" => {
-            if state.selected_card.get_untracked().is_some() {
-                state.editing.set(true);
+            if state.selected_card().get_untracked().is_some() {
+                open_editor(&state);
                 ev.prevent_default();
             }
         }
@@ -280,7 +288,7 @@ fn handle_keydown(ev: web_sys::KeyboardEvent, state: AppState) {
 
         // Copy selected card ID to clipboard
         "y" => {
-            if let Some(id) = state.selected_card.get_untracked() {
+            if let Some(id) = state.selected_card().get_untracked() {
                 let id_str = id.to_string();
                 copy_to_clipboard(&id_str);
                 let id_preview: String = id_str.chars().take(8).collect();
@@ -390,18 +398,9 @@ fn handle_keydown(ev: web_sys::KeyboardEvent, state: AppState) {
             ev.prevent_default();
         }
 
-        // Toggle tag-filter mode (OR / AND) — moved from `m` when the
-        // detail-panel min/max shortcut took it over.
+        // Open tag-filter mode sub-menu (OR / AND / NOR / NAND).
         "v" => {
-            state.tag_filter_mode.update(|m| {
-                *m = m.toggle();
-            });
-            if state.tag_filter_mode.get_untracked()
-                == blazelist_client_lib::filter::TagFilterMode::And
-            {
-                state.no_tags_filter.set(false);
-            }
-            sync_query_params(&state);
+            state.sub_menu.set(Some(SubMenu::TagFilterMode));
             ev.prevent_default();
         }
 
@@ -412,9 +411,7 @@ fn handle_keydown(ev: web_sys::KeyboardEvent, state: AppState) {
             state.no_tags_filter.set(new_val);
             if new_val {
                 state.tag_filter.set(Vec::new());
-                state
-                    .tag_filter_mode
-                    .set(blazelist_client_lib::filter::TagFilterMode::Or);
+                state.tag_filter_mode.set(TagFilterMode::Or);
             }
             sync_query_params(&state);
             ev.prevent_default();
@@ -430,7 +427,7 @@ fn handle_keydown(ev: web_sys::KeyboardEvent, state: AppState) {
 
         // Open linked-cards filter sub-menu (requires selected card with links)
         "l" => {
-            if state.selected_card.get_untracked().is_some() {
+            if state.selected_card().get_untracked().is_some() {
                 state.sub_menu.set(Some(SubMenu::LinkedCards));
             }
             ev.prevent_default();
@@ -453,20 +450,7 @@ fn handle_keydown(ev: web_sys::KeyboardEvent, state: AppState) {
 
         // Reset all filters & sorting
         "r" => {
-            state.filter.set(CardFilter::Extinguished);
-            state
-                .due_date_filter
-                .set(crate::state::store::DueDateFilter::All);
-            state.include_overdue.set(false);
-            state.tag_filter.set(Vec::new());
-            state
-                .tag_filter_mode
-                .set(blazelist_client_lib::filter::TagFilterMode::Or);
-            state.no_tags_filter.set(false);
-            state.linked_card_filter.set(Vec::new());
-            state
-                .sort_order
-                .set(blazelist_client_lib::filter::SortOrder::default());
+            reset_filters_and_sort(&state);
             state.search_query.set(String::new());
             sync_query_params(&state);
             ev.prevent_default();
@@ -495,9 +479,36 @@ fn handle_due_date_filter_submenu(key: &str, state: AppState) -> bool {
             sync_query_params(&state);
             return true;
         }
+        // Mirrors the Today quick-filter button — only available when the
+        // button itself is enabled in settings.
+        "n" => {
+            if !state.show_due_today_button.get_untracked() {
+                return false;
+            }
+            apply_today_quick_filter(&state);
+            return true;
+        }
         _ => return false,
     };
     state.due_date_filter.set(filter);
+    sync_query_params(&state);
+    true
+}
+
+/// Handle a key inside the **tag filter mode** sub-menu.
+/// Returns `true` if the key was recognised.
+fn handle_tag_filter_mode_submenu(key: &str, state: AppState) -> bool {
+    let mode = match key {
+        "o" => TagFilterMode::Or,
+        "a" => TagFilterMode::And,
+        "n" => TagFilterMode::Nor,
+        "N" => TagFilterMode::Nand,
+        _ => return false,
+    };
+    state.tag_filter_mode.set(mode);
+    if !mode.allows_no_tags() {
+        state.no_tags_filter.set(false);
+    }
     sync_query_params(&state);
     true
 }
@@ -526,7 +537,7 @@ fn handle_sort_submenu(key: &str, state: AppState) -> bool {
 /// Handle a key inside the **linked-cards filter** sub-menu.
 /// Returns `true` if the key was recognised.
 fn handle_linked_cards_submenu(key: &str, state: AppState) -> bool {
-    let card_id = match state.selected_card.get_untracked() {
+    let card_id = match state.selected_card().get_untracked() {
         Some(id) => id,
         None => return false,
     };
@@ -563,36 +574,21 @@ fn handle_linked_cards_submenu(key: &str, state: AppState) -> bool {
                 all_linked.extend(expanded.into_iter().filter(|id| !direct_set.contains(id)));
             }
             all_linked.insert(0, card_id);
-            state.linked_card_filter.set(all_linked);
-            state.filter.set(CardFilter::All);
-            state.search_query.set(String::new());
-            state.tag_filter.set(Vec::new());
-            state.no_tags_filter.set(false);
-            sync_query_params(&state);
+            apply_linked_card_filter(&state, all_linked);
             true
         }
         // Forward links only
         "f" => {
             let mut ids = forward_ids;
             ids.insert(0, card_id);
-            state.linked_card_filter.set(ids);
-            state.filter.set(CardFilter::All);
-            state.search_query.set(String::new());
-            state.tag_filter.set(Vec::new());
-            state.no_tags_filter.set(false);
-            sync_query_params(&state);
+            apply_linked_card_filter(&state, ids);
             true
         }
         // Back links only
         "b" => {
             let mut ids = back_ids;
             ids.insert(0, card_id);
-            state.linked_card_filter.set(ids);
-            state.filter.set(CardFilter::All);
-            state.search_query.set(String::new());
-            state.tag_filter.set(Vec::new());
-            state.no_tags_filter.set(false);
-            sync_query_params(&state);
+            apply_linked_card_filter(&state, ids);
             true
         }
         // Direct links (forward + back, no transitive)
@@ -604,12 +600,7 @@ fn handle_linked_cards_submenu(key: &str, state: AppState) -> bool {
                 }
             }
             ids.insert(0, card_id);
-            state.linked_card_filter.set(ids);
-            state.filter.set(CardFilter::All);
-            state.search_query.set(String::new());
-            state.tag_filter.set(Vec::new());
-            state.no_tags_filter.set(false);
-            sync_query_params(&state);
+            apply_linked_card_filter(&state, ids);
             true
         }
         // Clear linked card filter
@@ -626,12 +617,17 @@ fn handle_linked_cards_submenu(key: &str, state: AppState) -> bool {
 
 fn handle_escape(state: AppState) {
     // Priority: close edit/create -> close settings/shortcuts -> close detail -> clear search -> clear filters
-    if state.editing.get_untracked() || state.creating_new.get_untracked() {
+    if state.editing().get_untracked() {
+        close_editor(&state);
+        sync_query_params(&state);
+        return;
+    }
+
+    if state.creating_new().get_untracked() {
         if !confirm_discard_changes(&state) {
             return;
         }
-        state.editing.set(false);
-        state.creating_new.set(false);
+        finish_creation_flow(&state);
         state.has_unsaved_changes.set(false);
         sync_query_params(&state);
         return;
@@ -647,9 +643,8 @@ fn handle_escape(state: AppState) {
         return;
     }
 
-    if state.selected_card.get_untracked().is_some() {
-        state.selected_card.set(None);
-        sync_query_params(&state);
+    if state.selected_card().get_untracked().is_some() {
+        set_selection(&state, None);
         return;
     }
 
@@ -663,7 +658,7 @@ fn handle_escape(state: AppState) {
 
     // Then clear all filters and sorting
     let has_filters = state.filter.get_untracked() != CardFilter::Extinguished
-        || state.due_date_filter.get_untracked() != crate::state::store::DueDateFilter::All
+        || state.due_date_filter.get_untracked() != DueDateFilter::All
         || state.include_overdue.get_untracked()
         || !state.tag_filter.get_untracked().is_empty()
         || state.no_tags_filter.get_untracked()
@@ -671,22 +666,25 @@ fn handle_escape(state: AppState) {
         || !state.sort_order.get_untracked().is_default();
 
     if has_filters {
-        state.filter.set(CardFilter::Extinguished);
-        state
-            .due_date_filter
-            .set(crate::state::store::DueDateFilter::All);
-        state.include_overdue.set(false);
-        state.tag_filter.set(Vec::new());
-        state
-            .tag_filter_mode
-            .set(crate::state::store::TagFilterMode::Or);
-        state.no_tags_filter.set(false);
-        state.linked_card_filter.set(Vec::new());
-        state
-            .sort_order
-            .set(blazelist_client_lib::filter::SortOrder::default());
+        reset_filters_and_sort(&state);
         sync_query_params(&state);
     }
+}
+
+/// Reset all filter and sort signals to their defaults. Deliberately does
+/// **not** touch `search_query` and does **not** call `sync_query_params`:
+/// the search-clear step and the URL sync differ between callers (the `r`
+/// shortcut clears search inline; `handle_escape` clears it in a separate
+/// earlier step), so each call site handles those itself.
+fn reset_filters_and_sort(state: &AppState) {
+    state.filter.set(CardFilter::Extinguished);
+    state.due_date_filter.set(DueDateFilter::All);
+    state.include_overdue.set(false);
+    state.tag_filter.set(Vec::new());
+    state.tag_filter_mode.set(TagFilterMode::Or);
+    state.no_tags_filter.set(false);
+    state.linked_card_filter.set(Vec::new());
+    state.sort_order.set(SortOrder::default());
 }
 
 fn blur_active_element() {
@@ -699,30 +697,17 @@ fn blur_active_element() {
     }
 }
 
-fn start_new_card(state: AppState, position: NewCardPosition) {
-    if !confirm_discard_changes(&state) {
-        return;
-    }
-    state.selected_card.set(None);
-    state.editing.set(false);
-    state.settings_open.set(false);
-    state.shortcuts_open.set(false);
-    state.new_card_position.set(position);
-    state.creating_new.set(true);
-    sync_query_params(&state);
-}
-
 fn select_first_card(state: AppState) {
     let filtered = state.filtered_cards().get_untracked();
     if let Some(first) = filtered.first() {
-        select_card_view(&state, first.id());
+        set_selection(&state, Some(first.id()));
     }
 }
 
 fn select_last_card(state: AppState) {
     let filtered = state.filtered_cards().get_untracked();
     if let Some(last) = filtered.last() {
-        select_card_view(&state, last.id());
+        set_selection(&state, Some(last.id()));
     }
 }
 
@@ -732,7 +717,7 @@ fn select_next_card(state: AppState) {
         return;
     }
 
-    let current = state.selected_card.get_untracked();
+    let current = state.selected_card().get_untracked();
     let next_id = match current {
         None => filtered.first().map(|c| c.id()),
         Some(id) => {
@@ -746,7 +731,7 @@ fn select_next_card(state: AppState) {
     };
 
     if let Some(id) = next_id {
-        select_card_view(&state, id);
+        set_selection(&state, Some(id));
     }
 }
 
@@ -756,7 +741,7 @@ fn select_prev_card(state: AppState) {
         return;
     }
 
-    let current = state.selected_card.get_untracked();
+    let current = state.selected_card().get_untracked();
     let next_id = match current {
         None => filtered.last().map(|c| c.id()),
         Some(id) => {
@@ -770,34 +755,43 @@ fn select_prev_card(state: AppState) {
     };
 
     if let Some(id) = next_id {
-        select_card_view(&state, id);
+        set_selection(&state, Some(id));
     }
 }
 
-fn toggle_blaze(state: AppState) {
-    let card_id = match state.selected_card.get_untracked() {
-        Some(id) => id,
-        None => return,
-    };
-
-    let card = state
+/// Resolve the currently-selected card, reading both the selection and the
+/// card list untracked. Returns `None` when nothing is selected or the
+/// selected UUID isn't a card in the local list (e.g. a tag or a
+/// not-yet-synced entity) — every caller treats that as a no-op. Callers
+/// that need the id take it from `card.id()`.
+fn selected_card(state: &AppState) -> Option<Card> {
+    let card_id = state.selected_card().get_untracked()?;
+    state
         .cards
         .get_untracked()
         .into_iter()
-        .find(|c| c.id() == card_id);
-    let Some(card) = card else { return };
+        .find(|c| c.id() == card_id)
+}
 
+fn toggle_blaze(state: AppState) {
+    let Some(card) = selected_card(&state) else {
+        return;
+    };
+
+    let new_blazed = !card.blazed();
+    let new_due = state.due_after_blaze_change(card.due_date(), card.blazed(), new_blazed);
     let next = card.next(
         card.content().to_string(),
         card.priority(),
         card.tags().to_vec(),
-        !card.blazed(),
+        new_blazed,
         Utc::now(),
-        card.due_date(),
+        new_due,
     );
     state.upsert_card(next.clone());
 
     leptos::task::spawn_local(async move {
+        pending_priority::flush_now(&state).await;
         push_card_or_queue(&state, next).await;
     });
 }
@@ -805,7 +799,7 @@ fn toggle_blaze(state: AppState) {
 pub(crate) fn show_copy_toast(state: AppState, msg: &str) {
     // Cancel any previous dismiss timer so rapid copies reset the countdown.
     if let Some(prev) = state.copy_toast_timeout.get_untracked() {
-        let _ = web_sys::window().unwrap().clear_timeout_with_handle(prev);
+        web_sys::window().unwrap().clear_timeout_with_handle(prev);
     }
     state.copy_toast.set(Some(msg.to_string()));
     let cb = Closure::once(move || {
@@ -827,20 +821,17 @@ pub(crate) fn copy_to_clipboard(text: &str) {
 }
 
 fn focus_tag_search() {
-    if let Some(el) = web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.query_selector(".tag-search-input").ok())
-        .flatten()
-        && let Ok(input) = el.dyn_into::<web_sys::HtmlElement>()
-    {
-        input.focus().ok();
-    }
+    focus_element(".tag-search-input");
 }
 
 fn focus_search_input() {
+    focus_element(".search-input");
+}
+
+fn focus_element(selector: &str) {
     if let Some(el) = web_sys::window()
         .and_then(|w| w.document())
-        .and_then(|d| d.query_selector(".search-input").ok())
+        .and_then(|d| d.query_selector(selector).ok())
         .flatten()
         && let Ok(input) = el.dyn_into::<web_sys::HtmlElement>()
     {
@@ -851,19 +842,16 @@ fn focus_search_input() {
 // -- Card movement shortcuts --------------------------------------------------
 
 fn move_card_up(state: AppState) {
-    let card_id = match state.selected_card.get_untracked() {
-        Some(id) => id,
-        None => return,
+    // A drag is committing its own reorder on release; piling a
+    // keyboard move on top would compute against the now-different
+    // filtered list and apply two consecutive moves.
+    if crate::components::drag_drop::is_drag_in_flight() {
+        return;
+    }
+    let Some(card) = selected_card(&state) else {
+        return;
     };
-    let card = match state
-        .cards
-        .get_untracked()
-        .into_iter()
-        .find(|c| c.id() == card_id)
-    {
-        Some(c) => c,
-        None => return,
-    };
+    let card_id = card.id();
     let filtered = state.filtered_cards().get_untracked();
     let idx = match filtered.iter().position(|c| c.id() == card_id) {
         Some(i) => i,
@@ -877,19 +865,13 @@ fn move_card_up(state: AppState) {
 }
 
 fn move_card_down(state: AppState) {
-    let card_id = match state.selected_card.get_untracked() {
-        Some(id) => id,
-        None => return,
+    if crate::components::drag_drop::is_drag_in_flight() {
+        return;
+    }
+    let Some(card) = selected_card(&state) else {
+        return;
     };
-    let card = match state
-        .cards
-        .get_untracked()
-        .into_iter()
-        .find(|c| c.id() == card_id)
-    {
-        Some(c) => c,
-        None => return,
-    };
+    let card_id = card.id();
     let filtered = state.filtered_cards().get_untracked();
     let idx = match filtered.iter().position(|c| c.id() == card_id) {
         Some(i) => i,
@@ -911,19 +893,8 @@ enum DueDateShortcut {
 }
 
 fn set_due_date_shortcut(state: AppState, shortcut: DueDateShortcut) {
-    let card_id = match state.selected_card.get_untracked() {
-        Some(id) => id,
-        None => return,
-    };
-
-    let card = match state
-        .cards
-        .get_untracked()
-        .into_iter()
-        .find(|c| c.id() == card_id)
-    {
-        Some(c) => c,
-        None => return,
+    let Some(card) = selected_card(&state) else {
+        return;
     };
 
     let new_due = match shortcut {
@@ -938,17 +909,19 @@ fn set_due_date_shortcut(state: AppState, shortcut: DueDateShortcut) {
         DueDateShortcut::Clear => None,
     };
 
+    let new_blazed = state.blazed_after_due_change(card.blazed(), new_due);
     let next = card.next(
         card.content().to_string(),
         card.priority(),
         card.tags().to_vec(),
-        card.blazed(),
+        new_blazed,
         Utc::now(),
         new_due,
     );
     state.upsert_card(next.clone());
 
     leptos::task::spawn_local(async move {
+        pending_priority::flush_now(&state).await;
         push_card_or_queue(&state, next).await;
     });
 }
@@ -964,11 +937,10 @@ struct SubMenuItem {
 }
 
 /// Returns the list of items for the given sub-menu.
-fn sub_menu_items(menu: SubMenu) -> (&'static str, Vec<SubMenuItem>) {
+fn sub_menu_items(menu: SubMenu, state: &AppState) -> (&'static str, Vec<SubMenuItem>) {
     match menu {
-        SubMenu::DueDateFilter => (
-            "Due date filter",
-            vec![
+        SubMenu::DueDateFilter => {
+            let mut items = vec![
                 SubMenuItem {
                     key: "a",
                     label: "All",
@@ -1001,8 +973,15 @@ fn sub_menu_items(menu: SubMenu) -> (&'static str, Vec<SubMenuItem>) {
                     key: "i",
                     label: "Toggle include overdue",
                 },
-            ],
-        ),
+            ];
+            if state.show_due_today_button.get() {
+                items.push(SubMenuItem {
+                    key: "n",
+                    label: "Today (clear & overdue)",
+                });
+            }
+            ("Due date filter", items)
+        }
         SubMenu::LinkedCards => (
             "Linked card filter",
             vec![
@@ -1025,6 +1004,27 @@ fn sub_menu_items(menu: SubMenu) -> (&'static str, Vec<SubMenuItem>) {
                 SubMenuItem {
                     key: "c",
                     label: "Clear filter",
+                },
+            ],
+        ),
+        SubMenu::TagFilterMode => (
+            "Tag filter mode",
+            vec![
+                SubMenuItem {
+                    key: "o",
+                    label: "OR — any selected tag",
+                },
+                SubMenuItem {
+                    key: "a",
+                    label: "AND — all selected tags",
+                },
+                SubMenuItem {
+                    key: "n",
+                    label: "NOR — exclude any selected tag",
+                },
+                SubMenuItem {
+                    key: "N",
+                    label: "NAND — exclude all selected tags",
                 },
             ],
         ),
@@ -1090,7 +1090,7 @@ pub fn SubMenuPopup() -> impl IntoView {
     move || {
         let menu = state.sub_menu.get();
         menu.map(|m| {
-            let (title, items) = sub_menu_items(m);
+            let (title, items) = sub_menu_items(m, &state);
             view! {
                 <div class="submenu-backdrop" on:click=dismiss>
                     <div class="submenu-popup" on:click=|ev: web_sys::MouseEvent| ev.stop_propagation()>
@@ -1175,7 +1175,7 @@ pub fn ShortcutsPanel() -> impl IntoView {
                 <table class="help-table">
                     <thead><tr><th>"Key"</th><th>"Opens"</th></tr></thead>
                     <tbody>
-                        <tr><td><kbd>"d"</kbd></td><td>"Due date filter — "<kbd>"a"</kbd>" All  "<kbd>"o"</kbd>" Overdue  "<kbd>"t"</kbd>" Today  "<kbd>"u"</kbd>" Today+  "<kbd>"U"</kbd>" Upcoming  "<kbd>"m"</kbd>" Tomorrow  "<kbd>"w"</kbd>" Week  "<kbd>"2"</kbd>" 2 Weeks  "<kbd>"i"</kbd>" Toggle overdue"</td></tr>
+                        <tr><td><kbd>"d"</kbd></td><td>"Due date filter — "<kbd>"a"</kbd>" All  "<kbd>"o"</kbd>" Overdue  "<kbd>"t"</kbd>" Today  "<kbd>"u"</kbd>" Today+  "<kbd>"U"</kbd>" Upcoming  "<kbd>"m"</kbd>" Tomorrow  "<kbd>"w"</kbd>" Week  "<kbd>"2"</kbd>" 2 Weeks  "<kbd>"i"</kbd>" Toggle overdue  "<kbd>"n"</kbd>" Today (quick)"</td></tr>
                         <tr><td><kbd>"s"</kbd></td><td>"Sort — "<kbd>"p"</kbd>"/"<kbd>"P"</kbd>" Priority  "<kbd>"m"</kbd>"/"<kbd>"M"</kbd>" Modified  "<kbd>"c"</kbd>"/"<kbd>"C"</kbd>" Created  "<kbd>"t"</kbd>"/"<kbd>"T"</kbd>" Title  "<kbd>"d"</kbd>"/"<kbd>"D"</kbd>" Due date"</td></tr>
                         <tr><td><kbd>"l"</kbd></td><td>"Linked cards — "<kbd>"a"</kbd>" All  "<kbd>"f"</kbd>" Forward  "<kbd>"b"</kbd>" Back  "<kbd>"d"</kbd>" Direct  "<kbd>"c"</kbd>" Clear"</td></tr>
                     </tbody>
@@ -1189,7 +1189,7 @@ pub fn ShortcutsPanel() -> impl IntoView {
                         <tr><td><kbd>"a"</kbd></td><td>"Show active cards"</td></tr>
                         <tr><td><kbd>"A"</kbd></td><td>"Show all cards"</td></tr>
                         <tr><td><kbd>"b"</kbd></td><td>"Show blazed cards"</td></tr>
-                        <tr><td><kbd>"v"</kbd></td><td>"Toggle tag-filter mode (OR / AND)"</td></tr>
+                        <tr><td><kbd>"v"</kbd></td><td>"Tag-filter mode — "<kbd>"o"</kbd>" OR  "<kbd>"a"</kbd>" AND  "<kbd>"n"</kbd>" NOR  "<kbd>"N"</kbd>" NAND"</td></tr>
                         <tr><td><kbd>"V"</kbd></td><td>"Toggle \"no tags\" filter"</td></tr>
                         <tr><td><kbd>"i"</kbd></td><td>"Toggle include-overdue"</td></tr>
                         <tr><td><kbd>"r"</kbd></td><td>"Reset all filters, sorting & search"</td></tr>
@@ -1215,7 +1215,8 @@ pub fn ShortcutsPanel() -> impl IntoView {
                 <table class="help-table">
                     <thead><tr><th>"Key"</th><th>"Action"</th></tr></thead>
                     <tbody>
-                        <tr><td><kbd>"Ctrl+Enter"</kbd></td><td>"Save / create card"</td></tr>
+                        <tr><td><kbd>"Ctrl+S"</kbd></td><td>"Save and keep editing"</td></tr>
+                        <tr><td><kbd>"Ctrl+Enter"</kbd></td><td>"Save & close (create card)"</td></tr>
                         <tr><td><kbd>"Esc"</kbd></td><td>"Cancel editing (confirms if unsaved)"</td></tr>
                         <tr><td><kbd>"Enter"</kbd></td><td>"Toggle first matching tag (in tag search)"</td></tr>
                     </tbody>

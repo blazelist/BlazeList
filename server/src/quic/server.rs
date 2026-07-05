@@ -74,7 +74,7 @@ pub async fn run_server<S: Storage + Send + Sync + 'static>(
                                 Err(_) => return,
                             };
 
-                            if matches!(request, Request::Subscribe) {
+                            if request.is_streaming() {
                                 // Subscribe: keep the stream open and push notifications.
                                 if write_message(&mut send, &Response::Ok).await.is_err() {
                                     return;
@@ -100,14 +100,7 @@ pub async fn run_server<S: Storage + Send + Sync + 'static>(
                                 return;
                             }
 
-                            let is_mutation = matches!(
-                                request,
-                                Request::PushCardVersions(_)
-                                    | Request::PushTagVersions(_)
-                                    | Request::PushBatch(_)
-                                    | Request::DeleteCard { .. }
-                                    | Request::DeleteTag { .. }
-                            );
+                            let is_mutation = request.is_mutation();
                             let response = handle_request(storage.as_ref(), request);
                             let succeeded = !matches!(response, Response::Error(_));
                             let _ = write_message(&mut send, &response).await;

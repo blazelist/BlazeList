@@ -6,7 +6,9 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
 use crate::components::keyboard::register_keyboard_shortcuts;
-use crate::components::settings_panel::{apply_show_card_time, apply_ui_density, apply_ui_scale};
+use crate::components::settings_panel::{
+    apply_drag_and_drop_classes, apply_show_card_time, apply_ui_density, apply_ui_scale,
+};
 use crate::pages::home::Home;
 use crate::state::settings;
 use crate::state::store::{
@@ -46,6 +48,12 @@ fn take_reconnect_request() -> bool {
 /// connection loop that automatically reconnects on failure.
 #[component]
 pub fn App() -> impl IntoView {
+    // Prune stale `blazelist_*` localStorage keys before AppState reads
+    // any of them. Keeps the settings panel from sticking on values
+    // (or keys) that the running build no longer recognises — see
+    // `settings::run_startup_migrations`.
+    settings::run_startup_migrations();
+
     let state = AppState::new();
     provide_context(state);
 
@@ -78,29 +86,31 @@ pub fn App() -> impl IntoView {
     set_interval_js(tick_cb.as_ref().unchecked_ref(), 1_000);
     tick_cb.forget(); // lives for app lifetime
 
-    // Countdown ticks (every 1 second): auto-sync + push debounce
+    // Countdown ticks (every 100 ms) so `_MS`-precision settings (e.g.
+    // a 5500 ms interval) don't get silently rounded by a 1 Hz tick.
     let countdown_cb = Closure::wrap(Box::new(move || {
-        // Push debounce countdown (visual only — the actual push is fired by setTimeout)
-        let debounce = state.push_debounce_countdown.get_untracked();
-        if debounce > 0 {
-            state.push_debounce_countdown.set(debounce - 1);
+        // Priority-burst countdown (visual only — the push is fired by setTimeout).
+        let ms = state.priority_burst_countdown_ms.get_untracked();
+        if ms > 0 {
+            state
+                .priority_burst_countdown_ms
+                .set(ms.saturating_sub(100));
         }
 
-        // Auto-sync countdown
         let enabled = state.auto_sync_enabled.get_untracked();
         let connected = state.connection_status.get_untracked() == ConnectionStatus::Connected;
 
         if !enabled || !connected {
-            state.auto_sync_countdown.set(0);
+            state.auto_sync_countdown_ms.set(0);
             return;
         }
 
-        let current = state.auto_sync_countdown.get_untracked();
-        if current == 0 {
-            let interval = state.auto_sync_interval_secs.get_untracked();
-            state.auto_sync_countdown.set(interval);
-        } else if current == 1 {
-            state.auto_sync_countdown.set(0);
+        let current_ms = state.auto_sync_countdown_ms.get_untracked();
+        if current_ms == 0 {
+            let interval_ms = state.auto_sync_interval_ms.get_untracked();
+            state.auto_sync_countdown_ms.set(interval_ms);
+        } else if current_ms <= 100 {
+            state.auto_sync_countdown_ms.set(0);
             if let Some(client) = get_client() {
                 leptos::task::spawn_local(async move {
                     if let Err(e) = incremental_sync(&client, &state).await {
@@ -110,14 +120,15 @@ pub fn App() -> impl IntoView {
                 });
             }
         } else {
-            state.auto_sync_countdown.set(current - 1);
+            state.auto_sync_countdown_ms.set(current_ms - 100);
         }
     }) as Box<dyn FnMut()>);
-    set_interval_js(countdown_cb.as_ref().unchecked_ref(), 1_000);
+    set_interval_js(countdown_cb.as_ref().unchecked_ref(), 100);
     countdown_cb.forget();
 
     register_reconnect_listeners(state);
     register_beforeunload_guard(state);
+    register_priority_burst_unload_flush(state);
     register_keyboard_shortcuts(state);
     register_popstate_listener(state);
     leptos::task::spawn_local(async move {
@@ -214,6 +225,10 @@ pub fn App() -> impl IntoView {
     apply_ui_scale(state.ui_scale.get_untracked());
     apply_ui_density(&state.ui_density.get_untracked());
     apply_show_card_time(state.show_card_time.get_untracked());
+    apply_drag_and_drop_classes(
+        state.drag_and_drop_enabled.get_untracked(),
+        &state.drag_and_drop_mode.get_untracked(),
+    );
 
     view! {
         <Home />
@@ -437,6 +452,59 @@ fn register_beforeunload_guard(state: AppState) {
     cb.forget();
 }
 
+/// Best-effort flush of any in-flight priority burst on tab teardown.
+/// Fires on both `pagehide` and `visibilitychange → hidden` — the latter
+/// is a more reliable signal on iOS, and the flush is idempotent.
+fn register_priority_burst_unload_flush(state: AppState) {
+    let window = web_sys::window().expect("no window");
+
+    let cb = Closure::wrap(Box::new(move |_: web_sys::PageTransitionEvent| {
+        crate::state::pending_priority::flush_blocking(&state);
+    }) as Box<dyn FnMut(web_sys::PageTransitionEvent)>);
+    window
+        .add_event_listener_with_callback("pagehide", cb.as_ref().unchecked_ref())
+        .ok();
+    cb.forget();
+
+    if let Some(document) = window.document() {
+        let cb = Closure::wrap(Box::new(move || {
+            if let Some(doc) = web_sys::window().and_then(|w| w.document())
+                && doc.hidden()
+            {
+                crate::state::pending_priority::flush_blocking(&state);
+            }
+        }) as Box<dyn FnMut()>);
+        document
+            .add_event_listener_with_callback("visibilitychange", cb.as_ref().unchecked_ref())
+            .ok();
+        cb.forget();
+    }
+}
+
+/// GET `url` over `window.fetch` and return the response body as text.
+///
+/// Surfaces a non-2xx status as `Err("HTTP <status>")`. Used by both
+/// `fetch_cert_hash` and `fetch_config`, which each build their own URL
+/// (the cert-hash and `/config` endpoints derive their port differently)
+/// and then apply their own parse to the returned text.
+async fn fetch_text(url: &str) -> Result<String, String> {
+    let window = web_sys::window().ok_or("no window")?;
+
+    let resp_val = JsFuture::from(window.fetch_with_str(url))
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    let resp: web_sys::Response = resp_val.unchecked_into();
+
+    if !resp.ok() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let text = JsFuture::from(resp.text().map_err(|e| format!("{e:?}"))?)
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    text.as_string().ok_or("response was not text".to_string())
+}
+
 /// Fetch the server's self-signed certificate SHA-256 hash from its HTTP endpoint.
 ///
 /// Given a WebTransport URL like `https://host:47400`, derives the cert-hash
@@ -460,19 +528,7 @@ async fn fetch_cert_hash(wt_url: &str) -> Result<Vec<u8>, String> {
         format!("http://{host}:{http_port}/cert-hash")
     };
 
-    let resp_val = JsFuture::from(window.fetch_with_str(&fetch_url))
-        .await
-        .map_err(|e| format!("{e:?}"))?;
-    let resp: web_sys::Response = resp_val.unchecked_into();
-
-    if !resp.ok() {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    let text = JsFuture::from(resp.text().map_err(|e| format!("{e:?}"))?)
-        .await
-        .map_err(|e| format!("{e:?}"))?;
-    let hex = text.as_string().ok_or("response was not text")?;
+    let hex = fetch_text(&fetch_url).await?;
 
     hex_to_bytes(hex.trim()).ok_or_else(|| "invalid hex in cert hash response".to_string())
 }
@@ -499,6 +555,11 @@ async fn apply_server_config(state: &AppState) {
             .and_then(|v| v.as_f64())
             .map(|n| n as u32)
     }
+    fn get_string(obj: &JsValue, key: &str) -> Option<String> {
+        js_sys::Reflect::get(obj, &JsValue::from_str(key))
+            .ok()
+            .and_then(|v| v.as_string())
+    }
 
     // Capture raw config values for the settings panel display.
     let mut raw_config = std::collections::HashMap::new();
@@ -522,16 +583,6 @@ async fn apply_server_config(state: &AppState) {
     }
     state.server_config.set(raw_config);
 
-    if !settings::has_auto_save()
-        && let Some(v) = get_bool(&config, "auto_save")
-    {
-        state.auto_save_enabled.set(v);
-    }
-    if !settings::has_auto_save_delay()
-        && let Some(v) = get_u32(&config, "auto_save_delay")
-    {
-        state.auto_save_delay_secs.set(v);
-    }
     if !settings::has_show_preview()
         && let Some(v) = get_bool(&config, "show_preview")
     {
@@ -542,20 +593,20 @@ async fn apply_server_config(state: &AppState) {
     {
         state.auto_sync_enabled.set(v);
     }
-    if !settings::has_auto_sync_interval()
-        && let Some(v) = get_u32(&config, "auto_sync_interval")
+    if !settings::has_auto_sync_interval_ms()
+        && let Some(v) = get_u32(&config, "auto_sync_interval_ms")
     {
-        state.auto_sync_interval_secs.set(v);
+        state.auto_sync_interval_ms.set(v);
     }
-    if !settings::has_debounce_enabled()
-        && let Some(v) = get_bool(&config, "debounce_enabled")
+    if !settings::has_priority_debounce_enabled()
+        && let Some(v) = get_bool(&config, "priority_debounce_enabled")
     {
-        state.debounce_enabled.set(v);
+        state.priority_debounce_enabled.set(v);
     }
-    if !settings::has_debounce_delay()
-        && let Some(v) = get_u32(&config, "debounce_delay")
+    if !settings::has_priority_debounce_delay_ms()
+        && let Some(v) = get_u32(&config, "priority_debounce_delay_ms")
     {
-        state.debounce_delay_secs.set(v);
+        state.priority_debounce_delay_ms.set(v);
     }
     if !settings::has_keyboard_shortcuts()
         && let Some(v) = get_bool(&config, "keyboard_shortcuts")
@@ -574,9 +625,7 @@ async fn apply_server_config(state: &AppState) {
         apply_ui_scale(v);
     }
     if !settings::has_ui_density()
-        && let Some(v) = js_sys::Reflect::get(&config, &JsValue::from_str("ui_density"))
-            .ok()
-            .and_then(|v| v.as_string())
+        && let Some(v) = get_string(&config, "ui_density")
     {
         apply_ui_density(&v);
         state.ui_density.set(v);
@@ -586,20 +635,50 @@ async fn apply_server_config(state: &AppState) {
     {
         state.touch_swipe_enabled.set(v);
     }
-    if !settings::has_swipe_threshold_right()
-        && let Some(v) = get_u32(&config, "swipe_threshold_right")
+    if !settings::has_swipe_threshold_right_cycle()
+        && let Some(v) = get_u32(&config, "swipe_threshold_right_cycle")
     {
-        state.swipe_threshold_right.set(v);
+        state.swipe_threshold_right_cycle.set(v);
     }
-    if !settings::has_swipe_threshold_left()
-        && let Some(v) = get_u32(&config, "swipe_threshold_left")
+    if !settings::has_swipe_threshold_right_levels()
+        && let Some(v) = get_u32(&config, "swipe_threshold_right_levels")
     {
-        state.swipe_threshold_left.set(v);
+        state.swipe_threshold_right_levels.set(v);
+    }
+    if !settings::has_swipe_threshold_left_cycle()
+        && let Some(v) = get_u32(&config, "swipe_threshold_left_cycle")
+    {
+        state.swipe_threshold_left_cycle.set(v);
+    }
+    if !settings::has_swipe_threshold_left_levels()
+        && let Some(v) = get_u32(&config, "swipe_threshold_left_levels")
+    {
+        state.swipe_threshold_left_levels.set(v);
     }
     if !settings::has_swipe_undo_timeout_ms()
         && let Some(v) = get_u32(&config, "swipe_undo_timeout_ms")
     {
         state.swipe_undo_timeout_ms.set(v);
+    }
+    if !settings::has_swipe_left_mode()
+        && let Some(v) = get_string(&config, "swipe_left_mode")
+    {
+        state.swipe_left_mode.set(v);
+    }
+    if !settings::has_swipe_levels_zone_today_width()
+        && let Some(v) = get_u32(&config, "swipe_levels_zone_today_width")
+    {
+        state.swipe_levels_zone_today_width.set(v);
+    }
+    if !settings::has_swipe_levels_zone_tomorrow_width()
+        && let Some(v) = get_u32(&config, "swipe_levels_zone_tomorrow_width")
+    {
+        state.swipe_levels_zone_tomorrow_width.set(v);
+    }
+    if !settings::has_swipe_levels_zone_soon_width()
+        && let Some(v) = get_u32(&config, "swipe_levels_zone_soon_width")
+    {
+        state.swipe_levels_zone_soon_width.set(v);
     }
     if !settings::has_clear_tag_search()
         && let Some(v) = get_bool(&config, "clear_tag_search")
@@ -647,6 +726,38 @@ async fn apply_server_config(state: &AppState) {
         state.show_card_time.set(v);
         apply_show_card_time(v);
     }
+    if !settings::has_extinguish_on_due_set()
+        && let Some(v) = get_bool(&config, "extinguish_on_due_set")
+    {
+        state.extinguish_on_due_set.set(v);
+    }
+    if !settings::has_extinguish_on_due_clear()
+        && let Some(v) = get_bool(&config, "extinguish_on_due_clear")
+    {
+        state.extinguish_on_due_clear.set(v);
+    }
+    if !settings::has_clear_due_on_blaze()
+        && let Some(v) = get_bool(&config, "clear_due_on_blaze")
+    {
+        state.clear_due_on_blaze.set(v);
+    }
+    if !settings::has_drag_and_drop_enabled()
+        && let Some(v) = get_bool(&config, "drag_and_drop_enabled")
+    {
+        state.drag_and_drop_enabled.set(v);
+    }
+    if !settings::has_drag_and_drop_mode()
+        && let Some(v) = js_sys::Reflect::get(&config, &JsValue::from_str("drag_and_drop_mode"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .filter(|s| settings::is_valid_drag_and_drop_mode(s))
+    {
+        state.drag_and_drop_mode.set(v);
+    }
+    apply_drag_and_drop_classes(
+        state.drag_and_drop_enabled.get_untracked(),
+        &state.drag_and_drop_mode.get_untracked(),
+    );
 
     tracing::info!("Applied server configuration defaults");
 }
@@ -673,19 +784,7 @@ async fn fetch_config() -> Result<JsValue, String> {
         format!("http://{host}:{http_port}/config")
     };
 
-    let resp_val = JsFuture::from(window.fetch_with_str(&fetch_url))
-        .await
-        .map_err(|e| format!("{e:?}"))?;
-    let resp: web_sys::Response = resp_val.unchecked_into();
-
-    if !resp.ok() {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    let text = JsFuture::from(resp.text().map_err(|e| format!("{e:?}"))?)
-        .await
-        .map_err(|e| format!("{e:?}"))?;
-    let json_str = text.as_string().ok_or("not text")?;
+    let json_str = fetch_text(&fetch_url).await?;
 
     js_sys::JSON::parse(&json_str).map_err(|_| "invalid JSON".to_string())
 }

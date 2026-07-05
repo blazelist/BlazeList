@@ -53,27 +53,107 @@ impl DueDateFilter {
                 | Self::UpcomingTwoWeeks
         )
     }
+
+    /// URL value for the filter. `None` when the filter is the default (All)
+    /// and can be omitted from the query string.
+    pub fn url_value(self) -> Option<&'static str> {
+        match self {
+            Self::All => None, // default — omit from URL
+            Self::Overdue => Some("overdue"),
+            Self::Today => Some("today"),
+            Self::TodayAndUpcoming => Some("today-upcoming"),
+            Self::UpcomingTomorrow => Some("upcoming-tomorrow"),
+            Self::UpcomingWeek => Some("upcoming-week"),
+            Self::UpcomingTwoWeeks => Some("upcoming-2weeks"),
+        }
+    }
+
+    pub fn from_url_value(s: &str) -> Self {
+        match s {
+            "overdue" => Self::Overdue,
+            "today" => Self::Today,
+            // `upcoming` is a legacy alias kept for old/shared URLs.
+            "today-upcoming" | "upcoming" => Self::TodayAndUpcoming,
+            "upcoming-tomorrow" => Self::UpcomingTomorrow,
+            "upcoming-week" => Self::UpcomingWeek,
+            "upcoming-2weeks" => Self::UpcomingTwoWeeks,
+            _ => Self::All,
+        }
+    }
 }
 
-/// Tag filter mode: AND requires all selected tags, OR requires any.
+/// Tag filter mode.
+///
+/// - [`Or`](Self::Or): include cards with **any** selected tag.
+/// - [`And`](Self::And): include cards with **all** selected tags.
+/// - [`Nor`](Self::Nor): exclude cards with **any** selected tag (keep the rest).
+/// - [`Nand`](Self::Nand): exclude cards with **all** selected tags (keep the rest).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TagFilterMode {
     Or,
     And,
+    Nor,
+    Nand,
 }
 
 impl TagFilterMode {
-    pub fn label(&self) -> &str {
+    pub fn label(&self) -> &'static str {
         match self {
             Self::Or => "OR",
             Self::And => "AND",
+            Self::Nor => "NOR",
+            Self::Nand => "NAND",
         }
     }
 
-    pub fn toggle(&self) -> Self {
+    /// Human-readable explanation of the mode's semantics.
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::Or => "Any selected tag",
+            Self::And => "All selected tags",
+            Self::Nor => "Exclude any selected tag",
+            Self::Nand => "Exclude all selected tags",
+        }
+    }
+
+    /// All variants in display order.
+    pub const ALL: &'static [TagFilterMode] = &[Self::Or, Self::And, Self::Nor, Self::Nand];
+
+    /// URL value for the mode. `None` when the mode is the default (OR) and
+    /// can be omitted from the query string.
+    pub fn url_value(&self) -> Option<&'static str> {
+        match self {
+            Self::Or => None,
+            Self::And => Some("and"),
+            Self::Nor => Some("nor"),
+            Self::Nand => Some("nand"),
+        }
+    }
+
+    pub fn from_url_value(s: &str) -> Self {
+        match s {
+            "and" => Self::And,
+            "nor" => Self::Nor,
+            "nand" => Self::Nand,
+            _ => Self::Or,
+        }
+    }
+
+    /// Whether this mode is compatible with the "no tags" filter.
+    /// Only OR is additive; the others select a subset that doesn't
+    /// meaningfully combine with "untagged-only".
+    pub fn allows_no_tags(&self) -> bool {
+        matches!(self, Self::Or)
+    }
+
+    /// Returns the next variant, cycling through all four modes:
+    /// OR → AND → NOR → NAND → OR.
+    pub fn next(&self) -> Self {
         match self {
             Self::Or => Self::And,
-            Self::And => Self::Or,
+            Self::And => Self::Nor,
+            Self::Nor => Self::Nand,
+            Self::Nand => Self::Or,
         }
     }
 }
@@ -133,15 +213,15 @@ pub fn apply_search_filter(
     });
 }
 
-/// Apply a tag filter using the given mode (AND/OR), optionally including
-/// cards with no tags.
+/// Apply a tag filter using the given [`TagFilterMode`], optionally
+/// including cards with no tags.
 ///
 /// When `no_tags` is true and `selected_tags` is empty, only untagged cards
 /// are shown. When `no_tags` is true and tags are also selected (OR mode),
 /// untagged cards are included alongside cards matching the selected tags.
-/// The UI prevents combining `no_tags` with AND mode or with selected tags
-/// in AND mode. No-op if both `selected_tags` is empty and `no_tags` is
-/// false.
+/// The UI prevents combining `no_tags` with non-OR modes — see
+/// [`TagFilterMode::allows_no_tags`]. No-op if both `selected_tags` is
+/// empty and `no_tags` is false.
 pub fn apply_tag_filter(
     cards: &mut Vec<Card>,
     selected_tags: &[Uuid],
@@ -162,6 +242,8 @@ pub fn apply_tag_filter(
         match mode {
             TagFilterMode::Or => c.tags().iter().any(|t| set.contains(t)),
             TagFilterMode::And => set.iter().all(|t| c.tags().contains(t)),
+            TagFilterMode::Nor => !c.tags().iter().any(|t| set.contains(t)),
+            TagFilterMode::Nand => !set.iter().all(|t| c.tags().contains(t)),
         }
     });
 }
@@ -186,70 +268,32 @@ pub fn apply_due_date_filter_with_today(
     today: NaiveDate,
     include_overdue: bool,
 ) {
-    let overdue_ok = |d: NaiveDate| include_overdue && d < today;
-    match filter {
-        DueDateFilter::All => {}
-        DueDateFilter::Overdue => {
-            cards.retain(|c| {
-                c.due_date()
-                    .map(|d| d.date_naive() < today)
-                    .unwrap_or(false)
-            });
-        }
-        DueDateFilter::Today => {
-            cards.retain(|c| {
-                c.due_date()
-                    .map(|d| {
-                        let date = d.date_naive();
-                        date == today || overdue_ok(date)
-                    })
-                    .unwrap_or(false)
-            });
-        }
-        DueDateFilter::TodayAndUpcoming => {
-            cards.retain(|c| {
-                c.due_date()
-                    .map(|d| {
-                        let date = d.date_naive();
-                        date >= today || overdue_ok(date)
-                    })
-                    .unwrap_or(false)
-            });
-        }
+    let overdue_ok = move |d: NaiveDate| include_overdue && d < today;
+    // Per-variant predicate over a card's due date. `All` is a no-op (returns
+    // early); every other arm keeps a card when its due date matches the
+    // variant's window. The Overdue arm deliberately ignores `overdue_ok`
+    // (it is unconditionally `date < today`); the rest fall back to it so an
+    // explicit "include overdue" pulls past-due cards into the window. The
+    // UpcomingWeek/UpcomingTwoWeeks upper bounds are half-open (`date < end`).
+    let keep: Box<dyn Fn(NaiveDate) -> bool> = match filter {
+        DueDateFilter::All => return,
+        DueDateFilter::Overdue => Box::new(move |date| date < today),
+        DueDateFilter::Today => Box::new(move |date| date == today || overdue_ok(date)),
+        DueDateFilter::TodayAndUpcoming => Box::new(move |date| date >= today || overdue_ok(date)),
         DueDateFilter::UpcomingTomorrow => {
             let tomorrow = today + chrono::Days::new(1);
-            cards.retain(|c| {
-                c.due_date()
-                    .map(|d| {
-                        let date = d.date_naive();
-                        date == tomorrow || overdue_ok(date)
-                    })
-                    .unwrap_or(false)
-            });
+            Box::new(move |date| date == tomorrow || overdue_ok(date))
         }
         DueDateFilter::UpcomingWeek => {
             let end = today + chrono::Days::new(7);
-            cards.retain(|c| {
-                c.due_date()
-                    .map(|d| {
-                        let date = d.date_naive();
-                        (date >= today && date < end) || overdue_ok(date)
-                    })
-                    .unwrap_or(false)
-            });
+            Box::new(move |date| (date >= today && date < end) || overdue_ok(date))
         }
         DueDateFilter::UpcomingTwoWeeks => {
             let end = today + chrono::Days::new(14);
-            cards.retain(|c| {
-                c.due_date()
-                    .map(|d| {
-                        let date = d.date_naive();
-                        (date >= today && date < end) || overdue_ok(date)
-                    })
-                    .unwrap_or(false)
-            });
+            Box::new(move |date| (date >= today && date < end) || overdue_ok(date))
         }
-    }
+    };
+    cards.retain(|c| c.due_date().is_some_and(|d| keep(d.date_naive())));
 }
 
 /// Apply the full filtering pipeline: linked cards → blaze status →
@@ -257,6 +301,11 @@ pub fn apply_due_date_filter_with_today(
 ///
 /// Cards are filtered in-place. This is the canonical filtering sequence
 /// used by both CLI and WASM clients.
+// Nine cohesive filter inputs applied as one in-place pipeline; bundling them
+// into a struct would add indirection without clarifying the call sites. This
+// silences clippy::too_many_arguments, which otherwise fails the Lint
+// workflow's `cargo clippy -- -D warnings` on this (pre-existing) signature.
+#[allow(clippy::too_many_arguments)]
 pub fn apply_all_filters(
     cards: &mut Vec<Card>,
     linked_ids: &[Uuid],
@@ -399,21 +448,20 @@ pub fn sort_cards(cards: &mut [Card], order: SortOrder) {
         SortOrder::TitleReverse => {
             cards.sort_unstable_by_key(|c| std::cmp::Reverse(c.content().to_lowercase()));
         }
-        SortOrder::DueDate => {
+        SortOrder::DueDate | SortOrder::DueDateReverse => {
+            // Only the dated (Some/Some) comparison direction flips; undated
+            // cards stay LAST and the priority-descending tiebreaker stays
+            // FIXED in both directions.
+            let reverse = order == SortOrder::DueDateReverse;
             cards.sort_by(|a, b| {
                 let cmp = match (a.due_date(), b.due_date()) {
-                    (Some(a_d), Some(b_d)) => a_d.cmp(&b_d),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => std::cmp::Ordering::Equal,
-                };
-                cmp.then_with(|| b.priority().cmp(&a.priority()))
-            });
-        }
-        SortOrder::DueDateReverse => {
-            cards.sort_by(|a, b| {
-                let cmp = match (a.due_date(), b.due_date()) {
-                    (Some(a_d), Some(b_d)) => b_d.cmp(&a_d),
+                    (Some(a_d), Some(b_d)) => {
+                        if reverse {
+                            b_d.cmp(&a_d)
+                        } else {
+                            a_d.cmp(&b_d)
+                        }
+                    }
                     (Some(_), None) => std::cmp::Ordering::Less,
                     (None, Some(_)) => std::cmp::Ordering::Greater,
                     (None, None) => std::cmp::Ordering::Equal,
@@ -466,12 +514,43 @@ mod tests {
     fn tag_filter_mode_label() {
         assert_eq!(TagFilterMode::Or.label(), "OR");
         assert_eq!(TagFilterMode::And.label(), "AND");
+        assert_eq!(TagFilterMode::Nor.label(), "NOR");
+        assert_eq!(TagFilterMode::Nand.label(), "NAND");
     }
 
     #[test]
-    fn tag_filter_mode_toggle() {
-        assert_eq!(TagFilterMode::Or.toggle(), TagFilterMode::And);
-        assert_eq!(TagFilterMode::And.toggle(), TagFilterMode::Or);
+    fn tag_filter_mode_url_roundtrip() {
+        for &mode in TagFilterMode::ALL {
+            if let Some(val) = mode.url_value() {
+                assert_eq!(TagFilterMode::from_url_value(val), mode);
+            }
+        }
+        // Default (OR) has no URL value
+        assert_eq!(TagFilterMode::Or.url_value(), None);
+        // Unknown string falls back to OR
+        assert_eq!(TagFilterMode::from_url_value("nonsense"), TagFilterMode::Or);
+    }
+
+    #[test]
+    fn tag_filter_mode_allows_no_tags() {
+        assert!(TagFilterMode::Or.allows_no_tags());
+        assert!(!TagFilterMode::And.allows_no_tags());
+        assert!(!TagFilterMode::Nor.allows_no_tags());
+        assert!(!TagFilterMode::Nand.allows_no_tags());
+    }
+
+    #[test]
+    fn tag_filter_mode_next_cycles_all_four() {
+        // Full cycle: OR → AND → NOR → NAND → OR.
+        let mut mode = TagFilterMode::Or;
+        mode = mode.next();
+        assert_eq!(mode, TagFilterMode::And);
+        mode = mode.next();
+        assert_eq!(mode, TagFilterMode::Nor);
+        mode = mode.next();
+        assert_eq!(mode, TagFilterMode::Nand);
+        mode = mode.next();
+        assert_eq!(mode, TagFilterMode::Or);
     }
 
     #[test]
@@ -540,6 +619,70 @@ mod tests {
         // Only card 2 has both tags
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].content(), "Write tests");
+    }
+
+    #[test]
+    fn tag_filter_nor_mode() {
+        let mut cards = sample_cards();
+        // Exclude any card with tag 10 → only "Deploy app" (tag 11 only) remains.
+        apply_tag_filter(&mut cards, &[fixed_uuid(10)], TagFilterMode::Nor, false);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].content(), "Deploy app");
+    }
+
+    #[test]
+    fn tag_filter_nor_mode_keeps_untagged() {
+        let mut cards = sample_cards();
+        cards.push(Card::first(
+            fixed_uuid(4),
+            "Untagged card".into(),
+            priority(500),
+            vec![],
+            false,
+            fixed_time(),
+            None,
+        ));
+        apply_tag_filter(&mut cards, &[fixed_uuid(10)], TagFilterMode::Nor, false);
+        let names: Vec<_> = cards.iter().map(|c| c.content()).collect();
+        assert!(names.contains(&"Deploy app"));
+        assert!(names.contains(&"Untagged card"));
+        assert!(!names.contains(&"Buy groceries"));
+        assert!(!names.contains(&"Write tests"));
+    }
+
+    #[test]
+    fn tag_filter_nand_mode() {
+        let mut cards = sample_cards();
+        // Exclude only cards that have BOTH tag 10 AND tag 11 (i.e. card 2).
+        apply_tag_filter(
+            &mut cards,
+            &[fixed_uuid(10), fixed_uuid(11)],
+            TagFilterMode::Nand,
+            false,
+        );
+        let names: Vec<_> = cards.iter().map(|c| c.content()).collect();
+        assert_eq!(cards.len(), 2);
+        assert!(names.contains(&"Buy groceries"));
+        assert!(names.contains(&"Deploy app"));
+        assert!(!names.contains(&"Write tests"));
+    }
+
+    #[test]
+    fn tag_filter_nand_single_tag_matches_nor() {
+        // With exactly one selected tag, NOR and NAND are equivalent
+        // (the "all" set is the "any" set).
+        let mut cards_nor = sample_cards();
+        let mut cards_nand = sample_cards();
+        apply_tag_filter(&mut cards_nor, &[fixed_uuid(11)], TagFilterMode::Nor, false);
+        apply_tag_filter(
+            &mut cards_nand,
+            &[fixed_uuid(11)],
+            TagFilterMode::Nand,
+            false,
+        );
+        let nor: Vec<_> = cards_nor.iter().map(|c| c.content()).collect();
+        let nand: Vec<_> = cards_nand.iter().map(|c| c.content()).collect();
+        assert_eq!(nor, nand);
     }
 
     #[test]
@@ -1231,6 +1374,155 @@ mod tests {
     }
 
     #[test]
+    fn due_filter_overdue_only_past() {
+        // The Overdue arm is unconditionally `date < today`: only past-due
+        // cards survive, and today/tomorrow/future/no-due are all excluded.
+        let today = NaiveDate::from_ymd_opt(2025, 6, 15).unwrap();
+        let mut cards = due_date_cards(today);
+        apply_due_date_filter_with_today(&mut cards, DueDateFilter::Overdue, today, false);
+        let n = names(&cards);
+        assert_eq!(n, vec!["yesterday"]);
+    }
+
+    #[test]
+    fn due_filter_overdue_ignores_include_overdue_flag() {
+        // The Overdue arm deliberately ignores `include_overdue`: passing
+        // `true` must NOT additionally pull in today or any future cards.
+        // Overdue stays past-only regardless of the flag.
+        let today = NaiveDate::from_ymd_opt(2025, 6, 15).unwrap();
+        let mut cards = due_date_cards(today);
+        apply_due_date_filter_with_today(&mut cards, DueDateFilter::Overdue, today, true);
+        // The exact-equality assert proves no today/future/no-due card
+        // leaked in: "yesterday" is the whole surviving set.
+        assert_eq!(names(&cards), vec!["yesterday"]);
+    }
+
+    // ---- Search filter with tag-title matching ----
+
+    #[test]
+    fn search_filter_matches_via_tag_title() {
+        // Card 1 has tag 10 ("urgent"); card 3 has tag 11 ("personal").
+        // Searching for "urgent" with search_tags=true must match the card
+        // via its tag title even though no card's content contains "urgent".
+        let all_tags = vec![
+            Tag::first(fixed_uuid(10), "urgent".into(), None, fixed_time()),
+            Tag::first(fixed_uuid(11), "personal".into(), None, fixed_time()),
+        ];
+        let mut cards = sample_cards();
+        apply_search_filter(&mut cards, "urgent", true, &all_tags);
+        // Cards 1 and 2 carry tag 10.
+        assert_eq!(cards.len(), 2);
+        let n = names(&cards);
+        assert!(n.contains(&"Buy groceries"));
+        assert!(n.contains(&"Write tests"));
+        assert!(!n.contains(&"Deploy app"));
+    }
+
+    #[test]
+    fn search_filter_tag_title_case_insensitive() {
+        // Tag-title matching lowercases both sides, so an uppercase query
+        // still matches a lowercase tag title.
+        let all_tags = vec![Tag::first(
+            fixed_uuid(11),
+            "personal".into(),
+            None,
+            fixed_time(),
+        )];
+        let mut cards = sample_cards();
+        apply_search_filter(&mut cards, "PERSONAL", true, &all_tags);
+        // Cards 2 and 3 carry tag 11.
+        assert_eq!(cards.len(), 2);
+        let n = names(&cards);
+        assert!(n.contains(&"Write tests"));
+        assert!(n.contains(&"Deploy app"));
+    }
+
+    #[test]
+    fn search_filter_tag_title_ignored_when_search_tags_false() {
+        // The exact same setup with search_tags=false must NOT match via the
+        // tag title: only content is consulted, and no content contains
+        // "urgent", so every card is dropped.
+        let all_tags = vec![Tag::first(
+            fixed_uuid(10),
+            "urgent".into(),
+            None,
+            fixed_time(),
+        )];
+        let mut cards = sample_cards();
+        apply_search_filter(&mut cards, "urgent", false, &all_tags);
+        assert!(cards.is_empty());
+    }
+
+    #[test]
+    fn search_filter_excludes_no_tags_card() {
+        // The "no tags" special tag is excluded from tag-title search: an
+        // untagged card has an empty tags() list, so the tag-search branch
+        // never fires for it. With a query that matches neither its content
+        // nor any real tag, an untagged card is dropped even when
+        // search_tags=true.
+        let all_tags = vec![Tag::first(
+            fixed_uuid(10),
+            "urgent".into(),
+            None,
+            fixed_time(),
+        )];
+        let mut cards = vec![Card::first(
+            fixed_uuid(4),
+            "untitled".into(),
+            priority(500),
+            vec![],
+            false,
+            fixed_time(),
+            None,
+        )];
+        apply_search_filter(&mut cards, "urgent", true, &all_tags);
+        assert!(cards.is_empty());
+    }
+
+    #[test]
+    fn search_filter_tag_present_only_in_all_tags_does_not_match() {
+        // A tag whose title contains the query but which no card references
+        // must not cause a match: the iteration is over each card's own
+        // tags(), not over all_tags.
+        let all_tags = vec![
+            Tag::first(fixed_uuid(10), "work".into(), None, fixed_time()),
+            Tag::first(fixed_uuid(11), "home".into(), None, fixed_time()),
+            // "urgent" exists as a tag but is not on any card in sample_cards().
+            Tag::first(fixed_uuid(12), "urgent".into(), None, fixed_time()),
+        ];
+        let mut cards = sample_cards();
+        apply_search_filter(&mut cards, "urgent", true, &all_tags);
+        assert!(cards.is_empty());
+    }
+
+    #[test]
+    fn search_filter_unknown_card_tag_id_is_skipped() {
+        // When a card references a tag id absent from all_tags, the
+        // `find(...)` lookup yields None and that tag is silently skipped
+        // rather than matching or panicking. Here all_tags is empty, so no
+        // card can match via a tag, and content does not contain "urgent".
+        let mut cards = sample_cards();
+        apply_search_filter(&mut cards, "urgent", true, &[]);
+        assert!(cards.is_empty());
+    }
+
+    #[test]
+    fn search_filter_content_still_matches_with_search_tags() {
+        // With search_tags=true the content match is still checked first, so a
+        // query matching content matches regardless of tags.
+        let all_tags = vec![Tag::first(
+            fixed_uuid(10),
+            "urgent".into(),
+            None,
+            fixed_time(),
+        )];
+        let mut cards = sample_cards();
+        apply_search_filter(&mut cards, "groceries", true, &all_tags);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].content(), "Buy groceries");
+    }
+
+    #[test]
     fn due_filter_is_upcoming() {
         assert!(!DueDateFilter::All.is_upcoming());
         assert!(!DueDateFilter::Overdue.is_upcoming());
@@ -1239,6 +1531,39 @@ mod tests {
         assert!(DueDateFilter::UpcomingTomorrow.is_upcoming());
         assert!(DueDateFilter::UpcomingWeek.is_upcoming());
         assert!(DueDateFilter::UpcomingTwoWeeks.is_upcoming());
+    }
+
+    #[test]
+    fn due_filter_url_roundtrip() {
+        // Mirrors `tag_filter_mode_url_roundtrip` / `sort_order_url_roundtrip`:
+        // every variant with a URL token must parse back to itself.
+        let all = [
+            DueDateFilter::All,
+            DueDateFilter::Overdue,
+            DueDateFilter::Today,
+            DueDateFilter::TodayAndUpcoming,
+            DueDateFilter::UpcomingTomorrow,
+            DueDateFilter::UpcomingWeek,
+            DueDateFilter::UpcomingTwoWeeks,
+        ];
+        for filter in all {
+            if let Some(val) = filter.url_value() {
+                assert_eq!(DueDateFilter::from_url_value(val), filter);
+            }
+        }
+        // Default (All) has no URL value and is what missing/unknown
+        // tokens fall back to.
+        assert_eq!(DueDateFilter::All.url_value(), None);
+        assert_eq!(DueDateFilter::from_url_value(""), DueDateFilter::All);
+        assert_eq!(
+            DueDateFilter::from_url_value("nonsense"),
+            DueDateFilter::All
+        );
+        // `upcoming` is a deliberate legacy alias for old/shared URLs.
+        assert_eq!(
+            DueDateFilter::from_url_value("upcoming"),
+            DueDateFilter::TodayAndUpcoming
+        );
     }
 
     #[test]

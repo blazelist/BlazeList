@@ -37,7 +37,7 @@ pub fn self_signed_server_config()
     let mut server_crypto = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(vec![cert_der], key_der.into())?;
-    server_crypto.alpn_protocols = vec![b"blazelist/0".to_vec()];
+    server_crypto.alpn_protocols = vec![blazelist_protocol::ALPN_PROTOCOL.to_vec()];
 
     let mut transport = quinn::TransportConfig::default();
     transport.max_idle_timeout(Some(
@@ -69,7 +69,7 @@ pub fn client_config_for_cert(
     let mut client_crypto = rustls::ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
-    client_crypto.alpn_protocols = vec![b"blazelist/0".to_vec()];
+    client_crypto.alpn_protocols = vec![blazelist_protocol::ALPN_PROTOCOL.to_vec()];
 
     let client_config = quinn::ClientConfig::new(Arc::new(
         quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto)?,

@@ -153,24 +153,33 @@ pub async fn request_persistent_storage() -> bool {
     }
 }
 
+/// Read the raw bytes of an OPFS file, if present and non-empty.
+///
+/// Mirrors the inline `opfs_read` JS helper, which returns `null` for a missing
+/// file. A read error, a `null`/`undefined` result, and an empty file are all
+/// collapsed to `None`; only a non-empty payload yields `Some(bytes)`. Callers
+/// that need to distinguish those cases (for logging) must read `opfs_read`
+/// directly.
+async fn opfs_read_bytes(filename: &str) -> Option<Vec<u8>> {
+    let data = opfs_read(filename).await.ok()?;
+    if data.is_null() || data.is_undefined() {
+        return None;
+    }
+    let bytes = js_sys::Uint8Array::new(&data).to_vec();
+    if bytes.is_empty() {
+        return None;
+    }
+    Some(bytes)
+}
+
 // -- Offline queue API -------------------------------------------------------
 
 /// Load queued offline card pushes from OPFS.
 pub async fn load_offline_queue() -> Vec<Card> {
-    match opfs_read(QUEUE_FILENAME).await {
-        Ok(data) => {
-            if data.is_null() || data.is_undefined() {
-                return Vec::new();
-            }
-            let array = js_sys::Uint8Array::new(&data);
-            let bytes = array.to_vec();
-            if bytes.is_empty() {
-                return Vec::new();
-            }
-            postcard::from_bytes(&bytes).unwrap_or_default()
-        }
-        Err(_) => Vec::new(),
-    }
+    opfs_read_bytes(QUEUE_FILENAME)
+        .await
+        .and_then(|b| postcard::from_bytes(&b).ok())
+        .unwrap_or_default()
 }
 
 /// Persist the offline queue to OPFS. Deletes the file when empty.
@@ -300,20 +309,10 @@ pub fn cached_tag_history_count() -> usize {
 
 /// Load the persisted transitive link cache from OPFS.
 pub async fn load_link_cache() -> crate::state::store::LinkGraphCache {
-    match opfs_read(LINK_CACHE_FILENAME).await {
-        Ok(data) => {
-            if data.is_null() || data.is_undefined() {
-                return HashMap::new();
-            }
-            let array = js_sys::Uint8Array::new(&data);
-            let bytes = array.to_vec();
-            if bytes.is_empty() {
-                return HashMap::new();
-            }
-            postcard::from_bytes(&bytes).unwrap_or_default()
-        }
-        Err(_) => HashMap::new(),
-    }
+    opfs_read_bytes(LINK_CACHE_FILENAME)
+        .await
+        .and_then(|b| postcard::from_bytes(&b).ok())
+        .unwrap_or_default()
 }
 
 /// Persist the transitive link cache to OPFS.

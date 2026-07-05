@@ -1,6 +1,6 @@
 use crate::components::hooks::toggle_expanded;
 use crate::components::timestamp::Timestamp;
-use crate::state::store::{AppState, get_client, sync_query_params};
+use crate::state::store::{AppState, get_client, set_selection};
 use crate::storage;
 use blazelist_client_lib::client::Client as _;
 use blazelist_protocol::{Entity, SequenceHistoryEntry, SequenceOperationKind};
@@ -146,11 +146,11 @@ pub fn SequenceHistory() -> impl IntoView {
                                         <div class="seq-ops">
                                             {ops.into_iter().map(|op| {
                                                 let (kind_label, kind_class) = match op.kind {
-                                                    SequenceOperationKind::CardCreated => ("Card created", "seq-kind-card-created"),
-                                                    SequenceOperationKind::CardUpdated => ("Card updated", "seq-kind-card-updated"),
-                                                    SequenceOperationKind::TagCreated => ("Tag created", "seq-kind-tag-created"),
-                                                    SequenceOperationKind::TagUpdated => ("Tag updated", "seq-kind-tag-updated"),
-                                                    SequenceOperationKind::EntityDeleted => ("Deleted", "seq-kind-deleted"),
+                                                    SequenceOperationKind::CardCreated => ("Card created", "history-kind-card-created"),
+                                                    SequenceOperationKind::CardUpdated => ("Card updated", "history-kind-card-updated"),
+                                                    SequenceOperationKind::TagCreated => ("Tag created", "history-kind-tag-created"),
+                                                    SequenceOperationKind::TagUpdated => ("Tag updated", "history-kind-tag-updated"),
+                                                    SequenceOperationKind::EntityDeleted => ("Deleted", "history-kind-deleted"),
                                                 };
                                                 let entity_name = match op.kind {
                                                     SequenceOperationKind::CardCreated | SequenceOperationKind::CardUpdated => {
@@ -173,12 +173,11 @@ pub fn SequenceHistory() -> impl IntoView {
                                                 let entity_id = op.entity_id;
                                                 let on_click = move |ev: web_sys::MouseEvent| {
                                                     ev.stop_propagation();
-                                                    state.selected_card.set(Some(entity_id));
-                                                    sync_query_params(&state);
+                                                    set_selection(&state, Some(entity_id));
                                                 };
                                                 view! {
                                                     <div class="seq-op clickable" on:click=on_click>
-                                                        <span class={format!("seq-kind {kind_class}")}>{kind_label}</span>
+                                                        <span class={format!("history-kind {kind_class}")}>{kind_label}</span>
                                                         <span class="seq-op-name">{entity_name}</span>
                                                     </div>
                                                 }

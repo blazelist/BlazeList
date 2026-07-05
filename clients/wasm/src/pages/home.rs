@@ -80,13 +80,11 @@ pub fn Home() -> impl IntoView {
 
     // Memo ensures the DynChild only re-renders when visibility truly
     // changes (false↔true), not when underlying signals change while
-    // the panel stays open.  Without this, setting `selected_card`
-    // during auto-save would destroy and recreate the entire detail
-    // panel, losing unsaved editor state.
+    // the panel stays open.
     let detail_open = Memo::new(move |_| {
-        state.selected_card.get().is_some()
-            || state.creating_new.get()
-            || state.creating_new_tag.get()
+        state.selected_card().get().is_some()
+            || state.creating_new().get()
+            || state.creating_new_tag().get()
             || state.settings_open.get()
             || state.shortcuts_open.get()
     });

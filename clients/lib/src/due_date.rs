@@ -3,9 +3,10 @@
 //! Provides due-date status computation, badge formatting, and quick-pick
 //! presets that are platform-agnostic.
 
-use chrono::{DateTime, Datelike, Utc, Weekday};
+use chrono::{DateTime, Datelike, NaiveDate, Utc, Weekday};
 
 /// Due date status relative to today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DueDateStatus {
     /// Due date is in the past by this many days.
     Overdue(i64),
@@ -119,25 +120,26 @@ impl DueDatePreset {
     }
 }
 
+/// Convert a naive date to midnight UTC.
+fn midnight_utc(date: NaiveDate) -> DateTime<Utc> {
+    date.and_hms_opt(0, 0, 0).unwrap().and_utc()
+}
+
 /// Today at midnight UTC.
 pub fn today_midnight() -> DateTime<Utc> {
-    Utc::now()
-        .date_naive()
-        .and_hms_opt(0, 0, 0)
-        .unwrap()
-        .and_utc()
+    midnight_utc(Utc::now().date_naive())
 }
 
 /// Tomorrow at midnight UTC.
 pub fn tomorrow_midnight() -> DateTime<Utc> {
     let tomorrow = Utc::now().date_naive().succ_opt().unwrap();
-    tomorrow.and_hms_opt(0, 0, 0).unwrap().and_utc()
+    midnight_utc(tomorrow)
 }
 
 /// Two days from now at midnight UTC.
 pub fn in_two_days_midnight() -> DateTime<Utc> {
     let two_days = Utc::now().date_naive() + chrono::Duration::days(2);
-    two_days.and_hms_opt(0, 0, 0).unwrap().and_utc()
+    midnight_utc(two_days)
 }
 
 /// The next occurrence of the given weekday at midnight UTC.
@@ -150,7 +152,7 @@ pub fn next_weekday(weekday: Weekday) -> DateTime<Utc> {
     let days_ahead = ((target_wd as i32 - today_wd as i32) + 7) % 7;
     let days_ahead = if days_ahead == 0 { 7 } else { days_ahead };
     let date = today + chrono::Duration::days(i64::from(days_ahead));
-    date.and_hms_opt(0, 0, 0).unwrap().and_utc()
+    midnight_utc(date)
 }
 
 #[cfg(test)]
@@ -162,7 +164,7 @@ mod tests {
         let yesterday = Utc::now() - chrono::Duration::days(2);
         match due_date_status(&yesterday) {
             DueDateStatus::Overdue(days) => assert!(days >= 1),
-            other => panic!("expected Overdue, got {:?}", std::mem::discriminant(&other)),
+            other => panic!("expected Overdue, got {other:?}"),
         }
     }
 
@@ -181,10 +183,7 @@ mod tests {
         let future = Utc::now() + chrono::Duration::days(5);
         match due_date_status(&future) {
             DueDateStatus::Upcoming(days) => assert!(days >= 4),
-            other => panic!(
-                "expected Upcoming, got {:?}",
-                std::mem::discriminant(&other)
-            ),
+            other => panic!("expected Upcoming, got {other:?}"),
         }
     }
 

@@ -17,6 +17,7 @@
     border: 1px solid transparent;
     border-radius: 4px;
     transition: all 0.1s;
+    margin: 0 -1rem;
 }
 
 .version-item:hover {
@@ -32,7 +33,7 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.4rem 0.625rem;
+    padding: 0.4rem 1rem;
     cursor: pointer;
 }
 
@@ -80,7 +81,7 @@
 }
 
 .version-preview {
-    padding: 0.5rem 0.625rem;
+    padding: 0.5rem 1rem;
     line-height: 1.6;
     font-size: 0.85rem;
     color: var(--text-primary);
@@ -89,7 +90,7 @@
 }
 
 .version-detail-meta {
-    padding: 0.5rem 0.625rem;
+    padding: 0.5rem 1rem;
     border-top: 1px solid var(--border);
     display: flex;
     flex-direction: column;
@@ -100,6 +101,15 @@
 .version-preview h1,
 .version-preview h2,
 .version-preview h3 { margin-bottom: 0.5rem; }
+.version-preview blockquote {
+    margin: 0 0 0.5rem;
+    padding: 0.1rem 0 0.1rem 0.75rem;
+    border-left: 3px solid var(--text-muted);
+    color: var(--text-secondary);
+}
+.version-preview blockquote > :last-child {
+    margin-bottom: 0;
+}
 .version-preview code {
     background: rgba(0, 0, 0, 0.4);
     padding: 0.1em 0.3em;
@@ -127,6 +137,19 @@
 .version-preview ol {
     padding-left: 1.5rem;
     margin-bottom: 0.5rem;
+}
+.version-preview table {
+    border-collapse: collapse;
+    margin-bottom: 0.5rem;
+}
+.version-preview th,
+.version-preview td {
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--border);
+}
+.version-preview th {
+    text-align: left;
+    font-weight: 600;
 }
 
 /* The fork "New from this" group reuses the main new-card dropdown
@@ -202,7 +225,7 @@
     display: flex;
     justify-content: flex-end;
     gap: 0.4rem;
-    padding: 0.4rem 0.625rem;
+    padding: 0.4rem 1rem;
     border-top: 1px solid var(--border);
 }
 
@@ -349,7 +372,11 @@
     background: rgba(255, 255, 255, 0.04);
 }
 
-.seq-kind {
+/* Shared operation badge — used by both sequence history (left sidebar)
+   and per-card / per-tag version history (in the detail pane). New
+   operation kinds should add a `history-kind-<name>` modifier and use
+   the same base class so the two views stay visually consistent. */
+.history-kind {
     font-size: 0.58rem;
     font-weight: 600;
     text-transform: uppercase;
@@ -360,29 +387,135 @@
     flex-shrink: 0;
 }
 
-.seq-kind-card-created {
+/* Sequence history kinds — kept colour-keyed to action/accent/etc. */
+.history-kind-card-created {
     color: var(--action);
     background: var(--action-subtle);
 }
 
-.seq-kind-card-updated {
+.history-kind-card-updated {
     color: var(--accent);
     background: var(--accent-subtle);
 }
 
-.seq-kind-tag-created {
+.history-kind-tag-created {
     color: var(--status-connecting);
     background: rgba(60, 140, 196, 0.12);
 }
 
-.seq-kind-tag-updated {
+.history-kind-tag-updated {
     color: var(--status-connecting);
     background: rgba(60, 140, 196, 0.08);
 }
 
-.seq-kind-deleted {
+.history-kind-deleted {
     color: var(--danger);
     background: var(--danger-subtle);
+}
+
+/* Per-card version history kinds */
+.history-kind-created {
+    color: var(--action);
+    background: var(--action-subtle);
+}
+
+.history-kind-content {
+    color: var(--accent);
+    background: var(--accent-subtle);
+}
+
+.history-kind-priority {
+    color: #6e6e76;
+    background: rgba(110, 110, 118, 0.14);
+}
+
+.history-kind-tags {
+    color: var(--status-connecting);
+    background: rgba(60, 140, 196, 0.12);
+}
+
+.history-kind-blazed {
+    color: var(--danger);
+    background: var(--danger-subtle);
+}
+
+.history-kind-extinguished {
+    color: var(--extinguish);
+    background: var(--extinguish-subtle);
+}
+
+.history-kind-due {
+    color: var(--due-today);
+    background: var(--due-today-subtle);
+}
+
+.history-kind-touched {
+    color: #2a2a30;
+    background: #c8c8d0;
+}
+
+/* Per-tag version history kinds */
+.history-kind-title {
+    color: var(--accent);
+    background: var(--accent-subtle);
+}
+
+.history-kind-color {
+    color: var(--extinguish);
+    background: var(--extinguish-subtle);
+}
+
+.history-kind-implies {
+    color: var(--status-connecting);
+    background: rgba(60, 140, 196, 0.12);
+}
+
+/* Filter chip bar — appears above the version list when there is more
+   than one operation kind in the history. Reuses the `history-kind`
+   palette so an "active" chip matches the badges it filters for. */
+.history-filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    padding: 0.3rem 0 0.4rem;
+}
+
+.history-filter-chip {
+    font-size: 0.58rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+
+.history-filter-chip:hover {
+    color: var(--text-secondary);
+    background: var(--bg-card);
+}
+
+.history-filter-chip.active {
+    border-color: currentColor;
+}
+
+.history-filter-all.active {
+    color: var(--text-primary);
+    background: var(--bg-card);
+}
+
+/* Inline badge strip in each version row. Sits between the version
+   number and the preview text, wraps onto a second line if needed
+   without pushing the time stamp off the row. */
+.version-changes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem;
+    flex-shrink: 0;
 }
 
 .seq-op-name {

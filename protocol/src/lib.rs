@@ -11,6 +11,11 @@
 //! negotiation helpers so that new clients don't need to reimplement
 //! the handshake logic.
 
+/// ALPN protocol identifier negotiated during the QUIC/WebTransport TLS
+/// handshake. Shared by the server and all native clients so the value
+/// stays in sync across crates.
+pub const ALPN_PROTOCOL: &[u8] = b"blazelist/0";
+
 // -- Type modules (formerly blazelist-types) --
 mod card;
 mod deleted_entity;
