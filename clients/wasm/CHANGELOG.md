@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [4.0.1] - 2026-08-02
+
+### Fixed
+
+- The service worker no longer answers navigations to other paths on the same origin with the BlazeList app shell — where a reverse proxy mounts another service alongside BlazeList (e.g. a file server under `/serve/`), opening it in a browser that had loaded BlazeList could show BlazeList instead of that service.
+
 ## [4.0.0] - 2026-07-05
 
 ### Added

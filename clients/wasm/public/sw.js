@@ -128,6 +128,14 @@ self.addEventListener('fetch', (event) => {
     //     online, and a visible update still takes effect on the next
     //     navigation / reload.
     if (event.request.mode === 'navigate') {
+        // The shell answers for its own route only. A reverse proxy can mount
+        // unrelated services under other paths of this origin, and the
+        // fallback chain below would hand their navigations the BlazeList
+        // shell instead — leaving the network to serve them keeps those paths
+        // intact, and stops the revalidate `cache.put` from filing another
+        // service's page under a BlazeList cache key.
+        if (url.pathname !== '/' && url.pathname !== '/index.html') return;
+
         event.respondWith(
             caches.match(event.request)
                 .then((r) => r || caches.match('/index.html'))

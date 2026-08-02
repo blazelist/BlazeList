@@ -347,7 +347,7 @@ dependencies = [
 
 [[package]]
 name = "blazelist-wasm"
-version = "4.0.0"
+version = "4.0.1"
 dependencies = [
  "blake3",
  "blazelist-client-lib",
