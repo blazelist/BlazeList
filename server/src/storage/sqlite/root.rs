@@ -8,9 +8,14 @@ use uuid::Uuid;
 use super::SqliteStorage;
 
 impl SqliteStorage {
-    /// Recompute the hash for a single bucket by querying all entities in that
-    /// bucket (cards, tags, deleted entities) sorted by UUID. Returns ZERO_HASH
-    /// if the bucket is empty.
+    /// Recompute the hash for a single bucket. Returns ZERO_HASH if the bucket
+    /// is empty.
+    ///
+    /// The three entity kinds are hashed as consecutive runs — every card, then
+    /// every tag, then every deleted entity, each run sorted by UUID. That
+    /// grouping is part of the hash: collapsing the three queries into one UNION
+    /// ordered by UUID alone would interleave the kinds and change every root
+    /// hash.
     pub(super) fn recompute_bucket_hash(
         conn: &Connection,
         bucket: u8,

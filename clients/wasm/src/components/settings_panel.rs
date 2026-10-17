@@ -1,3 +1,4 @@
+use crate::components::icons::{IconClose, IconGear};
 use crate::state::settings;
 use crate::state::store::{AppState, set_selection};
 use crate::storage;
@@ -11,9 +12,9 @@ extern "C" {
 }
 
 /// Render the env-var info line below a setting with three layers:
-/// 1. Compile-time default
-/// 2. Server override (from /config, if set)
-/// 3. Current user value (reactive, updates when toggled)
+/// 1. Compile-time default — always shown
+/// 2. Server override from `/config` — shown only when it differs from the default
+/// 3. Current user value (reactive) — shown only when it differs from the default
 fn env_info(
     state: AppState,
     env_var: &'static str,
@@ -83,7 +84,7 @@ pub fn SettingsButton() -> impl IntoView {
 
     view! {
         <button class="settings-btn" on:click=toggle title="Settings">
-            {"\u{2699}"}
+            <IconGear />
         </button>
     }
 }
@@ -345,7 +346,7 @@ pub fn SettingsPanel() -> impl IntoView {
         <div class="settings-page">
             <div class="detail-header">
                 <span class="detail-status">"Settings"</span>
-                <button class="detail-close" on:click=on_close>"x"</button>
+                <button class="detail-close" on:click=on_close aria-label="Close"><IconClose /></button>
             </div>
 
             // ── Sync & Saving ──
@@ -841,8 +842,7 @@ pub fn apply_show_card_time(enabled: bool) {
 /// - `dnd-mode-handle` whenever the mode is `handle`
 ///
 /// `anywhere` mode is the implicit default — represented by `dnd-on`
-/// without `dnd-mode-handle`. Cards render byte-identical to the
-/// pre-feature baseline whenever `dnd-on` is absent.
+/// without `dnd-mode-handle`.
 pub fn apply_drag_and_drop_classes(enabled: bool, mode: &str) {
     if let Some(doc) = web_sys::window().and_then(|w| w.document())
         && let Some(root) = doc.document_element()

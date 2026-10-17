@@ -9,6 +9,7 @@
 //! dismisses the sub-menu without doing anything.
 
 use crate::components::card_detail::apply_move_placement;
+use crate::components::icons::IconClose;
 use crate::components::settings_panel::switch_to_pane;
 use crate::state::pending_priority;
 use crate::state::store::{
@@ -471,6 +472,7 @@ fn handle_due_date_filter_submenu(key: &str, state: AppState) -> bool {
         "t" => DueDateFilter::Today,
         "u" => DueDateFilter::TodayAndUpcoming,
         "m" => DueDateFilter::UpcomingTomorrow,
+        "T" => DueDateFilter::TodayAndTomorrow,
         "w" => DueDateFilter::UpcomingWeek,
         "2" => DueDateFilter::UpcomingTwoWeeks,
         "i" => {
@@ -962,6 +964,10 @@ fn sub_menu_items(menu: SubMenu, state: &AppState) -> (&'static str, Vec<SubMenu
                     label: "Tomorrow",
                 },
                 SubMenuItem {
+                    key: "T",
+                    label: "Today & tomorrow",
+                },
+                SubMenuItem {
                     key: "w",
                     label: "Next 7 days",
                 },
@@ -1130,7 +1136,7 @@ pub fn ShortcutsPanel() -> impl IntoView {
         <div class="settings-page">
             <div class="detail-header">
                 <span class="detail-status">"Keyboard Shortcuts"</span>
-                <button class="detail-close" on:click=on_close>"x"</button>
+                <button class="detail-close" on:click=on_close aria-label="Close"><IconClose /></button>
             </div>
             <div class="help-body">
                 // --- Navigation ---
@@ -1175,7 +1181,7 @@ pub fn ShortcutsPanel() -> impl IntoView {
                 <table class="help-table">
                     <thead><tr><th>"Key"</th><th>"Opens"</th></tr></thead>
                     <tbody>
-                        <tr><td><kbd>"d"</kbd></td><td>"Due date filter — "<kbd>"a"</kbd>" All  "<kbd>"o"</kbd>" Overdue  "<kbd>"t"</kbd>" Today  "<kbd>"u"</kbd>" Today+  "<kbd>"U"</kbd>" Upcoming  "<kbd>"m"</kbd>" Tomorrow  "<kbd>"w"</kbd>" Week  "<kbd>"2"</kbd>" 2 Weeks  "<kbd>"i"</kbd>" Toggle overdue  "<kbd>"n"</kbd>" Today (quick)"</td></tr>
+                        <tr><td><kbd>"d"</kbd></td><td>"Due date filter — "<kbd>"a"</kbd>" All  "<kbd>"o"</kbd>" Overdue  "<kbd>"t"</kbd>" Today  "<kbd>"u"</kbd>" Today+  "<kbd>"m"</kbd>" Tomorrow  "<kbd>"T"</kbd>" Today & tomorrow  "<kbd>"w"</kbd>" Week  "<kbd>"2"</kbd>" 2 Weeks  "<kbd>"i"</kbd>" Toggle overdue  "<kbd>"n"</kbd>" Today (quick)"</td></tr>
                         <tr><td><kbd>"s"</kbd></td><td>"Sort — "<kbd>"p"</kbd>"/"<kbd>"P"</kbd>" Priority  "<kbd>"m"</kbd>"/"<kbd>"M"</kbd>" Modified  "<kbd>"c"</kbd>"/"<kbd>"C"</kbd>" Created  "<kbd>"t"</kbd>"/"<kbd>"T"</kbd>" Title  "<kbd>"d"</kbd>"/"<kbd>"D"</kbd>" Due date"</td></tr>
                         <tr><td><kbd>"l"</kbd></td><td>"Linked cards — "<kbd>"a"</kbd>" All  "<kbd>"f"</kbd>" Forward  "<kbd>"b"</kbd>" Back  "<kbd>"d"</kbd>" Direct  "<kbd>"c"</kbd>" Clear"</td></tr>
                     </tbody>

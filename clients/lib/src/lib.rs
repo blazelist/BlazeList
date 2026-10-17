@@ -1,7 +1,7 @@
 //! Shared client library for BlazeList clients.
 //!
-//! This crate provides platform-agnostic logic shared between the native
-//! CLI client and the WASM web client. It includes:
+//! This crate provides the transport-independent half of a BlazeList client.
+//! It includes:
 //!
 //! - **Display utilities** — Markdown-to-plain-text rendering and card preview
 //!   generation ([`display`]).
@@ -10,6 +10,8 @@
 //! - **Sync helpers** — Incremental changeset application ([`sync`]).
 //! - **Color utilities** — Tag color formatting and styling ([`color`]).
 //! - **Due date utilities** — Status computation and presets ([`due_date`]).
+//! - **Tag display** — Alphabetical ordering of tags for rendering
+//!   ([`tag_display`]).
 
 /// Crate version, derived from `Cargo.toml` at compile time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -22,6 +24,7 @@ pub mod error;
 pub mod filter;
 pub mod priority;
 pub mod sync;
+pub mod tag_display;
 pub mod tag_graph;
 
 #[cfg(test)]

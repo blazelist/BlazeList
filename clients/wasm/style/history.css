@@ -17,7 +17,7 @@
     border: 1px solid transparent;
     border-radius: 4px;
     transition: all 0.1s;
-    margin: 0 -1rem;
+    margin: 0 calc(-1 * var(--detail-pad-x));
 }
 
 .version-item:hover {
@@ -33,7 +33,7 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.4rem 1rem;
+    padding: 0.4rem var(--detail-pad-x);
     cursor: pointer;
 }
 
@@ -81,7 +81,7 @@
 }
 
 .version-preview {
-    padding: 0.5rem 1rem;
+    padding: 0.5rem var(--detail-pad-x);
     line-height: 1.6;
     font-size: 0.85rem;
     color: var(--text-primary);
@@ -90,7 +90,7 @@
 }
 
 .version-detail-meta {
-    padding: 0.5rem 1rem;
+    padding: 0.5rem var(--detail-pad-x);
     border-top: 1px solid var(--border);
     display: flex;
     flex-direction: column;
@@ -225,7 +225,7 @@
     display: flex;
     justify-content: flex-end;
     gap: 0.4rem;
-    padding: 0.4rem 1rem;
+    padding: 0.4rem var(--detail-pad-x);
     border-top: 1px solid var(--border);
 }
 

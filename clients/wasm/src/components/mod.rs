@@ -6,6 +6,7 @@ pub mod drag_drop;
 pub mod filter_bar;
 pub mod header;
 pub mod hooks;
+pub mod icons;
 pub mod keyboard;
 pub mod link_indicators;
 pub mod sequence_history;

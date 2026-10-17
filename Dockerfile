@@ -22,20 +22,14 @@ RUN trunk build --release --config clients/wasm/Trunk.toml \
 # ── Stage 2: Lightweight runtime ─────────────────────────────────────────────
 FROM debian:bookworm-slim
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends nginx \
-    && rm -rf /var/lib/apt/lists/*
-
 # Create the default data directory for the SQLite database.
 # Set world-writable permissions so the container can run as any UID/GID.
-RUN mkdir -p /data /tmp/nginx \
-    && chmod 1777 /data /tmp/nginx \
-    && chmod -R a+rwX /var/lib/nginx
+RUN mkdir -p /data \
+    && chmod 1777 /data
 
 COPY --from=builder /app/target/release/blazelist-server /usr/local/bin/blazelist-server
 COPY --from=builder /app/clients/wasm/dist /var/www/blazelist
 
-COPY docker/nginx.conf /etc/nginx/nginx.conf
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

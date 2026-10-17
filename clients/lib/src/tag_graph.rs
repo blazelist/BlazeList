@@ -1,11 +1,11 @@
 //! Tag implication graph utilities for clients.
 //!
 //! Re-exports the authoritative [`TagGraph`] and helpers from
-//! [`blazelist_protocol::tag::graph`] so WASM and other clients can
-//! import them through `blazelist_client_lib::tag_graph` without
-//! reaching across crate boundaries. The types themselves are
-//! defined in the protocol crate so the server can reuse them for
-//! push validation without depending on this client library.
+//! [`blazelist_protocol`] so clients can import them through
+//! `blazelist_client_lib::tag_graph` without reaching across crate
+//! boundaries. The types themselves are defined in the protocol crate
+//! so the server can reuse them for push validation without depending
+//! on this client library.
 //!
 //! The client-side use cases are:
 //!

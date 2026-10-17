@@ -4,9 +4,10 @@ use crate::NonNegativeI64;
 
 /// The root state of the Blaze List.
 ///
-/// The root hash is a BLAKE3 hash composed from all current card hashes.
-/// The root sequence increments on any change to any card (creation, edit,
-/// or deletion). Used for quick sync checks.
+/// The root hash is a BLAKE3 hash composed from the hashes of every live
+/// card, every live tag, and every deleted-entity record. The root sequence
+/// increments on any change to any of them (creation, edit, or deletion).
+/// Used for quick sync checks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RootState {
     pub hash: blake3::Hash,

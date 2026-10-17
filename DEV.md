@@ -127,7 +127,7 @@ just wasm-clippy         # Run clippy lints
 ## Build and Quality
 
 ```bash
-just build               # Build all crates
+just build               # Build every crate except the WASM client (see wasm-build)
 just check               # Fast compile check (workspace + WASM)
 just clippy              # Run clippy lints (workspace + WASM)
 just fmt                 # Format code

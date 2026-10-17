@@ -130,6 +130,9 @@
 }
 
 .chip-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background: none;
     border: none;
     color: inherit;
@@ -223,7 +226,7 @@
     border-color: var(--border-hover);
 }
 
-/* Universal small "x" clear button (sort reset, tag clear, search clear) */
+/* Universal small clear button (sort reset, tag clear, search clear) */
 .btn-clear-x {
     display: inline-flex;
     align-items: center;
@@ -237,7 +240,6 @@
     border-radius: 4px;
     cursor: pointer;
     font-size: 0.68rem;
-    line-height: 1;
     flex-shrink: 0;
     transition: all 0.15s;
 }

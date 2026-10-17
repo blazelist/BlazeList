@@ -122,7 +122,8 @@ pub async fn run_server<S: Storage + Send + Sync + 'static>(
     }
 }
 
-/// Perform the client-side version handshake and then send a single request.
+/// Send a single request on a fresh bidirectional stream and read the response.
+/// The connection must already have completed `perform_version_handshake`.
 /// Used by integration tests; production clients use `Client::connect`.
 pub async fn send_request(
     connection: &quinn::Connection,

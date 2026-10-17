@@ -75,11 +75,30 @@ pub fn markdown_options() -> Options<'static> {
     opts
 }
 
+/// Copy icon for the code-block button, drawn rather than set as a character:
+/// `⧉` U+29C9 is absent from the symbol fonts lean devices ship, so a glyph
+/// arrives as tofu. Same paths as `IconCopy` in the wasm client's
+/// `components/icons.rs`, so the two copy icons render identically.
+///
+/// Styling comes from the `icon` class in that client's `style/base.css`, as it
+/// does for the wrapper and button classes emitted around it. The presentation
+/// attributes cover only what keeps the icon legible without that stylesheet —
+/// an `<svg>` with neither a size nor a `fill` override renders as a 300×150
+/// black box — and, being the cascade's lowest-priority style source, lose to
+/// the class wherever it is loaded.
+const COPY_ICON_SVG: &str = concat!(
+    r#"<svg class="icon" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" aria-hidden="true">"#,
+    r#"<rect x="4" y="4" width="13" height="13" rx="1.5"/>"#,
+    r#"<rect x="7" y="7" width="13" height="13" rx="1.5"/>"#,
+    r#"</svg>"#,
+);
+
 /// Post-process rendered HTML to wrap `<pre>` code blocks inside a container
 /// with a "copy to clipboard" button.
 ///
 /// Each `<pre>…</pre>` block is wrapped in
-/// `<div class="code-block-wrapper"><button class="code-copy-btn" title="Copy to clipboard">⧉</button><pre>…</pre></div>`.
+/// `<div class="code-block-wrapper"><button class="code-copy-btn" title="Copy to clipboard"><svg class="icon">…</svg></button><pre>…</pre></div>`,
+/// the button's icon being `COPY_ICON_SVG`.
 pub fn wrap_code_blocks_with_copy_button(html: &str) -> String {
     static PRE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r"(?s)<pre(?:\s[^>]*)?>.*?</pre>").expect("pre regex is valid")
@@ -93,7 +112,7 @@ pub fn wrap_code_blocks_with_copy_button(html: &str) -> String {
         result.push_str(
             r#"<div class="code-block-wrapper"><button class="code-copy-btn" title="Copy to clipboard">"#,
         );
-        result.push('\u{29C9}'); // ⧉
+        result.push_str(COPY_ICON_SVG);
         result.push_str("</button>");
         result.push_str(m.as_str());
         result.push_str("</div>");
@@ -897,21 +916,15 @@ mod tests {
         let own = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
         let linked = Uuid::parse_str("54c831d3-9b2c-400c-8344-10295de18f1b").unwrap();
 
-        // Bug regression: UUID in parens with no internal spaces was
-        // previously not matched because the regex required whitespace
-        // immediately before the UUID.
         let result = extract_card_links(&format!("Lorem ipsum ({linked})"), own);
         assert_eq!(result, vec![linked], "(UUID) in prose should match");
 
-        // Same bug for square and curly brackets.
         let result = extract_card_links(&format!("Lorem ipsum [{linked}]"), own);
         assert_eq!(result, vec![linked], "[UUID] in prose should match");
 
         let result = extract_card_links(&format!("Lorem ipsum {{{linked}}}"), own);
         assert_eq!(result, vec![linked], "{{UUID}} in prose should match");
 
-        // Variants with internal whitespace already worked — guard
-        // against regressions.
         let result = extract_card_links(&format!("Lorem ipsum ( {linked} )"), own);
         assert_eq!(result, vec![linked], "( UUID ) with spaces should match");
 
@@ -1587,7 +1600,9 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
         let html = "<pre><code>let x = 1;</code></pre>";
         let result = wrap_code_blocks_with_copy_button(html);
         assert!(result.starts_with(r#"<div class="code-block-wrapper">"#));
-        assert!(result.contains(r#"<button class="code-copy-btn" title="Copy to clipboard">"#));
+        assert!(result.contains(&format!(
+            r#"<button class="code-copy-btn" title="Copy to clipboard">{COPY_ICON_SVG}</button>"#
+        )));
         assert!(result.contains("<pre><code>let x = 1;</code></pre>"));
         assert!(result.ends_with("</div>"));
     }
@@ -1598,6 +1613,7 @@ And own ref ffffffff-ffff-ffff-ffff-ffffffffffff excluded.";
         let result = wrap_code_blocks_with_copy_button(html);
         assert_eq!(result.matches("code-block-wrapper").count(), 2);
         assert_eq!(result.matches("code-copy-btn").count(), 2);
+        assert_eq!(result.matches(COPY_ICON_SVG).count(), 2);
     }
 
     #[test]

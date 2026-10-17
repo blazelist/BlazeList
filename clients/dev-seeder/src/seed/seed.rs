@@ -751,7 +751,8 @@ fn random_card_tags(rng: &mut ChaCha8Rng, tag_ids: &[Uuid], graph: &TagGraph) ->
 
 /// Generate deleted cards with random priorities.
 ///
-/// These cards will be pushed then immediately deleted in the same batch.
+/// The seeder pushes these with the live cards and deletes them in a second
+/// batch, so the server persists a `DeletedEntity` record for each.
 #[allow(clippy::too_many_arguments)]
 fn generate_deleted_cards(
     rng: &mut ChaCha8Rng,

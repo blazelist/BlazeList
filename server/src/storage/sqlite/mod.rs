@@ -434,7 +434,7 @@ impl Storage for SqliteStorage {
 
         // Implication invariant check over the full post-batch state.
         // Runs after every per-item write has succeeded but before
-        // `recompute_root`, so a violation rolls back the whole
+        // `recompute_root_for_ids`, so a violation rolls back the whole
         // transaction and the root stays unchanged.
         Self::validate_batch_implications(&tx, items)
             .map_err(|error| BatchError { index: 0, error })?;

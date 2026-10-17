@@ -3,8 +3,12 @@ use crate::components::hooks::{
     ConfirmDeletePrompt, TagColorPicker, handle_code_copy_click, parse_hex_color,
     use_click_outside_close,
 };
+use crate::components::icons::{
+    IconClose, IconCopy, IconLinkBack, IconLinkForward, IconLinkMutual, IconLinkTransitive,
+    IconMoveBottom, IconMoveDown, IconMoveTop, IconMoveUp, IconNext, IconPrev,
+};
 use crate::components::keyboard::{copy_to_clipboard, show_copy_toast};
-use crate::components::link_indicators::link_indicators_view;
+use crate::components::link_indicators::{MUTUAL_ARROW, link_indicators_view};
 use crate::components::tag_detail::TagDetail;
 use crate::components::timestamp::Timestamp;
 use crate::components::toast::show_error_toast;
@@ -21,6 +25,7 @@ use blazelist_client_lib::client::Client as _;
 use blazelist_client_lib::display::LinkCounts;
 use blazelist_client_lib::error::ClientError;
 use blazelist_client_lib::priority::{InsertPosition, Placement, move_card};
+use blazelist_client_lib::tag_display::resolve_tags;
 use blazelist_client_lib::tag_graph::TagGraph;
 use blazelist_protocol::{Card, Entity, Tag, Utc};
 use leptos::prelude::*;
@@ -255,7 +260,7 @@ pub fn CardDetail() -> impl IntoView {
                                     <span class="unsaved-indicator">"(unsaved)"</span>
                                 })}
                             </div>
-                            <button class="detail-close" on:click=on_close>"x"</button>
+                            <button class="detail-close" on:click=on_close aria-label="Close"><IconClose /></button>
                         </div>
                         {editor_view}
                     </div>
@@ -320,7 +325,7 @@ pub fn CardDetail() -> impl IntoView {
                     <div class="card-detail">
                         <div class="detail-header">
                             <span class="detail-status deleted">"Not Found"</span>
-                            <button class="detail-close" on:click=on_close>"x"</button>
+                            <button class="detail-close" on:click=on_close aria-label="Close"><IconClose /></button>
                         </div>
                         <div class="card-content deleted-notice">
                             <p>"Entity not found. It may have been deleted."</p>
@@ -392,13 +397,7 @@ pub fn CardDetail() -> impl IntoView {
                 }
             };
 
-            let card_tag_ids = card.tags().to_vec();
-            let all_tags = state.tags.get_untracked();
-            let mut card_tags_with_ids: Vec<(uuid::Uuid, String, Option<rgb::RGB8>)> = card_tag_ids.iter().filter_map(|tid| {
-                let tag = all_tags.iter().find(|t| t.id() == *tid)?;
-                Some((*tid, tag.title().to_string(), tag.color()))
-            }).collect();
-            card_tags_with_ids.sort_by_key(|a| a.1.to_lowercase());
+            let card_tags = resolve_tags(card.tags().to_vec(), &state.tags.get_untracked());
 
             let reorder_disabled;
             let filtered;
@@ -808,10 +807,10 @@ pub fn CardDetail() -> impl IntoView {
                                             let is_back = back_set_clone.contains(&lid);
                                             let is_lid_blazed = blazed_ids_links.contains(&lid);
                                             let (direction, dir_class, dir_tip) = match (is_forward, is_back) {
-                                                (true, true) => ("\u{2194}", "linked-card-direction dir-mutual", "Mutual link"),
-                                                (true, false) => ("\u{2192}", "linked-card-direction dir-forward", "Forward link"),
-                                                (false, true) => ("\u{2190}", "linked-card-direction dir-back", "Back link"),
-                                                _ => ("\u{22EF}", "linked-card-direction dir-transitive", "Transitive link"),
+                                                (true, true) => (view! { <IconLinkMutual /> }.into_any(), "linked-card-direction dir-mutual", "Mutual link"),
+                                                (true, false) => (view! { <IconLinkForward /> }.into_any(), "linked-card-direction dir-forward", "Forward link"),
+                                                (false, true) => (view! { <IconLinkBack /> }.into_any(), "linked-card-direction dir-back", "Back link"),
+                                                _ => (view! { <IconLinkTransitive /> }.into_any(), "linked-card-direction dir-transitive", "Transitive link"),
                                             };
                                             let item_class = if is_lid_blazed { "linked-card-item blazed" } else { "linked-card-item" };
                                             let full_id = lid.to_string();
@@ -866,7 +865,7 @@ pub fn CardDetail() -> impl IntoView {
                                                         ids.insert(0, card_id);
                                                         filter_dropdown_open.set(false);
                                                         apply_linked_card_filter(&state, ids);
-                                                    }>"\u{2194} Direct (forward + back)"</button>
+                                                    }>{MUTUAL_ARROW}" Direct (forward + back)"</button>
                                                 </div>
                                             }
                                         })}
@@ -888,7 +887,7 @@ pub fn CardDetail() -> impl IntoView {
                                     <span class="unsaved-indicator">"(unsaved)"</span>
                                 })}
                             </div>
-                            <button class="detail-close" on:click=on_close>"x"</button>
+                            <button class="detail-close" on:click=on_close aria-label="Close"><IconClose /></button>
                         </div>
                         <CardEditor
                             editing_card=card_for_editor
@@ -907,7 +906,7 @@ pub fn CardDetail() -> impl IntoView {
                                 // [copy][prev][next][close]; DOM is reversed
                                 // so that copy (DOM-last) is the first to
                                 // wrap on narrow viewports.
-                                <button class="detail-nav-btn" on:click=on_close title="Close">"x"</button>
+                                <button class="detail-nav-btn" on:click=on_close title="Close"><IconClose /></button>
                                 <button
                                     class="detail-nav-btn"
                                     title="Next card (j)"
@@ -922,7 +921,7 @@ pub fn CardDetail() -> impl IntoView {
                                         let filtered = state.filtered_cards().get_untracked();
                                         filtered.last().map(|c| c.id()) == Some(card_id)
                                     }
-                                >"\u{203A}"</button>
+                                ><IconNext /></button>
                                 <button
                                     class="detail-nav-btn"
                                     title="Previous card (k)"
@@ -937,12 +936,12 @@ pub fn CardDetail() -> impl IntoView {
                                         let filtered = state.filtered_cards().get_untracked();
                                         filtered.first().map(|c| c.id()) == Some(card_id)
                                     }
-                                >"\u{2039}"</button>
+                                ><IconPrev /></button>
                                 <button
                                     class="detail-nav-btn"
                                     title="Copy card content to clipboard"
                                     on:click=on_copy_content
-                                >"\u{29C9}"</button>
+                                ><IconCopy /></button>
                             </div>
                         </div>
                         <div class="card-content" node_ref=content_node_ref inner_html=content_html on:click=on_content_click></div>
@@ -958,11 +957,12 @@ pub fn CardDetail() -> impl IntoView {
                         })}
 
                         // ── Tags (inline, only when present) ──
-                        {(!card_tags_with_ids.is_empty()).then(|| {
-                            let tags = card_tags_with_ids.clone();
+                        {(!card_tags.is_empty()).then(|| {
+                            let tags = card_tags.clone();
                             view! {
                                 <div class="detail-tag-chips">
-                                    {tags.into_iter().map(|(tag_id, name, color)| {
+                                    {tags.into_iter().map(|tag| {
+                                        let tag_id = tag.id;
                                         let on_tag_click = move |_| {
                                             let graph = TagGraph::from_tags(&state.tags.get_untracked());
                                             let to_add = graph.closure_of(&[tag_id]);
@@ -975,9 +975,9 @@ pub fn CardDetail() -> impl IntoView {
                                             });
                                             sync_query_params(&state);
                                         };
-                                        let style = tag_chip_style(&color);
+                                        let style = tag_chip_style(&tag.color);
                                         view! {
-                                            <span class="tag-chip" style=style on:click=on_tag_click title="Click to filter by this tag">{name}</span>
+                                            <span class="tag-chip" style=style on:click=on_tag_click title="Click to filter by this tag">{tag.title}</span>
                                         }
                                     }).collect::<Vec<_>>()}
                                 </div>
@@ -988,10 +988,10 @@ pub fn CardDetail() -> impl IntoView {
                         <div class="detail-section">
                             <div class="card-actions">
                                 <div class="action-row nav-row">
-                                    <button class="btn-move" on:click=on_move_top prop:disabled={is_at_top || !in_filtered} title="Move to top">{"\u{2912}"}</button>
-                                    <button class="btn-move" on:click=on_move_up prop:disabled={is_at_top || !in_filtered} title="Move up one">{"\u{2191}"}</button>
-                                    <button class="btn-move" on:click=on_move_down prop:disabled={is_at_bottom || !in_filtered} title="Move down one">{"\u{2193}"}</button>
-                                    <button class="btn-move" on:click=on_move_bottom prop:disabled={is_at_bottom || !in_filtered} title="Move to bottom">{"\u{2913}"}</button>
+                                    <button class="btn-move" on:click=on_move_top prop:disabled={is_at_top || !in_filtered} title="Move to top"><IconMoveTop /></button>
+                                    <button class="btn-move" on:click=on_move_up prop:disabled={is_at_top || !in_filtered} title="Move up one"><IconMoveUp /></button>
+                                    <button class="btn-move" on:click=on_move_down prop:disabled={is_at_bottom || !in_filtered} title="Move down one"><IconMoveDown /></button>
+                                    <button class="btn-move" on:click=on_move_bottom prop:disabled={is_at_bottom || !in_filtered} title="Move to bottom"><IconMoveBottom /></button>
                                     <input
                                         class="move-to-input"
                                         type="number"
@@ -1130,7 +1130,7 @@ pub fn CardDetail() -> impl IntoView {
                                         <button class="meta-copy-btn" title="Copy to clipboard" on:click=move |_| {
                                             copy_to_clipboard(&id_str_copy);
                                             show_copy_toast(state, &copy_toast_msg);
-                                        }>{"\u{29C9}"}</button>
+                                        }><IconCopy /></button>
                                         {id_str}
                                     </span>
                                 </div>
@@ -1256,7 +1256,7 @@ fn NewTagForm(on_close: impl Fn(()) + Copy + 'static) -> impl IntoView {
                     <span class="unsaved-indicator">"(unsaved)"</span>
                 })}
             </div>
-            <button class="detail-close" on:click=move |_| on_close(())>"x"</button>
+            <button class="detail-close" on:click=move |_| on_close(()) aria-label="Close"><IconClose /></button>
         </div>
 
         <div class="tag-title-section">

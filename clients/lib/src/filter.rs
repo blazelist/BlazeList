@@ -1,8 +1,7 @@
 //! Card filtering logic shared across BlazeList clients.
 //!
-//! Both the native CLI and WASM web client apply the same filtering
-//! pipeline: linked card filter → blaze status → search query → tag
-//! selection (AND/OR).
+//! The pipeline runs in a fixed order: linked card filter → blaze status →
+//! search query → tag selection (AND/OR).
 
 use std::collections::HashSet;
 
@@ -24,6 +23,8 @@ pub enum DueDateFilter {
     TodayAndUpcoming,
     /// Show only cards due tomorrow.
     UpcomingTomorrow,
+    /// Show only cards due today or tomorrow.
+    TodayAndTomorrow,
     /// Show only cards due within the next 7 days (inclusive of today).
     UpcomingWeek,
     /// Show only cards due within the next 14 days (inclusive of today).
@@ -38,6 +39,7 @@ impl DueDateFilter {
             Self::Today => "Today",
             Self::TodayAndUpcoming => "Today & upcoming",
             Self::UpcomingTomorrow => "Tomorrow",
+            Self::TodayAndTomorrow => "Today & tomorrow",
             Self::UpcomingWeek => "Next 7 days",
             Self::UpcomingTwoWeeks => "Next 14 days",
         }
@@ -49,6 +51,7 @@ impl DueDateFilter {
             self,
             Self::TodayAndUpcoming
                 | Self::UpcomingTomorrow
+                | Self::TodayAndTomorrow
                 | Self::UpcomingWeek
                 | Self::UpcomingTwoWeeks
         )
@@ -63,6 +66,7 @@ impl DueDateFilter {
             Self::Today => Some("today"),
             Self::TodayAndUpcoming => Some("today-upcoming"),
             Self::UpcomingTomorrow => Some("upcoming-tomorrow"),
+            Self::TodayAndTomorrow => Some("today-tomorrow"),
             Self::UpcomingWeek => Some("upcoming-week"),
             Self::UpcomingTwoWeeks => Some("upcoming-2weeks"),
         }
@@ -75,6 +79,7 @@ impl DueDateFilter {
             // `upcoming` is a legacy alias kept for old/shared URLs.
             "today-upcoming" | "upcoming" => Self::TodayAndUpcoming,
             "upcoming-tomorrow" => Self::UpcomingTomorrow,
+            "today-tomorrow" => Self::TodayAndTomorrow,
             "upcoming-week" => Self::UpcomingWeek,
             "upcoming-2weeks" => Self::UpcomingTwoWeeks,
             _ => Self::All,
@@ -274,7 +279,7 @@ pub fn apply_due_date_filter_with_today(
     // variant's window. The Overdue arm deliberately ignores `overdue_ok`
     // (it is unconditionally `date < today`); the rest fall back to it so an
     // explicit "include overdue" pulls past-due cards into the window. The
-    // UpcomingWeek/UpcomingTwoWeeks upper bounds are half-open (`date < end`).
+    // windowed arms' upper bounds are half-open (`date < end`).
     let keep: Box<dyn Fn(NaiveDate) -> bool> = match filter {
         DueDateFilter::All => return,
         DueDateFilter::Overdue => Box::new(move |date| date < today),
@@ -283,6 +288,10 @@ pub fn apply_due_date_filter_with_today(
         DueDateFilter::UpcomingTomorrow => {
             let tomorrow = today + chrono::Days::new(1);
             Box::new(move |date| date == tomorrow || overdue_ok(date))
+        }
+        DueDateFilter::TodayAndTomorrow => {
+            let end = today + chrono::Days::new(2);
+            Box::new(move |date| (date >= today && date < end) || overdue_ok(date))
         }
         DueDateFilter::UpcomingWeek => {
             let end = today + chrono::Days::new(7);
@@ -299,12 +308,12 @@ pub fn apply_due_date_filter_with_today(
 /// Apply the full filtering pipeline: linked cards → blaze status →
 /// search → tags.
 ///
-/// Cards are filtered in-place. This is the canonical filtering sequence
-/// used by both CLI and WASM clients.
+/// Cards are filtered in-place. This is the canonical filtering sequence for
+/// every client.
 // Nine cohesive filter inputs applied as one in-place pipeline; bundling them
-// into a struct would add indirection without clarifying the call sites. This
-// silences clippy::too_many_arguments, which otherwise fails the Lint
-// workflow's `cargo clippy -- -D warnings` on this (pre-existing) signature.
+// into a struct would add indirection without clarifying the call sites. The
+// allow keeps clippy::too_many_arguments from failing under
+// `cargo clippy -- -D warnings`.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_all_filters(
     cards: &mut Vec<Card>,
@@ -1219,6 +1228,15 @@ mod tests {
                 Some(to_dt(today + Days::new(1))),
             ),
             Card::first(
+                fixed_uuid(10),
+                "in2days".into(),
+                priority(100),
+                vec![],
+                false,
+                fixed_time(),
+                Some(to_dt(today + Days::new(2))),
+            ),
+            Card::first(
                 fixed_uuid(4),
                 "in3days".into(),
                 priority(100),
@@ -1289,6 +1307,14 @@ mod tests {
     }
 
     #[test]
+    fn due_filter_today_and_tomorrow() {
+        let today = NaiveDate::from_ymd_opt(2025, 6, 15).unwrap();
+        let mut cards = due_date_cards(today);
+        apply_due_date_filter_with_today(&mut cards, DueDateFilter::TodayAndTomorrow, today, false);
+        assert_eq!(names(&cards), vec!["today", "tomorrow"]);
+    }
+
+    #[test]
     fn due_filter_upcoming_week() {
         let today = NaiveDate::from_ymd_opt(2025, 6, 15).unwrap();
         let mut cards = due_date_cards(today);
@@ -1345,6 +1371,14 @@ mod tests {
         assert!(!n.contains(&"in7days")); // day 7 is outside the 7-day window
         assert!(!n.contains(&"in10days"));
         assert!(!n.contains(&"no_due"));
+    }
+
+    #[test]
+    fn due_filter_include_overdue_with_today_and_tomorrow() {
+        let today = NaiveDate::from_ymd_opt(2025, 6, 15).unwrap();
+        let mut cards = due_date_cards(today);
+        apply_due_date_filter_with_today(&mut cards, DueDateFilter::TodayAndTomorrow, today, true);
+        assert_eq!(names(&cards), vec!["yesterday", "today", "tomorrow"]);
     }
 
     #[test]
@@ -1529,6 +1563,7 @@ mod tests {
         assert!(!DueDateFilter::Today.is_upcoming());
         assert!(DueDateFilter::TodayAndUpcoming.is_upcoming());
         assert!(DueDateFilter::UpcomingTomorrow.is_upcoming());
+        assert!(DueDateFilter::TodayAndTomorrow.is_upcoming());
         assert!(DueDateFilter::UpcomingWeek.is_upcoming());
         assert!(DueDateFilter::UpcomingTwoWeeks.is_upcoming());
     }
@@ -1543,6 +1578,7 @@ mod tests {
             DueDateFilter::Today,
             DueDateFilter::TodayAndUpcoming,
             DueDateFilter::UpcomingTomorrow,
+            DueDateFilter::TodayAndTomorrow,
             DueDateFilter::UpcomingWeek,
             DueDateFilter::UpcomingTwoWeeks,
         ];
@@ -1574,6 +1610,7 @@ mod tests {
             DueDateFilter::Today,
             DueDateFilter::TodayAndUpcoming,
             DueDateFilter::UpcomingTomorrow,
+            DueDateFilter::TodayAndTomorrow,
             DueDateFilter::UpcomingWeek,
             DueDateFilter::UpcomingTwoWeeks,
         ];

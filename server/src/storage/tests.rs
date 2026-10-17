@@ -1368,7 +1368,7 @@ mod tests {
         let fetched_tag = s.get_tag(TAG_ID).unwrap().unwrap();
         assert_eq!(fetched_tag, tag);
 
-        // Root sequence incremented once (single recompute_root for the whole batch).
+        // Root sequence incremented once (single recompute_root_for_ids for the whole batch).
         let root = s.get_root().unwrap();
         expect!["1"].assert_eq(&root.sequence.to_string());
     }

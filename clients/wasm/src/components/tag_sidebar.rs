@@ -1,5 +1,6 @@
 use crate::components::sequence_history::SequenceHistory;
 use crate::state::store::{AppState, set_selection, start_new_tag, sync_query_params};
+use blazelist_client_lib::tag_display::sort_tags;
 use blazelist_client_lib::tag_graph::TagGraph;
 use blazelist_protocol::Entity;
 use leptos::prelude::*;
@@ -75,7 +76,7 @@ pub fn TagSidebar() -> impl IntoView {
                             ev.prevent_default();
                             let q = search.get_untracked().to_lowercase();
                             let mut tags = state.tags.get_untracked();
-                            tags.sort_by_key(|a| a.title().to_lowercase());
+                            sort_tags(&mut tags);
                             if !q.is_empty() {
                                 tags.retain(|t| t.title().to_lowercase().contains(&q));
                             }
@@ -114,7 +115,7 @@ pub fn TagSidebar() -> impl IntoView {
                 {move || {
                 let q = search.get().to_lowercase();
                 let mut tags = state.tags.get();
-                tags.sort_by_key(|a| a.title().to_lowercase());
+                sort_tags(&mut tags);
                 if !q.is_empty() {
                     tags.retain(|t| t.title().to_lowercase().contains(&q));
                 }

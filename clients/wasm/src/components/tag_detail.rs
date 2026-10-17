@@ -1,4 +1,5 @@
 use crate::components::hooks::{ConfirmDeletePrompt, TagColorPicker, parse_hex_color};
+use crate::components::icons::{IconClose, IconPencil};
 use crate::components::timestamp::Timestamp;
 use crate::components::toast::show_error_toast;
 use crate::components::version_history::TagVersionHistory;
@@ -7,6 +8,7 @@ use crate::state::store::{
 };
 use blazelist_client_lib::client::Client as _;
 use blazelist_client_lib::error::ClientError;
+use blazelist_client_lib::tag_display::{TagDisplay, resolve_tags};
 use blazelist_client_lib::tag_graph::{TagGraph, affected_cards_for_change};
 use blazelist_protocol::{Card, Entity, PushItem, Tag, Utc};
 use leptos::prelude::*;
@@ -364,21 +366,20 @@ pub fn TagDetail() -> impl IntoView {
     // but inert while editing). Shared by the read-only "Transitively
     // implies" and "Implied by" sections, which differ only by label and
     // source list.
-    let chip_section = move |label: &'static str,
-                             items: Vec<(Uuid, String, Option<rgb::RGB8>)>|
-          -> AnyView {
+    let chip_section = move |label: &'static str, items: Vec<TagDisplay>| -> AnyView {
         let editing_now = editing.get();
         let chips: Vec<_> = items
             .into_iter()
-            .map(|(id, title, color)| {
-                let style = tag_chip_style(&color);
+            .map(|tag| {
+                let style = tag_chip_style(&tag.color);
+                let id = tag.id;
                 let on_click = move |_| {
                     if editing.get_untracked() {
                         return;
                     }
                     set_selection(&state, Some(id));
                 };
-                view! { <span class="tag-chip detail-tag-chip-link" style=style on:click=on_click>{title}</span> }
+                view! { <span class="tag-chip detail-tag-chip-link" style=style on:click=on_click>{tag.title}</span> }
             })
             .collect();
         let container_class = if editing_now {
@@ -413,7 +414,7 @@ pub fn TagDetail() -> impl IntoView {
                     <span class="unsaved-indicator">"(unsaved)"</span>
                 })}
             </div>
-            <button class="detail-close" on:click=on_close>"x"</button>
+            <button class="detail-close" on:click=on_close aria-label="Close"><IconClose /></button>
         </div>
 
         // Title section
@@ -450,7 +451,7 @@ pub fn TagDetail() -> impl IntoView {
                 Some(view! {
                     <div class="tag-title-section tag-title-editable" on:click=move |_| start_editing() title="Click to edit">
                         <span class="tag-detail-title">{title}</span>
-                        <span class="tag-rename-icon">{"\u{270E}"}</span>
+                        <span class="tag-rename-icon"><IconPencil /></span>
                     </div>
                 }.into_any())
             }
@@ -502,16 +503,15 @@ pub fn TagDetail() -> impl IntoView {
             if editing_now {
                 let current = implies_input.get();
                 let prev_graph = TagGraph::from_tags(&all_tags);
-                let mut candidates: Vec<(Uuid, String)> = all_tags
+                let candidate_ids = all_tags
                     .iter()
                     .filter(|t| t.id() != tag_id && !current.contains(&t.id()))
                     .filter(|t| {
                         let reachable_from_candidate = prev_graph.closure_of(&[t.id()]);
                         !reachable_from_candidate.contains(&tag_id)
                     })
-                    .map(|t| (t.id(), t.title().to_string()))
-                    .collect();
-                candidates.sort_by_key(|a| a.1.to_lowercase());
+                    .map(|t| t.id());
+                let candidates = resolve_tags(candidate_ids, &all_tags);
 
                 let on_add = move |ev: web_sys::Event| {
                     let val = event_target_value(&ev);
@@ -537,27 +537,16 @@ pub fn TagDetail() -> impl IntoView {
                     </div>
                     <div class="tag-implies-row">
                         {move || {
-                            let all = all_tags.clone();
-                            let mut items: Vec<_> = implies_input.get().into_iter().map(|imp_id| {
-                                let title = all.iter()
-                                    .find(|t| t.id() == imp_id)
-                                    .map(|t| t.title().to_string())
-                                    .unwrap_or_else(|| "unknown".to_string());
-                                (imp_id, title)
-                            }).collect();
-                            items.sort_by_key(|a| a.1.to_lowercase());
-                            items.into_iter().map(|(imp_id, title)| {
-                                let color = all.iter()
-                                    .find(|t| t.id() == imp_id)
-                                    .and_then(|t| t.color());
-                                let style = tag_chip_style(&color);
+                            resolve_tags(implies_input.get(), &all_tags).into_iter().map(|tag| {
+                                let style = tag_chip_style(&tag.color);
+                                let imp_id = tag.id;
                                 let remove = move |_| {
                                     implies_input.update(|v| v.retain(|x| *x != imp_id));
                                 };
                                 view! {
                                     <span class="tag-chip" style=style>
-                                        {title}
-                                        <button class="chip-remove" on:click=remove>"x"</button>
+                                        {tag.title}
+                                        <button class="chip-remove" on:click=remove aria-label="Remove"><IconClose /></button>
                                     </span>
                                 }
                             }).collect::<Vec<_>>()
@@ -566,9 +555,9 @@ pub fn TagDetail() -> impl IntoView {
                     <div class="tag-implies-add">
                         <select class="settings-select" on:change=on_add>
                             <option value="">"+ Add implies\u{2026}"</option>
-                            {candidates.into_iter().map(|(id, title)| {
-                                let val = id.to_string();
-                                view! { <option value=val>{title}</option> }
+                            {candidates.into_iter().map(|tag| {
+                                let val = tag.id.to_string();
+                                view! { <option value=val>{tag.title}</option> }
                             }).collect::<Vec<_>>()}
                         </select>
                     </div>
@@ -579,11 +568,7 @@ pub fn TagDetail() -> impl IntoView {
                 // below (this arm only exists while `editing` is false, so
                 // the helper's editing-aware bits are inert here).
                 let tag = all_tags.iter().find(|t| t.id() == tag_id)?;
-                let mut direct: Vec<_> = tag.implies().iter().filter_map(|id| {
-                    let t = all_tags.iter().find(|t| t.id() == *id)?;
-                    Some((*id, t.title().to_string(), t.color()))
-                }).collect();
-                direct.sort_by_key(|a| a.1.to_lowercase());
+                let direct = resolve_tags(tag.implies().to_vec(), &all_tags);
                 Some(chip_section("\u{2192} Implies", direct))
             }
         }}
@@ -600,15 +585,10 @@ pub fn TagDetail() -> impl IntoView {
                 tag.implies().iter().copied().collect();
             let graph = TagGraph::from_tags(&all_tags);
             let full_closure = graph.closure_of(&[tag_id]);
-            let mut transitive: Vec<_> = full_closure
-                .iter()
-                .filter(|id| **id != tag_id && !direct_ids.contains(id))
-                .filter_map(|id| {
-                    let t = all_tags.iter().find(|t| t.id() == *id)?;
-                    Some((*id, t.title().to_string(), t.color()))
-                })
-                .collect();
-            transitive.sort_by_key(|a| a.1.to_lowercase());
+            let transitive_ids = full_closure
+                .into_iter()
+                .filter(|id| *id != tag_id && !direct_ids.contains(id));
+            let transitive = resolve_tags(transitive_ids, &all_tags);
             Some(chip_section("\u{2192} Transitively implies", transitive))
         }}
         </div>
@@ -619,12 +599,11 @@ pub fn TagDetail() -> impl IntoView {
             let tag_id = state.selected_card().get()?;
             let all_tags = state.tags.get();
             let graph = TagGraph::from_tags(&all_tags);
-            let mut parents: Vec<_> = all_tags
+            let parent_ids = all_tags
                 .iter()
                 .filter(|t| t.id() != tag_id && graph.closure_of(&[t.id()]).contains(&tag_id))
-                .map(|t| (t.id(), t.title().to_string(), t.color()))
-                .collect();
-            parents.sort_by_key(|a| a.1.to_lowercase());
+                .map(|t| t.id());
+            let parents = resolve_tags(parent_ids, &all_tags);
             Some(chip_section("\u{2190} Implied by", parents))
         }}
         </div>
@@ -647,11 +626,7 @@ pub fn TagDetail() -> impl IntoView {
                     .unwrap_or_else(|| "Untitled".to_string());
                 let full_title = blazelist_client_lib::display::card_preview(card.content(), 200)
                     .unwrap_or_else(|| "Untitled".to_string());
-                let tag_chips: Vec<_> = missing.iter().filter_map(|tid| {
-                    let tag = all_tags.iter().find(|t| t.id() == *tid)?;
-                    Some((tag.title().to_string(), tag.color()))
-                }).collect();
-                Some((preview, full_title, tag_chips))
+                Some((preview, full_title, resolve_tags(missing, &all_tags)))
             }).collect();
 
             Some(view! {
@@ -667,9 +642,9 @@ pub fn TagDetail() -> impl IntoView {
                                 <div class="affected-card-row">
                                     <span class="affected-card-title" title=full_title>{preview}</span>
                                     <span class="affected-card-tags">
-                                        {tags.into_iter().map(|(name, color)| {
-                                            let style = tag_chip_style(&color);
-                                            view! { <span class="tag-chip affected-tag-chip" style=style>{"+"}{name}</span> }
+                                        {tags.into_iter().map(|tag| {
+                                            let style = tag_chip_style(&tag.color);
+                                            view! { <span class="tag-chip affected-tag-chip" style=style>{"+"}{tag.title}</span> }
                                         }).collect::<Vec<_>>()}
                                     </span>
                                 </div>

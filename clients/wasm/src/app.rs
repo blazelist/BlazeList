@@ -343,9 +343,8 @@ async fn connect_and_run(state: &AppState) {
     // offline queue instead of racing with stale OPFS-cached ancestor hashes.
     //
     // Cache validity is handled at load time by `sync::cache_schema_matches`
-    // in the startup block above — there is no runtime fingerprint check
-    // here anymore. `save_local_state` writes the schema stamp on every
-    // successful save so future reloads trust the file.
+    // in the startup block above; `save_local_state` writes the schema stamp
+    // on every successful save so future reloads trust the file.
     let sync_result = if state.root.get_untracked().is_some() {
         incremental_sync(&client, state).await
     } else {
@@ -505,10 +504,12 @@ async fn fetch_text(url: &str) -> Result<String, String> {
     text.as_string().ok_or("response was not text".to_string())
 }
 
-/// Fetch the server's self-signed certificate SHA-256 hash from its HTTP endpoint.
+/// Fetch the server's self-signed certificate SHA-256 hash and return the raw bytes.
 ///
-/// Given a WebTransport URL like `https://host:47400`, derives the cert-hash
-/// endpoint at `http://host:47600/cert-hash` (port + 200) and returns the raw bytes.
+/// On an HTTPS page the endpoint is `/cert-hash` on the page's own origin, so
+/// the request is not blocked as mixed content. On a plain-HTTP page it is
+/// derived from the WebTransport URL instead: `https://host:47400` yields
+/// `http://host:47600/cert-hash` (port + 200).
 async fn fetch_cert_hash(wt_url: &str) -> Result<Vec<u8>, String> {
     let window = web_sys::window().ok_or("no window")?;
     let location = window.location();

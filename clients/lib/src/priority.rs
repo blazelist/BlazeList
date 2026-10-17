@@ -1,7 +1,4 @@
 //! Priority placement and rebalancing for card ordering.
-//!
-//! Consolidates duplicated priority computation logic from both the CLI and
-//! WASM clients and adds rebalancing for exhausted gaps.
 
 use blazelist_protocol::{Card, Entity, Utc};
 use rand::RngExt;

@@ -1,3 +1,4 @@
+use crate::components::icons::IconClose;
 use crate::state::store::AppState;
 use crate::state::sync::push_card_or_queue;
 use blazelist_protocol::Utc;
@@ -118,7 +119,7 @@ pub fn SwipeToastBar() -> impl IntoView {
                 <div class="swipe-toast">
                     <span class="swipe-toast-msg">{toast.message.clone()}</span>
                     <button class="swipe-toast-undo" on:click=on_undo aria-label="Undo">"Undo"</button>
-                    <button class="swipe-toast-close" on:click=on_dismiss aria-label="Dismiss">"\u{2715}"</button>
+                    <button class="swipe-toast-close" on:click=on_dismiss aria-label="Dismiss"><IconClose /></button>
                 </div>
             }
         })

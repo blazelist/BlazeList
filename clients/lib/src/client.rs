@@ -1,8 +1,8 @@
 //! Shared `Client` trait for BlazeList clients.
 //!
-//! Both the CLI (QUIC) and WASM (WebTransport) clients implement this trait.
 //! The single required method is [`request`](Client::request); all convenience
-//! methods are provided as defaults.
+//! methods are provided as defaults, so a transport implements the trait by
+//! supplying request/response plumbing alone.
 
 use std::collections::HashMap;
 

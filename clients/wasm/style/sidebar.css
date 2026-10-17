@@ -255,7 +255,6 @@
 .sync-clickable {
     cursor: pointer;
     border-radius: 4px;
-    padding: 0.15rem 0.4rem;
     transition: background 0.15s;
 }
 

@@ -7,6 +7,7 @@ use crate::state::store::{
 };
 use crate::state::sync::push_card_or_queue;
 use blazelist_client_lib::display::LinkCounts;
+use blazelist_client_lib::tag_display::resolve_tags;
 use blazelist_protocol::{Card, Entity, Utc};
 use leptos::prelude::*;
 use std::cell::Cell;
@@ -201,19 +202,12 @@ pub fn CardItem(
         // (counted into the "+N" overflow only). A default-colored dot
         // carries no visual information and just clutters the 2×2 grid,
         // so we surface them as a compact count instead.
-        let mut colored: Vec<(String, String)> = Vec::new();
+        let mut colored: Vec<String> = Vec::new();
         let mut uncolored_count: usize = 0;
-        for tag_id in card.tags() {
-            if let Some(t) = tags_state.iter().find(|t| t.id() == *tag_id) {
-                match t.color() {
-                    Some(c) => {
-                        let hex = blazelist_client_lib::color::format_tag_hex(&c);
-                        colored.push((t.title().to_lowercase(), hex));
-                    }
-                    None => {
-                        uncolored_count += 1;
-                    }
-                }
+        for tag in resolve_tags(card.tags().to_vec(), &tags_state) {
+            match tag.color {
+                Some(c) => colored.push(blazelist_client_lib::color::format_tag_hex(&c)),
+                None => uncolored_count += 1,
             }
         }
 
@@ -221,13 +215,8 @@ pub fn CardItem(
             return None;
         }
 
-        colored.sort_by(|a, b| a.0.cmp(&b.0));
         let max_visible = 4;
-        let visible_colors: Vec<String> = colored
-            .iter()
-            .take(max_visible)
-            .map(|(_, c)| c.clone())
-            .collect();
+        let visible_colors: Vec<String> = colored.iter().take(max_visible).cloned().collect();
         let extra_colored = colored.len().saturating_sub(max_visible);
         let overflow_total = extra_colored + uncolored_count;
         let overflow = (overflow_total > 0).then_some(overflow_total);
@@ -590,8 +579,8 @@ pub fn CardItem(
     // Per-card derived signals for the drag-related class bits.
     // Leptos dedups Memo outputs by PartialEq, so when the global
     // `drag_drop_target` flips between two cards, only the two
-    // affected cards' `wrapper_class` closures re-evaluate — the
-    // other 998 CardItems short-circuit out of the dirty chain.
+    // affected cards' `wrapper_class` closures re-evaluate — every
+    // other CardItem short-circuits out of the dirty chain.
     let is_drag_source: Memo<bool> =
         Memo::new(move |_| state.drag_active_card.get() == Some(card_id));
     let drop_edge_for_me: Memo<Option<DropEdge>> = Memo::new(move |_| {

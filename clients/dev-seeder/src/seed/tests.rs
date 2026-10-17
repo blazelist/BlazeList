@@ -476,20 +476,20 @@ fn find_largest_gap_midpoint_tracks_trailing_gap_after_last_element() {
     //   * interior gaps                    = 1 each
     // The only large gap is the trailing one, [i64::MIN + 2, i64::MAX], which is
     // handled by the explicit post-loop check (the "gap after the last element").
-    // Without that check the function would fall back to its default seed
-    // (MAX_PRIORITY / 2 == i64::MAX / 2); with it, the answer is the midpoint of
-    // the trailing gap. We assert the trailing value to lock that branch.
+    // Without that check the loop's own winner would stand: the width-1 gap
+    // [i64::MIN, i64::MIN + 1], whose midpoint is i64::MIN. The assertions below
+    // lock the trailing midpoint and rule that value out.
     let used = BTreeSet::from([i64::MIN, i64::MIN + 1, i64::MIN + 2]);
     let mid = find_largest_gap_midpoint(&used);
     let last = i64::MIN + 2;
     let gap = i64::MAX as i128 - last as i128;
     let expected = (last as i128 + gap / 2) as i64;
     assert_eq!(mid, expected);
-    // The trailing-gap branch must override the default seed of i64::MAX / 2.
+    // The trailing-gap branch must override the loop's best midpoint.
     assert_ne!(
         mid,
-        i64::MAX / 2,
-        "trailing-gap tracking must change the result"
+        i64::MIN,
+        "trailing-gap tracking must override the loop's best midpoint"
     );
     assert!(!used.contains(&mid), "midpoint must be free");
 }

@@ -11,7 +11,7 @@ use super::helpers::{CARD_COLS, TAG_COLS};
 
 impl SqliteStorage {
     /// Core card push logic on an existing connection/transaction.
-    /// Does NOT call recompute_root, stamp root_sequence_at, or commit.
+    /// Does NOT call recompute_root_for_ids, stamp root_sequence_at, or commit.
     pub(super) fn push_card_versions_inner(
         conn: &Connection,
         versions: &[Card],
@@ -126,7 +126,7 @@ impl SqliteStorage {
     }
 
     /// Core tag push logic on an existing connection/transaction.
-    /// Does NOT call recompute_root, stamp root_sequence_at, or commit.
+    /// Does NOT call recompute_root_for_ids, stamp root_sequence_at, or commit.
     pub(super) fn push_tag_versions_inner(
         conn: &Connection,
         versions: &[Tag],
@@ -219,7 +219,7 @@ impl SqliteStorage {
     }
 
     /// Core card deletion on an existing connection/transaction.
-    /// Does NOT call recompute_root, stamp root_sequence_at, or commit.
+    /// Does NOT call recompute_root_for_ids, stamp root_sequence_at, or commit.
     pub(super) fn delete_card_inner(
         conn: &Connection,
         id: Uuid,
@@ -263,7 +263,7 @@ impl SqliteStorage {
     }
 
     /// Core tag deletion on an existing connection/transaction.
-    /// Does NOT call recompute_root, stamp root_sequence_at, or commit.
+    /// Does NOT call recompute_root_for_ids, stamp root_sequence_at, or commit.
     pub(super) fn delete_tag_inner(
         conn: &Connection,
         id: Uuid,

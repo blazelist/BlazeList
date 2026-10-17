@@ -1,8 +1,7 @@
 //! Sync helpers shared across BlazeList clients.
 //!
-//! Both the native CLI and WASM client perform incremental sync by applying
-//! a [`ChangeSet`] to their local card/tag collections. This module provides
-//! the shared logic for that operation.
+//! Incremental sync applies a [`ChangeSet`] to the local card and tag
+//! collections.
 
 use blazelist_protocol::ChangeSet;
 use blazelist_protocol::{Card, Entity, Tag, ZERO_HASH};
@@ -82,7 +81,7 @@ pub fn reconcile_offline_queue(queue: Vec<Card>, local_cards: &[Card]) -> Vec<Ca
 /// Trim trailing whitespace from card content.
 ///
 /// Trims the entire string, then trims trailing whitespace from each line.
-/// Used when saving card content from editors in both CLI and WASM.
+/// Used when saving card content from an editor.
 pub fn trim_content(raw: &str) -> String {
     let trimmed = raw.trim();
     trimmed

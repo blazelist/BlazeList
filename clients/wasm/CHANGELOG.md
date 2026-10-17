@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [4.1.0] - 2026-10-17
+
+### Added
+
+- "Today & tomorrow" due-date filter, also on `d` then `T`.
+
+### Changed
+
+- Bare links such as `http://localhost:8080` and `HTTPS://example.com` now render as links.
+
+### Fixed
+
+- The header no longer changes height as the sync status updates.
+- Button icons no longer render as color emoji or empty boxes.
+- The mutual-link arrow no longer renders as a color emoji.
+- On phones, linked-card and version-history edges in card detail are no longer cut off.
+- The shortcuts help no longer lists `d` then `U`, removed in 3.0.0.
+- Tags are listed alphabetically in every view.
+
 ## [4.0.1] - 2026-08-02
 
 ### Fixed

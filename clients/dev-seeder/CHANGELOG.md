@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.1.1] - 2026-10-17
+
+### Changed
+
+- Released alongside `blazelist-protocol` 3.1.1; no user-facing changes.
+
 ## [3.1.0] - 2026-07-05
 
 ### Added

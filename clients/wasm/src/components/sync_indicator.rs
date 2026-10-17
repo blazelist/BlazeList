@@ -1,4 +1,5 @@
 use crate::app::request_reconnect;
+use crate::components::icons::IconRefresh;
 use crate::state::store::{AppState, ConnectionStatus, get_client};
 use crate::state::sync::incremental_sync;
 use leptos::prelude::*;
@@ -85,7 +86,7 @@ pub fn SyncIndicator() -> impl IntoView {
             return None;
         }
         // Whole-second rounding above 1 s avoids flicker on round defaults;
-        // sub-second window shows a "now" string.
+        // the sub-second window drops the count entirely.
         if ms >= 1_000 {
             let secs = ms.div_ceil(1_000);
             Some(format!("Pushing card priority change in {secs}s"))
@@ -140,7 +141,7 @@ pub fn SyncIndicator() -> impl IntoView {
                 class="sync-btn"
                 title="Sync now"
                 style:visibility=move || if is_clickable() { "visible" } else { "hidden" }
-            >{"\u{21bb}"}</span>
+            ><IconRefresh /></span>
         </div>
     }
 }

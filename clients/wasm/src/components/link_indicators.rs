@@ -1,6 +1,16 @@
 use blazelist_client_lib::display::LinkCounts;
 use leptos::prelude::*;
 
+/// The mutual-link arrow U+2194 `↔`, followed by U+FE0E — the
+/// text-presentation variation selector.
+///
+/// The bare codepoint is `Emoji=Yes, Emoji_Presentation=No`, and Noto Color
+/// Emoji maps it without any selector, so a platform whose emoji font outranks
+/// its text fonts draws the mutual-link arrow as a color glyph. The selector
+/// settles the presentation in the string, which a drawn icon cannot do where
+/// the arrow is glued to a number or a label.
+pub const MUTUAL_ARROW: &str = "\u{2194}\u{FE0E}";
+
 /// A horizontal row of link-count indicators (mutual / forward / back /
 /// transitive) used by both the card list and the card detail summary.
 ///
@@ -18,7 +28,7 @@ pub fn link_indicators_view(counts: LinkCounts) -> Option<AnyView> {
     }
 
     let mut_view = (mutual > 0).then(|| {
-        let text = format!("\u{2194}{mutual}");
+        let text = format!("{MUTUAL_ARROW}{mutual}");
         let tip = format!("{mutual} mutual link{}", plural(mutual));
         view! { <span class="card-link-mutual" title=tip>{text}</span> }
     });

@@ -64,7 +64,10 @@ pub fn handle_code_copy_click(ev: &web_sys::MouseEvent) -> bool {
         Some(t) => t,
         None => return false,
     };
-    let el = match target.dyn_into::<web_sys::HtmlElement>() {
+    // Resolved as `Element`, not `HtmlElement`: the button's icon is an inline
+    // SVG, so a click landing on it targets an `SVGElement`, which is outside
+    // the `HtmlElement` hierarchy.
+    let el = match target.dyn_into::<web_sys::Element>() {
         Ok(el) => el,
         Err(_) => return false,
     };

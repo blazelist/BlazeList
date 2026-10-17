@@ -9,6 +9,7 @@ use crate::state::sync::push_card_or_queue;
 use crate::storage;
 use blazelist_client_lib::client::Client as _;
 use blazelist_client_lib::display::card_preview;
+use blazelist_client_lib::tag_display::resolve_tags;
 use blazelist_protocol::{Card, Entity, Tag, Utc};
 use leptos::prelude::*;
 use uuid::Uuid;
@@ -463,13 +464,7 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
                                 let priority = v.priority();
                                 let priority_pct = blazelist_client_lib::priority::priority_percentage(priority);
 
-                                let all_tags = state.tags.get_untracked();
-                                let mut tag_entries: Vec<(String, Option<rgb::RGB8>)> = v.tags().iter().filter_map(|tid| {
-                                    all_tags.iter().find(|t| t.id() == *tid).map(|t| {
-                                        (t.title().to_string(), t.color())
-                                    })
-                                }).collect();
-                                tag_entries.sort_by_key(|a| a.0.to_lowercase());
+                                let tag_entries = resolve_tags(v.tags().to_vec(), &state.tags.get_untracked());
 
                                 Some(view! {
                                     <div class="version-expanded">
@@ -483,10 +478,10 @@ pub fn VersionHistory(card_id: Uuid) -> impl IntoView {
                                                     <div class="meta-row">
                                                         <span class="meta-label">"Tags"</span>
                                                         <div class="detail-tag-chips">
-                                                            {tags.into_iter().map(|(name, color)| {
-                                                                let style = tag_chip_style(&color);
+                                                            {tags.into_iter().map(|tag| {
+                                                                let style = tag_chip_style(&tag.color);
                                                                 view! {
-                                                                    <span class="tag-chip" style=style>{name}</span>
+                                                                    <span class="tag-chip" style=style>{tag.title}</span>
                                                                 }
                                                             }).collect::<Vec<_>>()}
                                                         </div>
@@ -801,14 +796,7 @@ pub fn TagVersionHistory(tag_id: Uuid) -> impl IntoView {
                                 let created = v.created_at();
                                 let modified = v.modified_at();
                                 let version_color = v.color().map(|c| blazelist_client_lib::color::format_tag_hex(&c));
-                                // Resolve implies to (title, color) pairs.
-                                let all_tags = state.tags.get_untracked();
-                                let mut implies_entries: Vec<(String, Option<rgb::RGB8>)> = v.implies().iter().filter_map(|tid| {
-                                    all_tags.iter().find(|t| t.id() == *tid).map(|t| {
-                                        (t.title().to_string(), t.color())
-                                    })
-                                }).collect();
-                                implies_entries.sort_by_key(|a| a.0.to_lowercase());
+                                let implies_entries = resolve_tags(v.implies().to_vec(), &state.tags.get_untracked());
                                 Some(view! {
                                     <div class="version-expanded">
                                         <div class="version-detail-meta">
@@ -840,10 +828,10 @@ pub fn TagVersionHistory(tag_id: Uuid) -> impl IntoView {
                                                     let implies = implies_entries;
                                                     view! {
                                                         <div class="detail-tag-chips">
-                                                            {implies.into_iter().map(|(name, color)| {
-                                                                let style = tag_chip_style(&color);
+                                                            {implies.into_iter().map(|tag| {
+                                                                let style = tag_chip_style(&tag.color);
                                                                 view! {
-                                                                    <span class="tag-chip" style=style>{name}</span>
+                                                                    <span class="tag-chip" style=style>{tag.title}</span>
                                                                 }
                                                             }).collect::<Vec<_>>()}
                                                         </div>

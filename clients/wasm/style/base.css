@@ -12,6 +12,38 @@ body {
     -webkit-font-smoothing: antialiased;
 }
 
+/* Inline SVG icons (see components/icons.rs). Sized in `em` and stroked in
+   `currentColor` so each icon follows the font-size and color of whatever it
+   sits in, hover states included; `vertical-align` seats it on the text
+   baseline the way the character glyphs it replaced sat. A button whose whole
+   content is an icon centers it with flex instead: with no text to seat it
+   against, the baseline leaves the glyph high by whatever the font's
+   ascender/descender asymmetry happens to be. */
+.icon {
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    vertical-align: -0.125em;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.75;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+/* Thin radial lines read as spokes; the gear's teeth need the extra weight to
+   read as teeth. */
+.icon .gear-teeth {
+    stroke-width: 3.6;
+    stroke-linecap: butt;
+}
+
+/* The transitive-link dots are round-capped near-zero segments, so each dot's
+   diameter is the stroke width; at the default weight they all but vanish. */
+.icon .link-dots {
+    stroke-width: 3.4;
+}
+
 a {
     color: var(--accent);
     transition: color 0.15s;

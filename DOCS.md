@@ -126,7 +126,7 @@ and GPG-verify a commit against the in-tree release signing key, then
 build it:
 
 ```nix
-services.blazelist.package = blazelist.lib.${pkgs.system}.buildFromCommit {
+services.blazelist.package = blazelist.lib.${pkgs.stdenv.hostPlatform.system}.buildFromCommit {
   rev  = "<full-commit-hash>";
   hash = "sha256-..."; # from `nix-prefetch-git --rev <rev> <url>`
   # For an unsigned fork, point to its URL and opt out of verification.
@@ -145,7 +145,7 @@ attrs the module applies internally:
 
 ```nix
 systemd.services.my-blazelist-sidecar.serviceConfig =
-  blazelist.lib.${pkgs.system}.hardeningSettings // {
+  blazelist.lib.${pkgs.stdenv.hostPlatform.system}.hardeningSettings // {
     ExecStart = "...";
     ReadWritePaths = [ "/var/lib/my-sidecar" ];
   };
@@ -196,7 +196,7 @@ These override default values for WASM client settings. Served via the `/config`
 | `BLAZELIST_DEFAULT_OVERRIDE_DETAIL_WIDTH` | Enable detail panel width override | `false` |
 | `BLAZELIST_DEFAULT_DETAIL_WIDTH` | Default detail panel width in px (when override enabled) | `0` |
 | `BLAZELIST_DEFAULT_RECURSIVE_LINKS` | Recursively expand all transitively linked cards | `true` |
-| `BLAZELIST_DEFAULT_SHOW_LIST_LINK_COUNTS` | Show transitive link counts in card list (computed in background) | `false` |
+| `BLAZELIST_DEFAULT_SHOW_LIST_LINK_COUNTS` | Show transitive link counts in card list (computed in background) | `true` |
 | `BLAZELIST_DEFAULT_SHOW_DUE_TODAY_BUTTON` | Show Today quick-filter button beside due date dropdown | `true` |
 | `BLAZELIST_DEFAULT_SHOW_CARD_TIME` | Show the card-list relative-time label ("x ago") on each row | `false` |
 | `BLAZELIST_DEFAULT_EXTINGUISH_ON_DUE_SET` | Extinguish a Blazed card when its due date is set or changed | `true` |
@@ -271,7 +271,7 @@ The WASM PWA operates **offline-first**:
 1. **Instant startup** — Renders immediately from a local cache in the browser's Origin Private File System (OPFS).
 2. **Background sync** — Incremental sync over WebTransport fetches changes since the last session. Real-time subscription notifications keep the UI current.
 3. **Offline editing** — Cards can be created and edited while offline. Changes are queued locally and pushed automatically when the connection is restored. The sync indicator shows a count of unsynced changes.
-4. **Automatic reconnection** — Connection attempts use exponential backoff (5s to 60s). Returning to the app (visibility change) or regaining network connectivity triggers an immediate reconnect, even if a stale connection attempt was in progress.
+4. **Automatic reconnection** — A failed connection retries on a fixed 5-second countdown. Returning to the app (visibility change) or regaining network connectivity interrupts the countdown and reconnects immediately, even if a stale connection attempt was in progress.
 5. **Automatic recovery** — If the local cache is evicted or corrupt, falls back to a full sync.
 6. **Version-aware caching** — On startup, the client compares the protocol version (client and server) against the stored fingerprint. If either version has changed (e.g. after an update), all local caches are evicted and rebuilt via a full sync. The offline queue is preserved so unsynced edits are not lost.
 
@@ -294,7 +294,12 @@ Shortcuts can be disabled by default for all clients via the `BLAZELIST_DEFAULT_
 Disabled by default. Enable in Settings or via the `BLAZELIST_DEFAULT_TOUCH_SWIPE` environment variable.
 
 - **Swipe right** — Blaze or extinguish the card.
-- **Swipe left** — Set due date to today. If already set to today, sets to tomorrow.
+- **Swipe left** — Set the card's due date. Which action lands depends on `BLAZELIST_DEFAULT_SWIPE_LEFT_MODE`:
+  - `levels` (default) — Swipe distance picks the action, in zones extending outward from the trigger threshold: Today, Tomorrow, In 2 days, then Clear due.
+  - `cycle` — Each swipe advances one step: Today → Tomorrow → In 2 days → Clear due, then back to Today.
+
+A label and background color preview the pending action while swiping.
+
 ---
 
 ## Attachments / File Hosting

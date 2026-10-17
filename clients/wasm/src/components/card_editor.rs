@@ -1,4 +1,5 @@
 use crate::components::hooks::{handle_code_copy_click, use_click_outside_close};
+use crate::components::icons::IconClose;
 use crate::state::store::{
     AppState, DueDatePreset, DueDateStatus, NewCardPosition, due_date_status,
     format_due_date_badge, get_client, open_editor, set_selection, tag_chip_style,
@@ -8,6 +9,7 @@ use blazelist_client_lib::client::Client as _;
 use blazelist_client_lib::priority::{
     InsertPosition, Placement, build_shifted_versions, place_card,
 };
+use blazelist_client_lib::tag_display::{resolve_tags, sort_tags};
 use blazelist_client_lib::tag_graph::TagGraph;
 use blazelist_protocol::{Card, Entity, PushItem, Utc};
 use chrono::DateTime;
@@ -335,7 +337,7 @@ pub fn CardEditor(
     let filtered_editor_tags = Memo::new(move |_| {
         let q = tag_search.get().to_lowercase();
         let mut tags = state.tags.get();
-        tags.sort_by_key(|a| a.title().to_lowercase());
+        sort_tags(&mut tags);
         if !q.is_empty() {
             tags.retain(|t| t.title().to_lowercase().contains(&q));
         }
@@ -469,23 +471,20 @@ pub fn CardEditor(
                         if sel.is_empty() {
                             return None;
                         }
-                        let chips: Vec<_> = sel.iter().filter_map(|id| {
-                            let tag = all_tags.iter().find(|t| t.id() == *id)?;
-                            let tag_id = *id;
-                            let title = tag.title().to_string();
-                            let color = tag.color();
-                            let style = tag_chip_style(&color);
+                        let chips: Vec<_> = resolve_tags(sel, &all_tags).into_iter().map(|tag| {
+                            let tag_id = tag.id;
+                            let style = tag_chip_style(&tag.color);
                             let remove = move |ev: web_sys::MouseEvent| {
                                 ev.stop_propagation();
                                 let graph = TagGraph::from_tags(&state.tags.get_untracked());
                                 remove_editor_tag_cascade(&graph, selected_tags, tag_id);
                             };
-                            Some(view! {
+                            view! {
                                 <span class="tag-chip" style=style>
-                                    {title}
-                                    <button class="chip-remove" on:click=remove>"x"</button>
+                                    {tag.title}
+                                    <button class="chip-remove" on:click=remove aria-label="Remove"><IconClose /></button>
                                 </span>
-                            })
+                            }
                         }).collect();
                         Some(view! {
                             <div class="editor-selected-tags">{chips}</div>

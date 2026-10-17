@@ -136,7 +136,7 @@ pub async fn save(state: &LocalState) {
     }
 }
 
-/// Clear the local database (e.g., on `RootHashMismatch`).
+/// Delete the local database file from OPFS.
 pub async fn clear() {
     if let Err(e) = opfs_delete(DB_FILENAME).await {
         tracing::warn!(?e, "Failed to clear local database");

@@ -10,12 +10,11 @@
 //! into compliance.
 //!
 //! [`validate_batch_implications`] is the single authoritative check.
-//! It runs inside the existing `push_batch` transaction, after all
-//! per-item writes have succeeded, and before `recompute_root` —
-//! so any violation rolls back the whole batch. Single-item pushes
-//! (`push_card_versions`, `push_tag_versions`) funnel through
-//! `push_batch` via one-element batches, so they get the same
-//! guarantee for free.
+//! It runs inside the push transaction, after all per-item writes have
+//! succeeded and before `recompute_root_for_ids` — so any violation rolls
+//! the whole transaction back. Single-item pushes (`push_card_versions`,
+//! `push_tag_versions`) call it directly with a one-element batch, so they
+//! get the same guarantee.
 
 use std::collections::BTreeMap;
 
@@ -42,8 +41,9 @@ impl SqliteStorage {
     ///    missing a transitively-implied tag, returns the first
     ///    violation as [`PushError::TagImplicationViolation`].
     ///
-    /// Called from `push_batch` after per-item writes succeed. Any
-    /// error rolls the enclosing transaction back.
+    /// Called from `push_batch` and from the single-item push paths after
+    /// per-item writes succeed. Any error rolls the enclosing transaction
+    /// back.
     pub(super) fn validate_batch_implications(
         conn: &Connection,
         items: &[PushItem],

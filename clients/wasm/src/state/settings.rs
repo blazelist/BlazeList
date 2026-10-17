@@ -678,7 +678,8 @@ pub fn save_drag_and_drop_mode(mode: &str) {
     save_string(STORAGE_KEY_DRAG_AND_DROP_MODE, mode);
 }
 
-/// Load the stored cache schema stamp (client-only, e.g. "2.14.0-dev+2.2.0-dev").
+/// Load the stored cache schema stamp (client-only; `sync::build_schema_stamp`
+/// documents the format).
 ///
 /// Written by `save_local_state` after a successful write to `blazelist.db`
 /// and checked at load time to detect client upgrades that broke the cache
@@ -719,10 +720,8 @@ mod tests {
 
     #[test]
     fn swipe_left_mode_rejects_pre_4_0_0_values() {
-        // Values that existed in earlier builds and would otherwise
-        // strand the settings panel with no matching <option>:
-        //   * "toggle"   — original cycle-style mode before commit 04b2278
-        //   * "distance" — distance-based variant removed by 04b2278
+        // A stored value from an earlier build must be rejected, or the
+        // settings panel is left with no matching <option>.
         assert!(!is_valid_swipe_left_mode("toggle"));
         assert!(!is_valid_swipe_left_mode("distance"));
     }
@@ -811,10 +810,9 @@ mod tests {
 
     #[test]
     fn keys_to_prune_drops_renamed_swipe_threshold_keys() {
-        // Regression: when the 4.0.0 swipe-threshold split landed
-        // (commit 2d3bd24) the old keys were stranded with the user's
-        // customisation. The sweep must remove them or the settings
-        // panel stays half-broken until the user hits "clear all".
+        // Renamed keys must be swept: left in place they strand the
+        // user's customisation and leave the settings panel half-broken
+        // until the user hits "clear all".
         let input = vec![
             "blazelist_swipe_threshold_right".to_string(),
             "blazelist_swipe_threshold_left".to_string(),

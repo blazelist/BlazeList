@@ -1,8 +1,7 @@
 //! High-level BlazeList client for the WASM PWA.
 //!
-//! Mirrors the CLI's `client.rs` but uses WebTransport (via web-sys)
-//! instead of QUIC (via quinn). Each request opens a new bidirectional
-//! stream, sends the request, and reads the response.
+//! Runs over WebTransport (via web-sys): each request opens a new
+//! bidirectional stream, sends the request, and reads the response.
 
 use blazelist_client_lib::error::ClientError;
 use blazelist_protocol::{Request, Response, RootState, Version};

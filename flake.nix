@@ -61,13 +61,13 @@
             src = pkgs.fetchCrate {
               pname = "wasm-bindgen-cli";
               version = wasmBindgenVersion;
-              hash = "sha256-ymeAEYsr7OnupWYJWjSeVGvq3+s+zxSNkODbzY62rYs=";
+              hash = "sha256-pcecKQd7E8Opw6bkFoE569epUi7gh5qpQF1e5PJY6V8=";
             };
 
             cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
               inherit src;
               inherit (src) pname version;
-              hash = "sha256-d7x6gtx5OqEE4MyT6yjYn/qtgjx7GroTpXJewnBV2dU=";
+              hash = "sha256-vmUrWVU7kPJJxO5qIVeAkwQyWDELO1Z4Z5gitz2kco8=";
             };
           };
 
@@ -94,8 +94,7 @@
           #
           # doCheck = false: tests run as a separate workspace check
           # derivation, so a deployment build doesn't pay for the test
-          # suite. CI surfaces tests as a parallel job; `nix flake check`
-          # still runs them.
+          # suite; `nix flake check` still runs them.
           # ----------------------------------------------------------------
           blazelist-server = craneLib.buildPackage (commonArgs // {
             inherit cargoArtifacts;
@@ -117,12 +116,21 @@
           # blazelist-wasm-dist: trunk-built dist/ with sw.js post-processed
           # by inject-precache.sh. Output is the dist/ tree, ready to serve.
           # ----------------------------------------------------------------
-          #
-          # Note: we use the full src (not cleanCargoSource) because Trunk
-          # needs index.html, the style/ tree, public/ assets, and the
-          # inject-precache.sh script in addition to Cargo metadata.
           blazelist-wasm-dist = craneLib.mkCargoDerivation {
-            src = ./.;
+            # The Cargo sources (every *.toml, so Trunk.toml and
+            # .cargo/config.toml too) plus the files Trunk and
+            # inject-precache.sh read, so a README/docs change doesn't
+            # rebuild the client.
+            src = lib.fileset.toSource {
+              root = ./.;
+              fileset = lib.fileset.unions [
+                (craneLib.fileset.commonCargoSources ./.)
+                ./clients/wasm/index.html
+                ./clients/wasm/inject-precache.sh
+                ./clients/wasm/public
+                ./clients/wasm/style
+              ];
+            };
             pname = "blazelist-wasm-dist";
             version = (builtins.fromTOML (builtins.readFile ./clients/wasm/Cargo.toml)).package.version;
             cargoArtifacts = null;
@@ -303,9 +311,6 @@
               pkgs.just
               pkgs.pkg-config
               pkgs.openssl
-              pkgs.gnupg # for release-sign workflow
-              pkgs.jq # release-stage: parse `cargo metadata`
-              pkgs.rsync # release_prepare.sh: stage the release subset
               pkgs.nodejs_22
               pkgs.chromium
             ];

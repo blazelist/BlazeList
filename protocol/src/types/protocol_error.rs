@@ -7,7 +7,7 @@ use super::push_error::PushError;
 /// Protocol-level errors returned by the server.
 ///
 /// These are structured error responses that a client can match on
-/// programmatically. The generic [`Error`](ProtocolError::Error) variant
+/// programmatically. The generic [`Internal`](ProtocolError::Internal) variant
 /// is reserved for internal server failures.
 ///
 /// # Wire Stability

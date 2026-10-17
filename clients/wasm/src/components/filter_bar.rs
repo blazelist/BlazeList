@@ -1,6 +1,8 @@
+use crate::components::icons::IconClose;
 use crate::state::store::{
     AppState, DueDateFilter, SortOrder, apply_today_quick_filter, sync_query_params, tag_chip_style,
 };
+use blazelist_client_lib::tag_display::resolve_tags;
 use blazelist_protocol::CardFilter;
 use leptos::prelude::*;
 
@@ -72,19 +74,7 @@ pub fn FilterBar() -> impl IntoView {
 
     let mode_text = move || state.tag_filter_mode.get().label().to_string();
 
-    let tag_chips = move || {
-        let tags = state.tag_filter.get();
-        let all_tags = state.tags.get();
-        tags.into_iter()
-            .filter_map(|id| {
-                let tag = all_tags.iter().find(|t| {
-                    use blazelist_protocol::Entity;
-                    t.id() == id
-                })?;
-                Some((id, tag.title().to_string(), tag.color()))
-            })
-            .collect::<Vec<_>>()
-    };
+    let tag_chips = move || resolve_tags(state.tag_filter.get(), &state.tags.get());
 
     let has_tags = move || !state.tag_filter.get().is_empty() || state.no_tags_filter.get();
 
@@ -146,6 +136,7 @@ pub fn FilterBar() -> impl IntoView {
                     <option value="today">{DueDateFilter::Today.label()}</option>
                     <option value="today-upcoming">{DueDateFilter::TodayAndUpcoming.label()}</option>
                     <option value="upcoming-tomorrow">{DueDateFilter::UpcomingTomorrow.label()}</option>
+                    <option value="today-tomorrow">{DueDateFilter::TodayAndTomorrow.label()}</option>
                     <option value="upcoming-week">{DueDateFilter::UpcomingWeek.label()}</option>
                     <option value="upcoming-2weeks">{DueDateFilter::UpcomingTwoWeeks.label()}</option>
                 </select>
@@ -162,7 +153,7 @@ pub fn FilterBar() -> impl IntoView {
                     }
                 })}
                 {move || due_is_active().then(|| view! {
-                    <button class="btn-clear-x" on:click=reset_due title="Clear due date filter">"x"</button>
+                    <button class="btn-clear-x" on:click=reset_due title="Clear due date filter"><IconClose /></button>
                 })}
             </div>
             <div class="sort-controls">
@@ -177,7 +168,7 @@ pub fn FilterBar() -> impl IntoView {
                     }).collect::<Vec<_>>()}
                 </select>
                 {move || sort_is_non_default().then(|| view! {
-                    <button class="btn-clear-x" on:click=reset_sort title="Reset to default sort">"x"</button>
+                    <button class="btn-clear-x" on:click=reset_sort title="Reset to default sort"><IconClose /></button>
                 })}
             </div>
             <div class="search-controls">
@@ -191,7 +182,7 @@ pub fn FilterBar() -> impl IntoView {
                     }
                 />
                 {move || has_search().then(|| view! {
-                    <button class="btn-clear-x" on:click=clear_search title="Clear search">"x"</button>
+                    <button class="btn-clear-x" on:click=clear_search title="Clear search"><IconClose /></button>
                 })}
             </div>
             {move || has_tags().then(|| view! {
@@ -206,24 +197,25 @@ pub fn FilterBar() -> impl IntoView {
                             view! {
                                 <span class="tag-chip no-tags-chip">
                                     "No tags"
-                                    <button class="chip-remove" on:click=remove>"x"</button>
+                                    <button class="chip-remove" on:click=remove aria-label="Remove"><IconClose /></button>
                                 </span>
                             }
                         })}
-                        {move || tag_chips().into_iter().map(|(id, title, color)| {
+                        {move || tag_chips().into_iter().map(|tag| {
+                            let id = tag.id;
                             let remove = move |_| {
                                 state.tag_filter.update(|tags| tags.retain(|t| *t != id));
                                 sync_query_params(&state);
                             };
-                            let style = tag_chip_style(&color);
+                            let style = tag_chip_style(&tag.color);
                             view! {
                                 <span class="tag-chip" style=style>
-                                    {title}
-                                    <button class="chip-remove" on:click=remove>"x"</button>
+                                    {tag.title}
+                                    <button class="chip-remove" on:click=remove aria-label="Remove"><IconClose /></button>
                                 </span>
                             }
                         }).collect::<Vec<_>>()}
-                        <button class="btn-clear-x" on:click=clear_all_tags title="Clear all tags">"x"</button>
+                        <button class="btn-clear-x" on:click=clear_all_tags title="Clear all tags"><IconClose /></button>
                     </div>
                 </div>
             })}
@@ -250,11 +242,11 @@ pub fn FilterBar() -> impl IntoView {
                                 <div class="linked-filter-row">
                                     <span class="linked-filter-id">{short}</span>
                                     <span class="linked-filter-preview">{preview}</span>
-                                    <button class="chip-remove" on:click=remove title="Remove">"x"</button>
+                                    <button class="chip-remove" on:click=remove title="Remove"><IconClose /></button>
                                 </div>
                             }
                         }).collect::<Vec<_>>()}
-                        <button class="btn-clear-x linked-filter-clear" on:click=clear_links title="Clear all">"x"</button>
+                        <button class="btn-clear-x linked-filter-clear" on:click=clear_links title="Clear all"><IconClose /></button>
                     </div>
                 })
             }}

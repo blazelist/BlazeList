@@ -1,3 +1,4 @@
+use crate::components::icons::{IconCollapse, IconFullscreen, IconMenu};
 use crate::components::settings_panel::SettingsButton;
 use crate::components::sync_indicator::SyncIndicator;
 use crate::state::store::{AppState, clear_all_state};
@@ -19,13 +20,11 @@ pub fn Header() -> impl IntoView {
         state.detail_expanded.update(|v| *v = !*v);
     };
 
-    let detail_toggle_label = move || {
+    let detail_toggle_icon = move || {
         if state.detail_expanded.get() {
-            // Collapse-to-side-panel glyph.
-            "\u{2922}"
+            view! { <IconCollapse /> }.into_any()
         } else {
-            // Expand-to-fullscreen glyph.
-            "\u{26F6}"
+            view! { <IconFullscreen /> }.into_any()
         }
     };
 
@@ -43,12 +42,12 @@ pub fn Header() -> impl IntoView {
                 <button class="sidebar-toggle-btn" on:click=toggle_sidebar
                     title="Toggle sidebar"
                 >
-                    {"\u{2630}"}
+                    <IconMenu />
                 </button>
                 <button class="detail-expand-btn" on:click=toggle_detail_expanded
                     title=detail_toggle_title
                 >
-                    {detail_toggle_label}
+                    {detail_toggle_icon}
                 </button>
                 <h1 class="app-title" on:click=on_title_click>"BlazeList"</h1>
             </div>

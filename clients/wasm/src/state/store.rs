@@ -129,10 +129,6 @@ pub(crate) fn set_selection_without_flush(state: &AppState, target: Option<Uuid>
     state.selected_card.set(target);
 }
 
-/// Open the new-card editor at `position`. Guards unsaved changes,
-/// flushes any pending priority burst, clears any existing selection,
-/// closes settings/shortcuts panes, and sets `creating_new = true`.
-/// Returns `false` if the user cancels.
 /// Write `value` only when it actually changes the signal. Leptos
 /// notifies subscribers on every `set` — including no-op writes like
 /// `false -> false` — and the pane-switch closure in `home.rs` tracks
@@ -146,6 +142,10 @@ fn set_if_changed(signal: RwSignal<bool>, value: bool) {
     }
 }
 
+/// Open the new-card editor at `position`. Guards unsaved changes,
+/// flushes any pending priority burst, clears any existing selection,
+/// closes settings/shortcuts panes, and sets `creating_new = true`.
+/// Returns `false` if the user cancels.
 pub fn start_new_card(state: &AppState, position: NewCardPosition) -> bool {
     if !confirm_discard_changes(state) {
         return false;

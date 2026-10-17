@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.1.1] - 2026-10-17
+
+### Fixed
+
+- Documentation only: `canonical_card_hash` now states that tag UUIDs are sorted before hashing, and `RootState` that its hash also covers tags and deleted entities.
+
 ## [3.1.0] - 2026-07-05
 
 ### Added

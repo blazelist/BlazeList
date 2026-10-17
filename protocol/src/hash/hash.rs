@@ -15,11 +15,16 @@ pub const ZERO_HASH: blake3::Hash = blake3::Hash::from_bytes([0u8; 32]);
 ///
 /// ```text
 /// [16 B: UUID] [8 B: content len u64 BE] [N B: content UTF-8]
-/// [8 B: priority i64 BE] [8 B: tag count u64 BE] [16 B * M: tag UUIDs]
+/// [8 B: priority i64 BE] [8 B: tag count u64 BE] [16 B * M: sorted tag UUIDs]
 /// [1 B: blazed u8] [8 B: created_at ms i64 BE] [8 B: modified_at ms i64 BE]
 /// [1 B: has_due_date u8] [8 B: due_date ms i64 BE (only if has_due_date == 1)]
 /// [8 B: count i64 BE] [32 B: ancestor_hash]
 /// ```
+///
+/// `tags` is sorted here rather than trusted to arrive sorted: `Card::first`
+/// and `Card::next` sort the list, but `Card::from_parts` and deserialization
+/// keep the order they are given, so this sort is what makes two cards
+/// carrying the same tag set hash identically.
 #[allow(clippy::too_many_arguments)]
 pub fn canonical_card_hash(
     id: &Uuid,
@@ -107,10 +112,10 @@ pub fn canonical_tag_hash(
     }
     hasher.update(&count.to_be_bytes());
     hasher.update(ancestor_hash.as_bytes());
-    // Conditional append: only hash the implies block when non-empty so
-    // tags without implications still match the pre-feature canonical
-    // bytes. The caller is responsible for passing a sorted+deduplicated
-    // slice (see `Tag::from_parts` / `first_with_implies` / `next_with_implies`).
+    // Appended only when non-empty, per the backwards-compatibility note
+    // above. Sorted here, so call-site order cannot change the hash;
+    // duplicates are not removed and would change it, which is why `Tag`
+    // deduplicates its implies list on ingress.
     if !implies.is_empty() {
         let mut sorted = implies.to_vec();
         sorted.sort();

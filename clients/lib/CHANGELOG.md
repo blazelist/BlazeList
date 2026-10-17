@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [4.1.0] - 2026-10-17
+
+### Added
+
+- `DueDateFilter::TodayAndTomorrow`, with URL token `today-tomorrow`.
+- `tag_display` module: `resolve_tags` and `sort_tags`, both ordering
+  tags case-insensitively by title.
+
+### Changed
+
+- `wrap_code_blocks_with_copy_button` draws its copy icon as an inline
+  SVG instead of `⧉`.
+
+### Removed
+
+- The unused `native` Cargo feature.
+
 ## [4.0.0] - 2026-07-05
 
 ### Added
